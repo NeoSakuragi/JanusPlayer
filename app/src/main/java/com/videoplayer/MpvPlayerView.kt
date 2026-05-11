@@ -107,6 +107,7 @@ class MpvPlayerView @JvmOverloads constructor(
 
         MPVLib.addObserver(this)
         MPVLib.observeProperty("sub-text", MPVLib.MPV_FORMAT_STRING)
+        MPVLib.observeProperty("sub-text-ass", MPVLib.MPV_FORMAT_STRING)
         MPVLib.observeProperty("pause", MPVLib.MPV_FORMAT_FLAG)
         MPVLib.observeProperty("track-list", MPVLib.MPV_FORMAT_NONE)
         MPVLib.observeProperty("time-pos", MPVLib.MPV_FORMAT_DOUBLE)
@@ -258,8 +259,12 @@ class MpvPlayerView @JvmOverloads constructor(
     }
 
     override fun eventProperty(property: String, value: String) {
-        if (property == "sub-text") {
-            post { listener?.onSubtitleTextChanged(value) }
+        Log.d(TAG, "string property: $property = ${value.take(50)}")
+        if (property == "sub-text" || property == "sub-text-ass") {
+            val cleanText = if (property == "sub-text-ass") {
+                value.replace(Regex("\\{[^}]*\\}"), "").trim()
+            } else value
+            post { listener?.onSubtitleTextChanged(cleanText) }
         }
     }
 

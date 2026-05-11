@@ -45,6 +45,8 @@ class PlayerActivity : ComponentActivity(), MpvPlayerView.Listener {
         const val EXTRA_SMB_USER = "smb_user"
         const val EXTRA_SMB_PASS = "smb_pass"
         const val EXTRA_LOCAL_URI = "local_uri"
+        const val EXTRA_SEEK_SEC = "seek_sec"
+        const val EXTRA_SUB_TRACK = "sub_track"
     }
 
     // ── UI State Machine ─────────────────────────────────────────────
@@ -160,6 +162,46 @@ class PlayerActivity : ComponentActivity(), MpvPlayerView.Listener {
 
         playerView.setListener(this)
         playerView.initialize()
+
+        // Debug receiver: adb shell am broadcast -a com.videoplayer.TEST --ef sec 140
+        val testReceiver = object : android.content.BroadcastReceiver() {
+            override fun onReceive(ctx: android.content.Context, intent: android.content.Intent) {
+                val sec = intent.getFloatExtra("sec", 0f).toDouble()
+                val action = intent.getStringExtra("do") ?: "wordnav"
+                Log.d(TAG, "TEST: seek=$sec action=$action")
+                playerView.seekTo(sec)
+                playerView.pause()
+                // Wait for sub-text to update after seek
+                android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                    Log.d(TAG, "TEST: sub='${subtitleText.value}' state=${screen.value}")
+                    when (action) {
+                        "wordnav" -> {
+                            if (enterWordNav()) {
+                                Log.d(TAG, "TEST: WORD_NAV entered, navigating right...")
+                                for (i in 0 until 10) {
+                                    val wf = wordFocus.intValue
+                                    val word = wordTokens.getOrNull(wf)?.surface ?: break
+                                    val base = wordTokens.getOrNull(wf)?.baseForm ?: word
+                                    Log.d(TAG, "TEST_WORD[$i]: [$word] base=[$base] idx=$wf")
+                                    val fiIdx = focusableWordIndices.indexOf(wf)
+                                    if (fiIdx < focusableWordIndices.size - 1) {
+                                        wordFocus.intValue = focusableWordIndices[fiIdx + 1]
+                                    } else break
+                                }
+                                clearDict()
+                                goto(Screen.PLAYING)
+                                playerView.play()
+                            } else {
+                                Log.d(TAG, "TEST: no focusable words")
+                                playerView.play()
+                            }
+                        }
+                    }
+                }, 1500)
+            }
+        }
+        registerReceiver(testReceiver, android.content.IntentFilter("com.videoplayer.TEST"),
+            android.content.Context.RECEIVER_EXPORTED)
         startPlayback(savedInstanceState)
     }
 
@@ -585,12 +627,14 @@ class PlayerActivity : ComponentActivity(), MpvPlayerView.Listener {
                     KeyEvent.KEYCODE_DPAD_LEFT -> {
                         if (fiIdx > 0) {
                             wordFocus.intValue = focusableWordIndices[fiIdx - 1]
+                            Log.d(TAG, "WORD: ← [${wordTokens[focusableWordIndices[fiIdx - 1]].surface}]")
                             scheduleDwell()
                         }
                     }
                     KeyEvent.KEYCODE_DPAD_RIGHT -> {
                         if (fiIdx < focusableWordIndices.size - 1) {
                             wordFocus.intValue = focusableWordIndices[fiIdx + 1]
+                            Log.d(TAG, "WORD: → [${wordTokens[focusableWordIndices[fiIdx + 1]].surface}]")
                             scheduleDwell()
                         }
                     }
@@ -634,6 +678,7 @@ class PlayerActivity : ComponentActivity(), MpvPlayerView.Listener {
     }
 
     private fun goto(s: Screen, focus: Int = -1) {
+        Log.d(TAG, "STATE: ${screen.value} → $s" + if (focus >= 0) " focus=$focus" else "")
         screen.value = s
         if (focus >= 0) controlFocus.intValue = focus
     }
@@ -641,26 +686,34 @@ class PlayerActivity : ComponentActivity(), MpvPlayerView.Listener {
     // ── Word navigation helpers ──────────────────────────────────────
 
     private fun isJapanese(text: String): Boolean = text.any { c ->
-        Character.UnicodeBlock.of(c) in setOf(
-            Character.UnicodeBlock.CJK_UNIFIED_IDEOGRAPHS,
-            Character.UnicodeBlock.HIRAGANA,
-            Character.UnicodeBlock.KATAKANA,
-            Character.UnicodeBlock.CJK_UNIFIED_IDEOGRAPHS_EXTENSION_A,
-            Character.UnicodeBlock.CJK_UNIFIED_IDEOGRAPHS_EXTENSION_B,
-            Character.UnicodeBlock.CJK_COMPATIBILITY_IDEOGRAPHS,
-            Character.UnicodeBlock.HALFWIDTH_AND_FULLWIDTH_FORMS
-        )
+        val block = Character.UnicodeBlock.of(c)
+        block == Character.UnicodeBlock.CJK_UNIFIED_IDEOGRAPHS ||
+        block == Character.UnicodeBlock.HIRAGANA ||
+        block == Character.UnicodeBlock.KATAKANA ||
+        block == Character.UnicodeBlock.CJK_UNIFIED_IDEOGRAPHS_EXTENSION_A ||
+        block == Character.UnicodeBlock.CJK_UNIFIED_IDEOGRAPHS_EXTENSION_B ||
+        block == Character.UnicodeBlock.CJK_COMPATIBILITY_IDEOGRAPHS ||
+        (block == Character.UnicodeBlock.HALFWIDTH_AND_FULLWIDTH_FORMS && c.isLetterOrDigit())
+    }
+
+    private fun isFocusableWord(token: com.atilika.kuromoji.ipadic.Token): Boolean {
+        val s = token.surface
+        if (!isJapanese(s)) return false
+        if (s.length == 1 && Character.UnicodeBlock.of(s[0]) == Character.UnicodeBlock.HIRAGANA) return false
+        return true
     }
 
     private fun enterWordNav(): Boolean {
         val text = subtitleText.value ?: return false
-        val tok = tokenizer ?: return false
+        val tok = tokenizer ?: run { Log.d(TAG, "WORD_NAV: tokenizer not ready"); return false }
         wordTokens = tok.tokenize(text)
         focusableWordIndices = wordTokens.mapIndexedNotNull { i, t ->
-            if (isJapanese(t.surface)) i else null
+            if (isFocusableWord(t)) i else null
         }
+        Log.d(TAG, "WORD_NAV: ${wordTokens.size} tokens, ${focusableWordIndices.size} focusable: ${wordTokens.map { it.surface }}")
         if (focusableWordIndices.isEmpty()) return false
         wordFocus.intValue = focusableWordIndices[0]
+        Log.d(TAG, "WORD_NAV: focus on [${wordTokens[focusableWordIndices[0]].surface}]")
         screen.value = Screen.WORD_NAV
         scheduleDwell()
         return true
@@ -668,9 +721,13 @@ class PlayerActivity : ComponentActivity(), MpvPlayerView.Listener {
 
     private fun scheduleDwell() {
         dwellJob?.cancel()
+        val idx = wordFocus.intValue
+        val word = wordTokens.getOrNull(idx)?.surface ?: "?"
+        Log.d(TAG, "DWELL: start on [$word] idx=$idx")
         dwellJob = dwellScope.launch {
             delay(300)
-            lookupWord(wordFocus.intValue)
+            Log.d(TAG, "DWELL: fire lookup for [$word]")
+            lookupWord(idx)
         }
     }
 
@@ -693,6 +750,7 @@ class PlayerActivity : ComponentActivity(), MpvPlayerView.Listener {
                 val meanings = unique.flatMap { it.meanings }.filter { it.isNotBlank() }.distinct().take(5)
                 val pitchText = formatPitchAccents(pitchAccents)
                 val tagsText = formatTags(best.tags)
+                Log.d(TAG, "DICT: found ${unique.size} entries for $baseForm/$surface: ${best.term} [${best.reading}] - ${meanings.first()}")
                 withContext(Dispatchers.Main) {
                     currentDictEntries = unique
                     dictTerm.value = best.term
@@ -946,8 +1004,17 @@ class PlayerActivity : ComponentActivity(), MpvPlayerView.Listener {
     // ── MpvPlayerView.Listener ───────────────────────────────────────
 
     override fun onSubtitleTextChanged(text: String) {
-        subtitleText.value = text.ifEmpty { null }
-        if (text.isNotEmpty()) lastSubtitleText = text
+        // Strip furigana annotations like 悟飯(ごはん) → 悟飯
+        val clean = text.replace(Regex("\\([\\u3040-\\u309F\\u30A0-\\u30FF\\s]+\\)"), "")
+        subtitleText.value = clean.ifEmpty { null }
+        if (clean.isNotEmpty()) lastSubtitleText = clean
+        if (clean.isNotEmpty()) Log.d(TAG, "SUB: $clean")
+    }
+
+    fun seekPauseAndLog(seconds: Double) {
+        playerView.seekTo(seconds)
+        playerView.pause()
+        Log.d(TAG, "SEEKPAUSE: ${seconds}s, waiting for sub-text...")
     }
 
     override fun onPauseChanged(paused: Boolean) {
@@ -961,7 +1028,11 @@ class PlayerActivity : ComponentActivity(), MpvPlayerView.Listener {
 
     override fun onFileLoaded() {
         Log.d(TAG, "File loaded")
-        restoreTrackPrefs()
+        val subTrack = intent.getIntExtra(EXTRA_SUB_TRACK, 0)
+        if (subTrack > 0) playerView.setSubtitleTrack(subTrack)
+        else restoreTrackPrefs()
+        val seekSec = intent.getFloatExtra(EXTRA_SEEK_SEC, 0f).toDouble()
+        if (seekSec > 0) playerView.seekTo(seekSec)
     }
     override fun onFileEnded() { Log.d(TAG, "File ended"); finish() }
     override fun onTracksChanged() {}
