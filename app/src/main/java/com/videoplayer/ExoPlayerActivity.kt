@@ -47,6 +47,8 @@ class ExoPlayerActivity : ComponentActivity() {
         const val EXTRA_SUBS_URL = "subs_url"
         const val EXTRA_TITLE = "title"
         const val EXTRA_START_POSITION = "start_position"
+        const val EXTRA_SERIES_ID = "series_id"
+        const val EXTRA_EPISODE_NUM = "episode_num"
     }
 
     // ── State Machine ────────────────────────────────────────────────
@@ -99,6 +101,9 @@ class ExoPlayerActivity : ComponentActivity() {
         "fonts/KosugiMaru-Regular.ttf", "fonts/ShipporiMincho-Regular.ttf"
     )
 
+    private val CTRL_CONDENSED = 5
+    private val condensedMode = mutableStateOf(false)
+
     private val screen = mutableStateOf(Screen.PLAYING)
     private val controlFocus = mutableIntStateOf(CTRL_SEEK)
 
@@ -141,7 +146,6 @@ class ExoPlayerActivity : ComponentActivity() {
     private lateinit var player: ExoPlayer
     private var subtitleCues = listOf<SrtParser.Cue>()
     private val handler = android.os.Handler(android.os.Looper.getMainLooper())
-    private var dwellRunnable: Runnable? = null
     private lateinit var dictDb: DictionaryDatabase
     private val dictLookup = object : WordScanner.DictLookup {
         override fun hasEntry(term: String): Boolean = dictDb.hasEntry(term)
@@ -192,14 +196,31 @@ class ExoPlayerActivity : ComponentActivity() {
             }.start()
         }
 
-        // Position updater
+        // Position updater + condensed mode + periodic save
+        var saveCounter = 0
         handler.post(object : Runnable {
             override fun run() {
                 if (::player.isInitialized) {
-                    positionMs.longValue = player.currentPosition
+                    val pos = player.currentPosition
+
+                    // Save progress every ~30s (150 ticks × 200ms)
+                    if (player.isPlaying && ++saveCounter >= 150) {
+                        saveCounter = 0
+                        saveProgress()
+                    }
+                    positionMs.longValue = pos
                     durationMs.longValue = player.duration.coerceAtLeast(0)
                     isPaused.value = !player.isPlaying
-                    currentSubText.value = SrtParser.cueAt(subtitleCues, player.currentPosition)?.text
+                    val cue = SrtParser.cueAt(subtitleCues, pos)
+                    currentSubText.value = cue?.text
+
+                    // Condensed: if no current sub, playing, and gap to next > 2s, skip
+                    if (condensedMode.value && cue == null && player.isPlaying && screen.value == Screen.PLAYING) {
+                        val next = SrtParser.nextCueAfter(subtitleCues, pos)
+                        if (next != null && next.startMs - pos > 2000) {
+                            player.seekTo(next.startMs - 200)
+                        }
+                    }
                 }
                 handler.postDelayed(this, 200)
             }
@@ -268,6 +289,9 @@ class ExoPlayerActivity : ComponentActivity() {
                     CtrlBtn("Aa", "${FONT_SIZES[fSizeIdx]}sp", CTRL_FONTSIZE, cFocus)
                     Spacer(Modifier.width(8.dp))
                     CtrlBtn("F", FONT_NAMES[fIdx].take(8), CTRL_FONT, cFocus)
+                    Spacer(Modifier.width(8.dp))
+                    val condOn by condensedMode
+                    CtrlBtn("⏩", if (condOn) "COND ON" else "COND OFF", CTRL_CONDENSED, cFocus)
                 }
             }
 
@@ -501,7 +525,7 @@ class ExoPlayerActivity : ComponentActivity() {
                     }
                     KeyEvent.KEYCODE_DPAD_RIGHT -> when {
                         f == CTRL_SEEK -> player.seekTo(player.currentPosition + 10000)
-                        f < CTRL_FONT -> controlFocus.intValue = f + 1
+                        f < CTRL_CONDENSED -> controlFocus.intValue = f + 1
                     }
                     KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> when (f) {
                         CTRL_SEEK -> { player.play(); goto(Screen.PLAYING) }
@@ -509,6 +533,7 @@ class ExoPlayerActivity : ComponentActivity() {
                         CTRL_SUBS -> showSubsList()
                         CTRL_FONTSIZE -> cycleFontSize()
                         CTRL_FONT -> cycleFont()
+                        CTRL_CONDENSED -> condensedMode.value = !condensedMode.value
                     }
                     else -> return false
                 }
@@ -521,10 +546,10 @@ class ExoPlayerActivity : ComponentActivity() {
                     KeyEvent.KEYCODE_DPAD_UP -> { clearDict(); goto(Screen.CONTROLS, CTRL_AUDIO) }
                     KeyEvent.KEYCODE_DPAD_DOWN -> { clearDict(); goto(Screen.CONTROLS, CTRL_SEEK) }
                     KeyEvent.KEYCODE_DPAD_LEFT -> {
-                        if (ci > 0) { cursorIdx.intValue = ci - 1; updateWordAtCursor(); triggerDwell() }
+                        if (ci > 0) { cursorIdx.intValue = ci - 1; updateWordAtCursor() }
                     }
                     KeyEvent.KEYCODE_DPAD_RIGHT -> {
-                        if (ci < japanesePositions.size - 1) { cursorIdx.intValue = ci + 1; updateWordAtCursor(); triggerDwell() }
+                        if (ci < japanesePositions.size - 1) { cursorIdx.intValue = ci + 1; updateWordAtCursor() }
                     }
                     KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> {}
                     else -> return false
@@ -561,7 +586,6 @@ class ExoPlayerActivity : ComponentActivity() {
         cursorIdx.intValue = 0
         updateWordAtCursor()
         screen.value = Screen.WORD_NAV
-        triggerDwell()
         return true
     }
 
@@ -572,17 +596,12 @@ class ExoPlayerActivity : ComponentActivity() {
         if (word != null) {
             hlStart.intValue = word.startChar
             hlEnd.intValue = word.endChar
+            lookupWord(word)
         } else {
             hlStart.intValue = charPos
             hlEnd.intValue = charPos + 1
+            dictVisible.value = false
         }
-    }
-
-    private fun triggerDwell() {
-        dwellRunnable?.let { handler.removeCallbacks(it) }
-        val word = currentWord ?: return
-        dwellRunnable = Runnable { lookupWord(word) }
-        handler.postDelayed(dwellRunnable!!, 300)
     }
 
     private fun lookupWord(word: WordScanner.ScannedWord) {
@@ -602,7 +621,6 @@ class ExoPlayerActivity : ComponentActivity() {
     }
 
     private fun clearDict() {
-        dwellRunnable?.let { handler.removeCallbacks(it) }
         dictVisible.value = false
     }
 
@@ -695,13 +713,33 @@ class ExoPlayerActivity : ComponentActivity() {
         }
     }
 
+    private fun saveProgress() {
+        if (!::player.isInitialized) return
+        val seriesId = intent.getStringExtra(EXTRA_SERIES_ID) ?: return
+        val epNum = intent.getIntExtra(EXTRA_EPISODE_NUM, -1)
+        if (epNum < 0) return
+        val pos = player.currentPosition
+        val dur = player.duration.coerceAtLeast(1)
+        val prefs = getSharedPreferences("watch_progress", MODE_PRIVATE)
+        prefs.edit()
+            .putLong("${seriesId}_ep${epNum}_pos", pos)
+            .putLong("${seriesId}_ep${epNum}_dur", dur)
+            .putString("${seriesId}_last_ep", "$epNum")
+            .putLong("${seriesId}_last_pos", pos)
+            .apply()
+    }
+
     override fun onPause() {
         super.onPause()
-        if (::player.isInitialized) player.pause()
+        if (::player.isInitialized) {
+            saveProgress()
+            player.pause()
+        }
     }
 
     override fun onDestroy() {
         super.onDestroy()
+        saveProgress()
         handler.removeCallbacksAndMessages(null)
         if (::player.isInitialized) player.release()
     }

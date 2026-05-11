@@ -150,43 +150,55 @@ class LibraryActivity : ComponentActivity() {
                     else Modifier
                 )
         ) {
-            // Cover placeholder
+            // Cover image
             Box(
-                contentAlignment = Alignment.Center,
+                contentAlignment = Alignment.BottomCenter,
                 modifier = Modifier
                     .width(200.dp)
                     .height(280.dp)
                     .clip(RoundedCornerShape(12.dp))
-                    .background(
-                        Brush.verticalGradient(
-                            listOf(Color(0xFF2A1A3A), Color(0xFF1A1A2E))
-                        )
-                    )
+                    .background(Color(0xFF1A1A2E))
             ) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    androidx.compose.material3.Text(
-                        series.titleJa,
-                        color = Color.White,
-                        fontSize = 22.sp,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Spacer(Modifier.height(4.dp))
-                    androidx.compose.material3.Text(
-                        series.titleEn,
-                        color = Color(0xFFAAAAAA),
-                        fontSize = 14.sp
-                    )
+                coil.compose.AsyncImage(
+                    model = "$SERVER_URL/api/covers/${series.id}.jpg",
+                    contentDescription = series.titleEn,
+                    contentScale = androidx.compose.ui.layout.ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize()
+                )
+                // Title overlay at bottom
+                Box(
+                    modifier = Modifier.fillMaxWidth()
+                        .background(Brush.verticalGradient(listOf(Color.Transparent, Color(0xCC000000))))
+                        .padding(8.dp)
+                ) {
+                    Column {
+                        androidx.compose.material3.Text(
+                            series.titleJa, color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Bold
+                        )
+                        androidx.compose.material3.Text(
+                            series.titleEn, color = Color(0xFFCCCCCC), fontSize = 12.sp
+                        )
+                    }
                 }
             }
 
             Spacer(Modifier.height(8.dp))
 
-            // Episode count + progress
-            androidx.compose.material3.Text(
-                "${series.episodeCount} episodes",
-                color = if (focused) Color.White else Color(0xFF888888),
-                fontSize = 12.sp
-            )
+            // Episode count + continue watching
+            val lastWatched = remember(series.id) { getLastWatched(series.id) }
+            if (lastWatched != null) {
+                androidx.compose.material3.Text(
+                    "▶ Episode ${lastWatched.first}",
+                    color = Color(0xFFBB86FC),
+                    fontSize = 12.sp
+                )
+            } else {
+                androidx.compose.material3.Text(
+                    "${series.episodeCount} episodes",
+                    color = if (focused) Color.White else Color(0xFF888888),
+                    fontSize = 12.sp
+                )
+            }
         }
     }
 
@@ -225,6 +237,8 @@ class LibraryActivity : ComponentActivity() {
 
     @Composable
     private fun EpisodeCard(series: JanusApi.Series, ep: JanusApi.Episode, focused: Boolean) {
+        val savedPos = remember(series.id, ep.episode) { getWatchProgress(series.id, ep.episode) }
+        val progressFraction = if (ep.durationSec > 0) (savedPos / 1000.0 / ep.durationSec).toFloat().coerceIn(0f, 1f) else 0f
         Column(
             modifier = Modifier
                 .width(180.dp)
@@ -267,10 +281,8 @@ class LibraryActivity : ComponentActivity() {
                 )
             }
 
-            // Watch progress
-            if (ep.watchProgressSec > 0 && !ep.completed) {
-                Spacer(Modifier.height(6.dp))
-                val progress = (ep.watchProgressSec / ep.durationSec).toFloat().coerceIn(0f, 1f)
+            // Watch progress from saved data
+            if (progressFraction > 0.01f && progressFraction < 0.95f) {
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -281,12 +293,12 @@ class LibraryActivity : ComponentActivity() {
                     Box(
                         modifier = Modifier
                             .fillMaxHeight()
-                            .fillMaxWidth(progress)
+                            .fillMaxWidth(progressFraction)
                             .background(Color(0xFFBB86FC), RoundedCornerShape(2.dp))
                     )
                 }
             }
-            if (ep.completed) {
+            if (progressFraction >= 0.95f) {
                 Spacer(Modifier.height(4.dp))
                 androidx.compose.material3.Text("✓ Watched", color = Color(0xFF81C784), fontSize = 11.sp)
             }
@@ -307,6 +319,15 @@ class LibraryActivity : ComponentActivity() {
                     if (seriesFocus.intValue < library.size - 1) seriesFocus.intValue++
                 }
                 KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> {
+                    val series = library.getOrNull(seriesFocus.intValue)
+                    if (series != null) {
+                        val lastWatched = getLastWatched(series.id)
+                        if (lastWatched != null) {
+                            // Continue watching — play last episode directly
+                            val ep = series.episodes.firstOrNull { it.episode == lastWatched.first }
+                            if (ep != null) { playEpisode(series, ep); return true }
+                        }
+                    }
                     episodeFocus.intValue = 0
                     screen.value = Screen.EPISODE_LIST
                 }
@@ -332,16 +353,32 @@ class LibraryActivity : ComponentActivity() {
         return true
     }
 
+    private fun getWatchProgress(seriesId: String, epNum: Int): Long {
+        val prefs = getSharedPreferences("watch_progress", MODE_PRIVATE)
+        return prefs.getLong("${seriesId}_ep${epNum}_pos", 0L)
+    }
+
+    private fun getLastWatched(seriesId: String): Pair<Int, Long>? {
+        val prefs = getSharedPreferences("watch_progress", MODE_PRIVATE)
+        val epStr = prefs.getString("${seriesId}_last_ep", null) ?: return null
+        val ep = epStr.toIntOrNull() ?: return null
+        val pos = prefs.getLong("${seriesId}_last_pos", 0L)
+        return ep to pos
+    }
+
     private fun playEpisode(series: JanusApi.Series, episode: JanusApi.Episode) {
         val videoUrl = api.videoUrl(series.id, episode.filename)
         val subsUrl = if (episode.hasJaSubs && episode.jaSrtFile != null)
             api.subsUrl(series.id, episode.jaSrtFile) else null
+        val savedPos = getWatchProgress(series.id, episode.episode)
 
         startActivity(Intent(this, ExoPlayerActivity::class.java).apply {
             putExtra(ExoPlayerActivity.EXTRA_VIDEO_URL, videoUrl)
             putExtra(ExoPlayerActivity.EXTRA_SUBS_URL, subsUrl)
             putExtra(ExoPlayerActivity.EXTRA_TITLE, "${series.titleEn} - Episode ${episode.episode}")
-            putExtra(ExoPlayerActivity.EXTRA_START_POSITION, (episode.watchProgressSec * 1000).toLong())
+            putExtra(ExoPlayerActivity.EXTRA_START_POSITION, savedPos)
+            putExtra(ExoPlayerActivity.EXTRA_SERIES_ID, series.id)
+            putExtra(ExoPlayerActivity.EXTRA_EPISODE_NUM, episode.episode)
         })
     }
 }
