@@ -30,6 +30,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.*
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
@@ -48,19 +49,15 @@ class PlayerActivity : ComponentActivity(), MpvPlayerView.Listener {
 
     // ── UI State Machine ─────────────────────────────────────────────
 
-    enum class Screen { PLAYING, CONTROLS, LIST_SELECT }
+    enum class Screen { PLAYING, CONTROLS, LIST_SELECT, WORD_NAV }
 
-    // Control bar items: [seekbar, rewind, play, forward, audio, subs]
+    // Control bar items: [seekbar, audio, subs]
     private val CTRL_SEEK = 0
-    private val CTRL_REW = 1
-    private val CTRL_PLAY = 2
-    private val CTRL_FWD = 3
-    private val CTRL_AUDIO = 4
-    private val CTRL_SUBS = 5
-    private val CTRL_COUNT = 6
+    private val CTRL_AUDIO = 1
+    private val CTRL_SUBS = 2
 
     private val screen = mutableStateOf(Screen.PLAYING)
-    private val controlFocus = mutableIntStateOf(CTRL_PLAY)
+    private val controlFocus = mutableIntStateOf(CTRL_SEEK)
     private val listItems = mutableStateListOf<ListItem>()
     private val listTitle = mutableStateOf("")
     private val listFocus = mutableIntStateOf(0)
@@ -71,6 +68,20 @@ class PlayerActivity : ComponentActivity(), MpvPlayerView.Listener {
     private val positionSec = mutableDoubleStateOf(0.0)
     private val durationSec = mutableDoubleStateOf(0.0)
     private val subtitleText = mutableStateOf<String?>(null)
+
+    // Word navigation state
+    private val wordFocus = mutableIntStateOf(0)
+    private var wordTokens = listOf<com.atilika.kuromoji.ipadic.Token>()
+    private var focusableWordIndices = listOf<Int>()
+    private val dictTerm = mutableStateOf("")
+    private val dictReading = mutableStateOf("")
+    private val dictMeanings = mutableStateOf(listOf<String>())
+    private val dictFreq = mutableIntStateOf(0)
+    private val dictVisible = mutableStateOf(false)
+    private var tokenizer: com.atilika.kuromoji.ipadic.Tokenizer? = null
+    private lateinit var dictDb: DictionaryDatabase
+    private var dwellJob: Job? = null
+    private val dwellScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
     data class ListItem(val label: String, val subtitle: String? = null, val selected: Boolean = false)
 
@@ -101,6 +112,11 @@ class PlayerActivity : ComponentActivity(), MpvPlayerView.Listener {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         enterFullscreen()
+
+        dictDb = DictionaryDatabase.getInstance(this)
+        Thread {
+            try { tokenizer = com.atilika.kuromoji.ipadic.Tokenizer() } catch (_: Exception) {}
+        }.start()
 
         // Build view hierarchy manually — MpvPlayerView must never be inside Compose
         val root = android.widget.FrameLayout(this)
@@ -145,23 +161,99 @@ class PlayerActivity : ComponentActivity(), MpvPlayerView.Listener {
         val lTitle by listTitle
         val lFocus by listFocus
 
+        val wFocus by wordFocus
+        val dVisible by dictVisible
+        val dTerm by dictTerm
+        val dReading by dictReading
+        val dMeanings by dictMeanings
+        val dFreq by dictFreq
+
         Box(modifier = Modifier.fillMaxSize()) {
 
-            // Subtitle display
+            // Dictionary popup — top
+            AnimatedVisibility(
+                visible = dVisible && currentScreen == Screen.WORD_NAV,
+                enter = fadeIn(tween(150)),
+                exit = fadeOut(tween(100)),
+                modifier = Modifier.align(Alignment.TopCenter).padding(top = 12.dp)
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier
+                        .padding(horizontal = 24.dp)
+                        .background(Color(0xEE1E1E2E), RoundedCornerShape(10.dp))
+                        .padding(16.dp)
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            androidx.compose.material3.Text(dTerm, color = Color.White, fontSize = 26.sp, fontWeight = FontWeight.Bold)
+                            if (dReading.isNotEmpty()) {
+                                Spacer(Modifier.width(10.dp))
+                                androidx.compose.material3.Text(dReading, color = Color(0xFFAAAAAA), fontSize = 16.sp)
+                            }
+                            if (dFreq > 0) {
+                                Spacer(Modifier.width(10.dp))
+                                androidx.compose.material3.Text(
+                                    "#$dFreq",
+                                    color = Color(0xFF81C784),
+                                    fontSize = 12.sp,
+                                    modifier = Modifier
+                                        .background(Color(0x33FFFFFF), RoundedCornerShape(4.dp))
+                                        .padding(horizontal = 6.dp, vertical = 2.dp)
+                                )
+                            }
+                        }
+                        Spacer(Modifier.height(6.dp))
+                        dMeanings.forEachIndexed { i, m ->
+                            androidx.compose.material3.Text(
+                                "${i + 1}. $m",
+                                color = Color(0xFFCCCCCC),
+                                fontSize = 14.sp,
+                                lineHeight = 18.sp
+                            )
+                        }
+                    }
+                }
+            }
+
+            // Subtitle display — plain text or word-by-word navigation
             if (subs != null && subs!!.isNotBlank()) {
-                Box(
+                val bottomPad = when (currentScreen) {
+                    Screen.CONTROLS, Screen.LIST_SELECT -> 140.dp
+                    else -> 48.dp
+                }
+                Row(
+                    horizontalArrangement = Arrangement.Center,
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
-                        .padding(bottom = if (currentScreen == Screen.CONTROLS) 140.dp else 48.dp)
-                        .padding(horizontal = 32.dp)
+                        .padding(bottom = bottomPad, start = 32.dp, end = 32.dp)
                         .background(Color(0x99000000), RoundedCornerShape(6.dp))
-                        .padding(horizontal = 16.dp, vertical = 8.dp)
+                        .padding(horizontal = 12.dp, vertical = 8.dp)
                 ) {
-                    androidx.compose.material3.Text(
-                        text = subs!!,
-                        color = Color.White,
-                        fontSize = 22.sp,
-                    )
+                    if (currentScreen == Screen.WORD_NAV && wordTokens.isNotEmpty()) {
+                        wordTokens.forEachIndexed { idx, token ->
+                            val isFocused = idx == wFocus
+                            val isFocusable = isJapanese(token.surface)
+                            androidx.compose.material3.Text(
+                                text = token.surface,
+                                color = Color.White,
+                                fontSize = 24.sp,
+                                fontWeight = if (isFocused) FontWeight.Bold else FontWeight.Normal,
+                                modifier = Modifier
+                                    .background(
+                                        if (isFocused) Color(0xFF7986CB) else Color.Transparent,
+                                        RoundedCornerShape(4.dp)
+                                    )
+                                    .padding(horizontal = if (isFocusable) 3.dp else 0.dp, vertical = 2.dp)
+                            )
+                        }
+                    } else {
+                        androidx.compose.material3.Text(
+                            text = subs!!,
+                            color = Color.White,
+                            fontSize = 22.sp,
+                        )
+                    }
                 }
             }
 
@@ -226,35 +318,12 @@ class PlayerActivity : ComponentActivity(), MpvPlayerView.Listener {
 
             Spacer(Modifier.height(20.dp))
 
-            // Buttons row
+            // Buttons row: audio, subs
             Row(
                 horizontalArrangement = Arrangement.Center,
                 verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier.fillMaxWidth()
             ) {
-                CtrlButton("⏪", "−10s", CTRL_REW, focusIdx)
-                Spacer(Modifier.width(16.dp))
-                // Play/pause — bigger
-                val ppFocused = focusIdx == CTRL_PLAY
-                Box(
-                    contentAlignment = Alignment.Center,
-                    modifier = Modifier
-                        .size(if (ppFocused) 68.dp else 60.dp)
-                        .background(
-                            if (ppFocused) Color(0xFFBB86FC) else Color(0xFF333344),
-                            CircleShape
-                        )
-                        .then(if (ppFocused) Modifier.border(2.dp, Color.White, CircleShape) else Modifier)
-                ) {
-                    androidx.compose.material3.Text(
-                        if (paused) "▶" else "⏸",
-                        color = Color.White,
-                        fontSize = 26.sp
-                    )
-                }
-                Spacer(Modifier.width(16.dp))
-                CtrlButton("⏩", "+10s", CTRL_FWD, focusIdx)
-                Spacer(Modifier.width(32.dp))
                 CtrlButton("♪", "Audio", CTRL_AUDIO, focusIdx)
                 Spacer(Modifier.width(12.dp))
                 CtrlButton("CC", "Subs", CTRL_SUBS, focusIdx)
@@ -355,37 +424,33 @@ class PlayerActivity : ComponentActivity(), MpvPlayerView.Listener {
 
     // ── State Machine ─────────────────────────────────────────────────
     //
-    // Every (screen, key) pair maps to exactly one transition.
-    // transition() returns: consumed (Boolean)
-    // Side effects: screen change, focus change, player action.
-    //
     //  PLAYING:
     //    BACK           → exit app
-    //    LEFT/RIGHT     → seek ±10s, stay PLAYING
-    //    PLAY_PAUSE     → toggle pause, stay PLAYING
-    //    any other dpad → pause + go CONTROLS(focus=PLAY)
+    //    LEFT/RIGHT     → seek ±10s
+    //    PLAY_PAUSE     → toggle pause
+    //    UP             → if subs: pause + go WORD_NAV. else: pause + go CONTROLS
+    //    CENTER/DOWN    → pause + go CONTROLS
     //
     //  CONTROLS(focusIdx):
     //    BACK           → resume + go PLAYING
-    //    UP             → if on buttons: move to SEEK. if on SEEK: resume + go PLAYING
-    //    DOWN           → if on SEEK: move to PLAY button
-    //    LEFT           → if SEEK: seek -10s. else: move focus left (clamp)
-    //    RIGHT          → if SEEK: seek +10s. else: move focus right (clamp)
-    //    CENTER/ENTER   → activate focused control:
-    //                       SEEK  → resume + go PLAYING
-    //                       REW   → seek -10
-    //                       PLAY  → toggle pause
-    //                       FWD   → seek +10
-    //                       AUDIO → go LIST_SELECT(audio tracks)
-    //                       SUBS  → go LIST_SELECT(subtitle tracks)
-    //    PLAY_PAUSE     → toggle pause, stay CONTROLS
+    //    UP             → if on buttons: SEEK. if SEEK: go WORD_NAV (if subs) or PLAYING
+    //    DOWN           → if SEEK: PLAY button
+    //    LEFT/RIGHT     → seek on SEEK row, move focus on buttons
+    //    CENTER         → activate control
+    //    PLAY_PAUSE     → toggle pause
+    //
+    //  WORD_NAV(wordFocusIdx):
+    //    BACK           → go CONTROLS
+    //    LEFT           → prev focusable word (clamp)
+    //    RIGHT          → next focusable word (clamp)
+    //    DOWN           → go CONTROLS(SEEK)
+    //    CENTER         → (reserved for Anki later)
+    //    300ms dwell    → auto dictionary lookup
     //
     //  LIST_SELECT(focusIdx):
-    //    BACK           → go CONTROLS (restore focus to AUDIO or SUBS)
-    //    UP             → move focus up (clamp)
-    //    DOWN           → move focus down (clamp)
-    //    CENTER/ENTER   → apply selection + go CONTROLS
-    //    LEFT           → same as BACK
+    //    BACK/LEFT      → go CONTROLS (restore focus)
+    //    UP/DOWN        → move focus
+    //    CENTER         → apply + go CONTROLS
     //
 
     private var listReturnFocus = CTRL_AUDIO
@@ -402,7 +467,11 @@ class PlayerActivity : ComponentActivity(), MpvPlayerView.Listener {
                 KeyEvent.KEYCODE_DPAD_LEFT -> playerView.seekRelative(-10)
                 KeyEvent.KEYCODE_DPAD_RIGHT -> playerView.seekRelative(10)
                 KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE -> playerView.togglePause()
-                else -> { playerView.pause(); goto(Screen.CONTROLS, CTRL_PLAY) }
+                KeyEvent.KEYCODE_DPAD_UP -> {
+                    playerView.pause()
+                    if (enterWordNav()) {} else goto(Screen.CONTROLS, CTRL_SEEK)
+                }
+                else -> { playerView.pause(); goto(Screen.CONTROLS, CTRL_SEEK) }
             }
 
             Screen.CONTROLS -> {
@@ -410,18 +479,17 @@ class PlayerActivity : ComponentActivity(), MpvPlayerView.Listener {
                 when (key) {
                     KeyEvent.KEYCODE_BACK -> { playerView.play(); goto(Screen.PLAYING) }
                     KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE -> playerView.togglePause()
-
                     KeyEvent.KEYCODE_DPAD_UP -> when {
-                        f == CTRL_SEEK -> { playerView.play(); goto(Screen.PLAYING) }
+                        f == CTRL_SEEK -> if (!enterWordNav()) { playerView.play(); goto(Screen.PLAYING) }
                         else -> controlFocus.intValue = CTRL_SEEK
                     }
                     KeyEvent.KEYCODE_DPAD_DOWN -> when {
-                        f == CTRL_SEEK -> controlFocus.intValue = CTRL_PLAY
-                        else -> {} // already on button row, nowhere to go
+                        f == CTRL_SEEK -> controlFocus.intValue = CTRL_AUDIO
+                        else -> {}
                     }
                     KeyEvent.KEYCODE_DPAD_LEFT -> when {
                         f == CTRL_SEEK -> playerView.seekRelative(-10)
-                        f > CTRL_REW -> controlFocus.intValue = f - 1
+                        f > CTRL_AUDIO -> controlFocus.intValue = f - 1
                     }
                     KeyEvent.KEYCODE_DPAD_RIGHT -> when {
                         f == CTRL_SEEK -> playerView.seekRelative(10)
@@ -429,11 +497,33 @@ class PlayerActivity : ComponentActivity(), MpvPlayerView.Listener {
                     }
                     KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> when (f) {
                         CTRL_SEEK -> { playerView.play(); goto(Screen.PLAYING) }
-                        CTRL_REW -> playerView.seekRelative(-10)
-                        CTRL_PLAY -> playerView.togglePause()
-                        CTRL_FWD -> playerView.seekRelative(10)
                         CTRL_AUDIO -> { listReturnFocus = CTRL_AUDIO; showAudioList() }
                         CTRL_SUBS -> { listReturnFocus = CTRL_SUBS; showSubtitleList() }
+                    }
+                    else -> return false
+                }
+            }
+
+            Screen.WORD_NAV -> {
+                val wf = wordFocus.intValue
+                val fiIdx = focusableWordIndices.indexOf(wf)
+                when (key) {
+                    KeyEvent.KEYCODE_BACK -> { clearDict(); goto(Screen.CONTROLS, CTRL_SEEK) }
+                    KeyEvent.KEYCODE_DPAD_DOWN -> { clearDict(); goto(Screen.CONTROLS, CTRL_SEEK) }
+                    KeyEvent.KEYCODE_DPAD_LEFT -> {
+                        if (fiIdx > 0) {
+                            wordFocus.intValue = focusableWordIndices[fiIdx - 1]
+                            scheduleDwell()
+                        }
+                    }
+                    KeyEvent.KEYCODE_DPAD_RIGHT -> {
+                        if (fiIdx < focusableWordIndices.size - 1) {
+                            wordFocus.intValue = focusableWordIndices[fiIdx + 1]
+                            scheduleDwell()
+                        }
+                    }
+                    KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> {
+                        // reserved for Anki card creation
                     }
                     else -> return false
                 }
@@ -462,6 +552,70 @@ class PlayerActivity : ComponentActivity(), MpvPlayerView.Listener {
     private fun goto(s: Screen, focus: Int = -1) {
         screen.value = s
         if (focus >= 0) controlFocus.intValue = focus
+    }
+
+    // ── Word navigation helpers ──────────────────────────────────────
+
+    private fun isJapanese(text: String): Boolean = text.any { c ->
+        Character.UnicodeBlock.of(c) in setOf(
+            Character.UnicodeBlock.CJK_UNIFIED_IDEOGRAPHS,
+            Character.UnicodeBlock.HIRAGANA,
+            Character.UnicodeBlock.KATAKANA,
+            Character.UnicodeBlock.CJK_UNIFIED_IDEOGRAPHS_EXTENSION_A,
+            Character.UnicodeBlock.CJK_UNIFIED_IDEOGRAPHS_EXTENSION_B,
+            Character.UnicodeBlock.CJK_COMPATIBILITY_IDEOGRAPHS,
+            Character.UnicodeBlock.HALFWIDTH_AND_FULLWIDTH_FORMS
+        )
+    }
+
+    private fun enterWordNav(): Boolean {
+        val text = subtitleText.value ?: return false
+        val tok = tokenizer ?: return false
+        wordTokens = tok.tokenize(text)
+        focusableWordIndices = wordTokens.mapIndexedNotNull { i, t ->
+            if (isJapanese(t.surface)) i else null
+        }
+        if (focusableWordIndices.isEmpty()) return false
+        wordFocus.intValue = focusableWordIndices[0]
+        screen.value = Screen.WORD_NAV
+        scheduleDwell()
+        return true
+    }
+
+    private fun scheduleDwell() {
+        dwellJob?.cancel()
+        dwellJob = dwellScope.launch {
+            delay(300)
+            lookupWord(wordFocus.intValue)
+        }
+    }
+
+    private fun lookupWord(tokenIdx: Int) {
+        val token = wordTokens.getOrNull(tokenIdx) ?: return
+        val surface = token.surface
+        val baseForm = token.baseForm ?: surface
+        dwellScope.launch(Dispatchers.IO) {
+            val results = mutableListOf<DictionaryDatabase.DictEntry>()
+            results.addAll(dictDb.lookup(baseForm))
+            if (baseForm != surface) results.addAll(dictDb.lookup(surface))
+            val unique = results.distinctBy { "${it.term}|${it.reading}" }
+            if (unique.isNotEmpty()) {
+                val best = unique.first()
+                val meanings = unique.flatMap { it.meanings }.filter { it.isNotBlank() }.distinct().take(5)
+                withContext(Dispatchers.Main) {
+                    dictTerm.value = best.term
+                    dictReading.value = if (best.reading != best.term) best.reading else ""
+                    dictMeanings.value = meanings
+                    dictFreq.intValue = best.frequency ?: unique.firstNotNullOfOrNull { it.frequency } ?: 0
+                    dictVisible.value = true
+                }
+            }
+        }
+    }
+
+    private fun clearDict() {
+        dwellJob?.cancel()
+        dictVisible.value = false
     }
 
     // ── List actions ─────────────────────────────────────────────────
@@ -658,6 +812,7 @@ class PlayerActivity : ComponentActivity(), MpvPlayerView.Listener {
 
     override fun onDestroy() {
         super.onDestroy()
+        dwellScope.cancel()
         smbStreamServer.stop()
         if (::playerView.isInitialized) playerView.destroy()
     }
