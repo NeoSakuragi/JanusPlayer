@@ -53,10 +53,16 @@ class PlayerActivity : ComponentActivity(), MpvPlayerView.Listener {
 
     enum class Screen { PLAYING, CONTROLS, LIST_SELECT, WORD_NAV, CARD_CREATE }
 
-    // Control bar items: [seekbar, audio, subs]
+    // Control bar items: [seekbar, audio, subs, fontsize, font]
     private val CTRL_SEEK = 0
     private val CTRL_AUDIO = 1
     private val CTRL_SUBS = 2
+    private val CTRL_FONTSIZE = 3
+    private val CTRL_FONT = 4
+
+    private val FONT_SIZE_PRESETS = listOf(24, 32, 44)
+    private val subFontSizeIdx = mutableIntStateOf(1) // start at 24
+    private val subFontKey = mutableStateOf("noto_sans")
 
     private val screen = mutableStateOf(Screen.PLAYING)
     private val controlFocus = mutableIntStateOf(CTRL_SEEK)
@@ -132,6 +138,12 @@ class PlayerActivity : ComponentActivity(), MpvPlayerView.Listener {
         dictDb.ensureReady()
         appSettings = AppSettings(this)
         mediaCapture = MediaCapture(this)
+
+        // Restore persisted font prefs
+        subFontKey.value = appSettings.fontKey
+        val savedSize = appSettings.fontSize
+        val sizeIdx = FONT_SIZE_PRESETS.indexOf(savedSize)
+        if (sizeIdx >= 0) subFontSizeIdx.intValue = sizeIdx
         Thread {
             try { tokenizer = com.atilika.kuromoji.ipadic.Tokenizer() } catch (_: Exception) {}
         }.start()
@@ -246,12 +258,35 @@ class PlayerActivity : ComponentActivity(), MpvPlayerView.Listener {
 
         Box(modifier = Modifier.fillMaxSize()) {
 
-            // Dictionary popup — top
+            // Buttons row — top right
+            AnimatedVisibility(
+                visible = currentScreen == Screen.CONTROLS || currentScreen == Screen.LIST_SELECT,
+                enter = fadeIn(tween(200)),
+                exit = fadeOut(tween(200)),
+                modifier = Modifier.align(Alignment.TopEnd)
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.padding(top = 16.dp, end = 24.dp)
+                ) {
+                    CtrlButton("♪", "Audio", CTRL_AUDIO, focusIdx)
+                    Spacer(Modifier.width(8.dp))
+                    CtrlButton("CC", "Subs", CTRL_SUBS, focusIdx)
+                    Spacer(Modifier.width(8.dp))
+                    val sizeLabel = "${FONT_SIZE_PRESETS[subFontSizeIdx.intValue]}sp"
+                    CtrlButton("Aa", sizeLabel, CTRL_FONTSIZE, focusIdx)
+                    Spacer(Modifier.width(8.dp))
+                    val fontName = AppSettings.FONTS[subFontKey.value]?.displayName?.take(8) ?: "Font"
+                    CtrlButton("F", fontName, CTRL_FONT, focusIdx)
+                }
+            }
+
+            // Dictionary popup — below buttons
             AnimatedVisibility(
                 visible = dVisible && (currentScreen == Screen.WORD_NAV || currentScreen == Screen.CARD_CREATE),
                 enter = fadeIn(tween(150)),
                 exit = fadeOut(tween(100)),
-                modifier = Modifier.align(Alignment.TopCenter).padding(top = 12.dp)
+                modifier = Modifier.align(Alignment.TopCenter).padding(top = 80.dp)
             ) {
                 Column(
                     modifier = Modifier
@@ -259,35 +294,34 @@ class PlayerActivity : ComponentActivity(), MpvPlayerView.Listener {
                         .background(Color(0xEE1E1E2E), RoundedCornerShape(10.dp))
                         .padding(16.dp)
                 ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        androidx.compose.material3.Text(dTerm, color = Color.White, fontSize = 26.sp, fontWeight = FontWeight.Bold)
-                        if (dReading.isNotEmpty()) {
-                            Spacer(Modifier.width(10.dp))
-                            androidx.compose.material3.Text(dReading, color = Color(0xFFAAAAAA), fontSize = 16.sp)
+                    // Word with furigana + qualifier on same row
+                    Row(verticalAlignment = Alignment.Bottom) {
+                        // Word with furigana stacked
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            if (dReading.isNotEmpty()) {
+                                androidx.compose.material3.Text(dReading, color = Color(0xFFAAAAAA), fontSize = 14.sp)
+                            }
+                            androidx.compose.material3.Text(dTerm, color = Color.White, fontSize = 34.sp, fontWeight = FontWeight.Bold)
                         }
+                        Spacer(Modifier.width(14.dp))
+                        // Tags (qualifier) on same row
+                        if (dTagsVal.isNotBlank()) {
+                            androidx.compose.material3.Text(dTagsVal, color = Color(0xFF7986CB), fontSize = 13.sp,
+                                modifier = Modifier.padding(bottom = 6.dp))
+                        }
+                        Spacer(Modifier.weight(1f))
                         if (dFreq > 0) {
-                            Spacer(Modifier.width(10.dp))
                             androidx.compose.material3.Text(
                                 "#$dFreq", color = Color(0xFF81C784), fontSize = 12.sp,
-                                modifier = Modifier.background(Color(0x33FFFFFF), RoundedCornerShape(4.dp)).padding(horizontal = 6.dp, vertical = 2.dp)
+                                modifier = Modifier.background(Color(0x33FFFFFF), RoundedCornerShape(4.dp))
+                                    .padding(horizontal = 6.dp, vertical = 2.dp)
+                                    .padding(bottom = 6.dp)
                             )
                         }
                     }
-                    if (dTagsVal.isNotBlank()) {
-                        androidx.compose.material3.Text(dTagsVal, color = Color(0xFF7986CB), fontSize = 11.sp, modifier = Modifier.padding(top = 4.dp))
-                    }
-                    if (dPitch.isNotBlank()) {
-                        androidx.compose.material3.Text(dPitch, color = Color(0xFFCE93D8), fontSize = 12.sp, modifier = Modifier.padding(top = 2.dp))
-                    }
-                    Spacer(Modifier.height(6.dp))
+                    Spacer(Modifier.height(8.dp))
                     dMeanings.forEachIndexed { i, m ->
                         androidx.compose.material3.Text("${i + 1}. $m", color = Color(0xFFCCCCCC), fontSize = 14.sp, lineHeight = 18.sp)
-                    }
-                    if (currentScreen == Screen.WORD_NAV) {
-                        androidx.compose.material3.Text(
-                            "Press OK to create Anki card",
-                            color = Color(0xFF666666), fontSize = 11.sp, modifier = Modifier.padding(top = 8.dp)
-                        )
                     }
                 }
             }
@@ -360,16 +394,37 @@ class PlayerActivity : ComponentActivity(), MpvPlayerView.Listener {
                 } else {
                     androidx.compose.ui.text.buildAnnotatedString { append(subs!!) }
                 }
-                androidx.compose.material3.Text(
-                    text = annotated,
-                    color = Color.White,
-                    fontSize = 22.sp,
-                    modifier = Modifier
-                        .align(Alignment.BottomCenter)
-                        .padding(bottom = 150.dp, start = 32.dp, end = 32.dp)
-                        .background(Color(0x99000000), RoundedCornerShape(6.dp))
-                        .padding(horizontal = 12.dp, vertical = 8.dp)
-                )
+                val subSize = FONT_SIZE_PRESETS[subFontSizeIdx.intValue].sp
+                val fontAsset = AppSettings.FONTS[subFontKey.value]?.assetPath ?: "fonts/NotoSansJP-Regular.ttf"
+                val subFontFamily = remember(fontAsset) {
+                    try { androidx.compose.ui.text.font.FontFamily(android.graphics.Typeface.createFromAsset(assets, fontAsset)) }
+                    catch (_: Exception) { androidx.compose.ui.text.font.FontFamily.Default }
+                }
+                val subMod = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = 60.dp, start = 32.dp, end = 32.dp)
+                    .background(Color(0x99000000), RoundedCornerShape(6.dp))
+                    .padding(horizontal = 12.dp, vertical = 8.dp)
+                // Black outline via drawing text twice
+                Box(modifier = subMod) {
+                    // Outline
+                    androidx.compose.material3.Text(
+                        text = annotated,
+                        color = Color.Black,
+                        fontSize = subSize,
+                        fontFamily = subFontFamily,
+                        style = androidx.compose.ui.text.TextStyle(
+                            drawStyle = androidx.compose.ui.graphics.drawscope.Stroke(width = 6f)
+                        )
+                    )
+                    // Fill
+                    androidx.compose.material3.Text(
+                        text = annotated,
+                        color = Color.White,
+                        fontSize = subSize,
+                        fontFamily = subFontFamily,
+                    )
+                }
             }
 
             // Transport controls
@@ -399,49 +454,33 @@ class PlayerActivity : ComponentActivity(), MpvPlayerView.Listener {
             modifier = Modifier
                 .fillMaxWidth()
                 .background(Brush.verticalGradient(listOf(Color.Transparent, Color(0xEE000000))))
-                .padding(start = 32.dp, end = 32.dp, top = 48.dp, bottom = 24.dp)
+                .padding(start = 32.dp, end = 32.dp, top = 24.dp, bottom = 16.dp)
         ) {
-            // Progress bar
             val progress = if (dur > 0) (pos / dur).toFloat().coerceIn(0f, 1f) else 0f
             val isFocused = focusIdx == CTRL_SEEK
 
-            Column {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    androidx.compose.material3.Text(formatTime(pos), color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Medium)
-                    androidx.compose.material3.Text(formatTime(dur), color = Color(0xFFAAAAAA), fontSize = 13.sp)
-                }
-                Spacer(Modifier.height(6.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                androidx.compose.material3.Text(formatTime(pos), color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Medium)
+                androidx.compose.material3.Text(formatTime(dur), color = Color(0xFFAAAAAA), fontSize = 13.sp)
+            }
+            Spacer(Modifier.height(6.dp))
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(if (isFocused) 8.dp else 4.dp)
+                    .clip(RoundedCornerShape(4.dp))
+                    .background(Color(0xFF444444))
+                    .then(if (isFocused) Modifier.border(1.dp, Color(0xFFBB86FC), RoundedCornerShape(4.dp)) else Modifier)
+            ) {
                 Box(
                     modifier = Modifier
-                        .fillMaxWidth()
-                        .height(if (isFocused) 8.dp else 4.dp)
-                        .clip(RoundedCornerShape(4.dp))
-                        .background(Color(0xFF444444))
-                        .then(if (isFocused) Modifier.border(1.dp, Color(0xFFBB86FC), RoundedCornerShape(4.dp)) else Modifier)
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxHeight()
-                            .fillMaxWidth(progress)
-                            .background(if (isFocused) Color(0xFFBB86FC) else Color(0xFF90CAF9), RoundedCornerShape(4.dp))
-                    )
-                }
-            }
-
-            Spacer(Modifier.height(20.dp))
-
-            // Buttons row: audio, subs
-            Row(
-                horizontalArrangement = Arrangement.Center,
-                verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                CtrlButton("♪", "Audio", CTRL_AUDIO, focusIdx)
-                Spacer(Modifier.width(12.dp))
-                CtrlButton("CC", "Subs", CTRL_SUBS, focusIdx)
+                        .fillMaxHeight()
+                        .fillMaxWidth(progress)
+                        .background(if (isFocused) Color(0xFFBB86FC) else Color(0xFF90CAF9), RoundedCornerShape(4.dp))
+                )
             }
         }
     }
@@ -546,16 +585,17 @@ class PlayerActivity : ComponentActivity(), MpvPlayerView.Listener {
     //    UP             → if subs: pause + go WORD_NAV. else: pause + go CONTROLS
     //    CENTER/DOWN    → pause + go CONTROLS
     //
-    //  CONTROLS(focusIdx):
+    //  CONTROLS(focusIdx):  layout top→bottom: buttons | dict | subs | seekbar
     //    BACK           → resume + go PLAYING
-    //    UP             → if on buttons: SEEK. if SEEK: go WORD_NAV (if subs) or PLAYING
-    //    DOWN           → if SEEK: PLAY button
+    //    UP             → if buttons: go PLAYING. if SEEK: go WORD_NAV or buttons
+    //    DOWN           → if buttons: go SEEK. if SEEK: nothing
     //    LEFT/RIGHT     → seek on SEEK row, move focus on buttons
     //    CENTER         → activate control
     //    PLAY_PAUSE     → toggle pause
     //
     //  WORD_NAV(wordFocusIdx):
-    //    BACK           → go CONTROLS
+    //    BACK           → resume + go PLAYING
+    //    UP             → go CONTROLS(buttons)
     //    LEFT           → prev focusable word (clamp)
     //    RIGHT          → next focusable word (clamp)
     //    DOWN           → go CONTROLS(SEEK)
@@ -587,6 +627,10 @@ class PlayerActivity : ComponentActivity(), MpvPlayerView.Listener {
                 KeyEvent.KEYCODE_DPAD_LEFT -> playerView.subSeekPrev()
                 KeyEvent.KEYCODE_DPAD_RIGHT -> playerView.subSeekNext()
                 KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE -> playerView.togglePause()
+                KeyEvent.KEYCODE_DPAD_UP -> {
+                    playerView.pause()
+                    goto(Screen.CONTROLS, CTRL_AUDIO)
+                }
                 else -> {
                     playerView.pause()
                     if (!enterWordNav()) goto(Screen.CONTROLS, CTRL_SEEK)
@@ -599,12 +643,12 @@ class PlayerActivity : ComponentActivity(), MpvPlayerView.Listener {
                     KeyEvent.KEYCODE_BACK -> { playerView.play(); goto(Screen.PLAYING) }
                     KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE -> playerView.togglePause()
                     KeyEvent.KEYCODE_DPAD_UP -> when {
-                        f == CTRL_SEEK -> if (!enterWordNav()) { playerView.play(); goto(Screen.PLAYING) }
-                        else -> controlFocus.intValue = CTRL_SEEK
+                        f == CTRL_SEEK -> if (!enterWordNav()) controlFocus.intValue = CTRL_AUDIO
+                        else -> { playerView.play(); goto(Screen.PLAYING) }
                     }
                     KeyEvent.KEYCODE_DPAD_DOWN -> when {
-                        f == CTRL_SEEK -> controlFocus.intValue = CTRL_AUDIO
-                        else -> {}
+                        f == CTRL_SEEK -> {}
+                        else -> controlFocus.intValue = CTRL_SEEK
                     }
                     KeyEvent.KEYCODE_DPAD_LEFT -> when {
                         f == CTRL_SEEK -> playerView.seekRelative(-10)
@@ -612,12 +656,14 @@ class PlayerActivity : ComponentActivity(), MpvPlayerView.Listener {
                     }
                     KeyEvent.KEYCODE_DPAD_RIGHT -> when {
                         f == CTRL_SEEK -> playerView.seekRelative(10)
-                        f < CTRL_SUBS -> controlFocus.intValue = f + 1
+                        f < CTRL_FONT -> controlFocus.intValue = f + 1
                     }
                     KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> when (f) {
                         CTRL_SEEK -> { playerView.play(); goto(Screen.PLAYING) }
                         CTRL_AUDIO -> { listReturnFocus = CTRL_AUDIO; showAudioList() }
                         CTRL_SUBS -> { listReturnFocus = CTRL_SUBS; showSubtitleList() }
+                        CTRL_FONTSIZE -> cycleFontSize()
+                        CTRL_FONT -> cycleFont()
                     }
                     else -> return false
                 }
@@ -628,6 +674,7 @@ class PlayerActivity : ComponentActivity(), MpvPlayerView.Listener {
                 val fiIdx = focusableWordIndices.indexOf(wf)
                 when (key) {
                     KeyEvent.KEYCODE_BACK -> { clearDict(); playerView.play(); goto(Screen.PLAYING) }
+                    KeyEvent.KEYCODE_DPAD_UP -> { clearDict(); goto(Screen.CONTROLS, CTRL_AUDIO) }
                     KeyEvent.KEYCODE_DPAD_DOWN -> { clearDict(); goto(Screen.CONTROLS, CTRL_SEEK) }
                     KeyEvent.KEYCODE_DPAD_LEFT -> {
                         if (fiIdx > 0) {
@@ -946,6 +993,18 @@ class PlayerActivity : ComponentActivity(), MpvPlayerView.Listener {
     }
 
     // ── List actions ─────────────────────────────────────────────────
+
+    private fun cycleFontSize() {
+        subFontSizeIdx.intValue = (subFontSizeIdx.intValue + 1) % FONT_SIZE_PRESETS.size
+        appSettings.fontSize = FONT_SIZE_PRESETS[subFontSizeIdx.intValue]
+    }
+
+    private fun cycleFont() {
+        val keys = AppSettings.FONTS.keys.toList()
+        val idx = keys.indexOf(subFontKey.value)
+        subFontKey.value = keys[(idx + 1) % keys.size]
+        appSettings.fontKey = subFontKey.value
+    }
 
     private fun showAudioList() {
         val tracks = playerView.getTracks().filter { it.type == "audio" }

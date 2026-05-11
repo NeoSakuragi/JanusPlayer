@@ -26,41 +26,10 @@ class SettingsActivity : AppCompatActivity() {
 
         findViewById<ImageButton>(R.id.btnBack).setOnClickListener { finish() }
 
-        setupSubtitleSettings()
         setupPlaybackSettings()
         setupDictionaries()
         setupAnkiSettings()
         setupFieldMappings()
-    }
-
-    private fun setupSubtitleSettings() {
-        val tvFont = findViewById<TextView>(R.id.tvFontValue)
-        tvFont.text = settings.fontInfo.displayName
-        findViewById<LinearLayout>(R.id.settingFont).setOnClickListener {
-            val keys = AppSettings.FONTS.keys.toList()
-            val names = AppSettings.FONTS.values.map { it.displayName }.toTypedArray()
-            AlertDialog.Builder(this).setTitle("Subtitle font")
-                .setSingleChoiceItems(names, keys.indexOf(settings.fontKey).coerceAtLeast(0)) { d, w ->
-                    settings.fontKey = keys[w]; tvFont.text = names[w]; d.dismiss()
-                }.setNegativeButton("Cancel", null).show()
-        }
-
-        val tvBold = findViewById<TextView>(R.id.tvFontBoldValue)
-        tvBold.text = if (settings.fontBold) "On" else "Off"
-        findViewById<LinearLayout>(R.id.settingFontBold).setOnClickListener {
-            settings.fontBold = !settings.fontBold
-            tvBold.text = if (settings.fontBold) "On" else "Off"
-        }
-
-        val tvSize = findViewById<TextView>(R.id.tvFontSizeValue)
-        tvSize.text = "${settings.fontSize}sp"
-        findViewById<LinearLayout>(R.id.settingFontSize).setOnClickListener {
-            val sizes = AppSettings.FONT_SIZES
-            AlertDialog.Builder(this).setTitle("Font size")
-                .setSingleChoiceItems(sizes.map { "${it}sp" }.toTypedArray(), sizes.indexOf(settings.fontSize).coerceAtLeast(0)) { d, w ->
-                    settings.fontSize = sizes[w]; tvSize.text = "${sizes[w]}sp"; d.dismiss()
-                }.setNegativeButton("Cancel", null).show()
-        }
     }
 
     private fun setupPlaybackSettings() {
