@@ -80,15 +80,13 @@ class PlayerActivity : ComponentActivity(), MpvPlayerView.Listener {
     private val subtitleText = mutableStateOf<String?>(null)
 
     // Word navigation state
-    private val wordFocus = mutableIntStateOf(0)
-    private var wordTokens = listOf<com.atilika.kuromoji.ipadic.Token>()
-    private var focusableWordIndices = listOf<Int>()
+    private val wordFocus = mutableIntStateOf(0) // index into scannedWords
+    private var scannedWords = listOf<WordScanner.ScannedWord>()
     private val dictTerm = mutableStateOf("")
     private val dictReading = mutableStateOf("")
     private val dictMeanings = mutableStateOf(listOf<String>())
     private val dictFreq = mutableIntStateOf(0)
     private val dictVisible = mutableStateOf(false)
-    private var tokenizer: com.atilika.kuromoji.ipadic.Tokenizer? = null
     private lateinit var dictDb: DictionaryDatabase
     private var dwellJob: Job? = null
     private val dwellScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
@@ -96,6 +94,11 @@ class PlayerActivity : ComponentActivity(), MpvPlayerView.Listener {
     private val dictTags = mutableStateOf("")
     private var currentDictEntries: List<DictionaryDatabase.DictEntry>? = null
     private var lastSubtitleText: String = ""
+    private val dictLookup = object : WordScanner.DictLookup {
+        override fun hasEntry(term: String): Boolean {
+            return dictDb.lookup(term).isNotEmpty()
+        }
+    }
 
     // Card creation state
     private val CARD_SEND = 0
@@ -146,10 +149,6 @@ class PlayerActivity : ComponentActivity(), MpvPlayerView.Listener {
         val savedSize = appSettings.fontSize
         val sizeIdx = FONT_SIZE_PRESETS.indexOf(savedSize)
         if (sizeIdx >= 0) subFontSizeIdx.intValue = sizeIdx
-        Thread {
-            try { tokenizer = com.atilika.kuromoji.ipadic.Tokenizer() } catch (_: Exception) {}
-        }.start()
-
         // Build view hierarchy manually — MpvPlayerView must never be inside Compose
         val root = android.widget.FrameLayout(this)
         root.setBackgroundColor(android.graphics.Color.BLACK)
@@ -212,9 +211,8 @@ class PlayerActivity : ComponentActivity(), MpvPlayerView.Listener {
                                 var step = 0
                                 fun dwellNext() {
                                     val wf = wordFocus.intValue
-                                    val word = wordTokens.getOrNull(wf)?.surface ?: return
-                                    val base = wordTokens.getOrNull(wf)?.baseForm ?: word
-                                    Log.d(TAG, "TEST_WORD[$step]: [$word] base=[$base]")
+                                    val sw = scannedWords.getOrNull(wf) ?: return
+                                    Log.d(TAG, "TEST_WORD[$step]: [${sw.surface}] base=[${sw.baseForm}]")
                                     scheduleDwell()
                                     handler.postDelayed({
                                         val dv = dictVisible.value
@@ -222,9 +220,8 @@ class PlayerActivity : ComponentActivity(), MpvPlayerView.Listener {
                                         val dm = dictMeanings.value.firstOrNull() ?: "(none)"
                                         Log.d(TAG, "TEST_DICT[$step]: visible=$dv term='$dt' meaning='${dm.take(60)}'")
                                         step++
-                                        val fiIdx = focusableWordIndices.indexOf(wf)
-                                        if (fiIdx < focusableWordIndices.size - 1) {
-                                            wordFocus.intValue = focusableWordIndices[fiIdx + 1]
+                                        if (wf < scannedWords.size - 1) {
+                                            wordFocus.intValue = wf + 1
                                             dwellNext()
                                         } else {
                                             Log.d(TAG, "TEST: done, $step words tested")
@@ -393,20 +390,26 @@ class PlayerActivity : ComponentActivity(), MpvPlayerView.Listener {
 
             // Subtitle display — fixed position, always above controls area
             if (subs != null && subs!!.isNotBlank()) {
-                val annotated = if (currentScreen == Screen.WORD_NAV && wordTokens.isNotEmpty()) {
-                    val highlightRange = wordHighlightRanges[wFocus] ?: (wFocus..wFocus)
+                val annotated = if (currentScreen == Screen.WORD_NAV && scannedWords.isNotEmpty()) {
+                    val focusedWord = scannedWords.getOrNull(wFocus)
                     androidx.compose.ui.text.buildAnnotatedString {
-                        wordTokens.forEachIndexed { idx, token ->
-                            if (idx in highlightRange) {
-                                pushStyle(androidx.compose.ui.text.SpanStyle(
-                                    background = Color(0xFF7986CB)
-                                ))
-                                append(token.surface)
+                        val subText = subs!!
+                        var pos = 0
+                        for (w in scannedWords) {
+                            // Append any gap before this word
+                            if (w.startChar > pos) append(subText.substring(pos, w.startChar))
+                            // Append word with or without highlight
+                            if (w == focusedWord) {
+                                pushStyle(androidx.compose.ui.text.SpanStyle(background = Color(0xFF7986CB)))
+                                append(subText.substring(w.startChar, w.endChar))
                                 pop()
                             } else {
-                                append(token.surface)
+                                append(subText.substring(w.startChar, w.endChar))
                             }
+                            pos = w.endChar
                         }
+                        // Append trailing text
+                        if (pos < subText.length) append(subText.substring(pos))
                     }
                 } else {
                     androidx.compose.ui.text.buildAnnotatedString { append(subs!!) }
@@ -694,22 +697,21 @@ class PlayerActivity : ComponentActivity(), MpvPlayerView.Listener {
 
             Screen.WORD_NAV -> {
                 val wf = wordFocus.intValue
-                val fiIdx = focusableWordIndices.indexOf(wf)
                 when (key) {
                     KeyEvent.KEYCODE_BACK -> { clearDict(); playerView.play(); goto(Screen.PLAYING) }
                     KeyEvent.KEYCODE_DPAD_UP -> { clearDict(); goto(Screen.CONTROLS, CTRL_AUDIO) }
                     KeyEvent.KEYCODE_DPAD_DOWN -> { clearDict(); goto(Screen.CONTROLS, CTRL_SEEK) }
                     KeyEvent.KEYCODE_DPAD_LEFT -> {
-                        if (fiIdx > 0) {
-                            wordFocus.intValue = focusableWordIndices[fiIdx - 1]
-                            Log.d(TAG, "WORD: ← [${wordTokens[focusableWordIndices[fiIdx - 1]].surface}]")
+                        if (wf > 0) {
+                            wordFocus.intValue = wf - 1
+                            Log.d(TAG, "WORD: ← [${scannedWords[wf - 1].surface}]")
                             scheduleDwell()
                         }
                     }
                     KeyEvent.KEYCODE_DPAD_RIGHT -> {
-                        if (fiIdx < focusableWordIndices.size - 1) {
-                            wordFocus.intValue = focusableWordIndices[fiIdx + 1]
-                            Log.d(TAG, "WORD: → [${wordTokens[focusableWordIndices[fiIdx + 1]].surface}]")
+                        if (wf < scannedWords.size - 1) {
+                            wordFocus.intValue = wf + 1
+                            Log.d(TAG, "WORD: → [${scannedWords[wf + 1].surface}]")
                             scheduleDwell()
                         }
                     }
@@ -760,93 +762,47 @@ class PlayerActivity : ComponentActivity(), MpvPlayerView.Listener {
 
     // ── Word navigation helpers ──────────────────────────────────────
 
-    private fun isJapanese(text: String): Boolean = text.any { c ->
-        val block = Character.UnicodeBlock.of(c)
-        block == Character.UnicodeBlock.CJK_UNIFIED_IDEOGRAPHS ||
-        block == Character.UnicodeBlock.HIRAGANA ||
-        block == Character.UnicodeBlock.KATAKANA ||
-        block == Character.UnicodeBlock.CJK_UNIFIED_IDEOGRAPHS_EXTENSION_A ||
-        block == Character.UnicodeBlock.CJK_UNIFIED_IDEOGRAPHS_EXTENSION_B ||
-        block == Character.UnicodeBlock.CJK_COMPATIBILITY_IDEOGRAPHS ||
-        (block == Character.UnicodeBlock.HALFWIDTH_AND_FULLWIDTH_FORMS && c.isLetterOrDigit())
-    }
-
-    private fun isFocusableWord(token: com.atilika.kuromoji.ipadic.Token): Boolean {
-        val s = token.surface
-        if (!isJapanese(s)) return false
-        if (s.length == 1 && Character.UnicodeBlock.of(s[0]) == Character.UnicodeBlock.HIRAGANA) return false
-        return true
-    }
-
-    // Maps each focusable token index to the range of tokens it highlights (including inflection suffixes)
-    private var wordHighlightRanges = mapOf<Int, IntRange>()
-
-    private fun isInflectionSuffix(token: com.atilika.kuromoji.ipadic.Token): Boolean {
-        val pos1 = token.partOfSpeechLevel1
-        val pos2 = token.partOfSpeechLevel2
-        return pos1 == "助動詞" ||
-            (pos1 == "動詞" && (pos2 == "接尾" || pos2 == "非自立")) ||
-            (pos1 == "助詞" && pos2 == "接続助詞")
-    }
-
     private fun enterWordNav(): Boolean {
         val text = subtitleText.value ?: return false
-        val tok = tokenizer ?: run { Log.d(TAG, "WORD_NAV: tokenizer not ready"); return false }
-        wordTokens = tok.tokenize(text)
-        focusableWordIndices = wordTokens.mapIndexedNotNull { i, t ->
-            if (isFocusableWord(t)) i else null
-        }
-        // Build highlight ranges: each content word extends through following inflection suffixes
-        val ranges = mutableMapOf<Int, IntRange>()
-        for (fi in focusableWordIndices) {
-            var end = fi
-            for (j in fi + 1 until wordTokens.size) {
-                if (isInflectionSuffix(wordTokens[j])) end = j else break
-            }
-            ranges[fi] = fi..end
-        }
-        wordHighlightRanges = ranges
-        Log.d(TAG, "WORD_NAV: ${wordTokens.size} tokens, ${focusableWordIndices.size} focusable")
-        if (focusableWordIndices.isEmpty()) return false
-        wordFocus.intValue = focusableWordIndices[0]
         screen.value = Screen.WORD_NAV
-        scheduleDwell()
+        // Scan on background thread — dictionary lookups are expensive
+        dwellScope.launch(Dispatchers.IO) {
+            val words = WordScanner.scan(text, dictLookup)
+            withContext(Dispatchers.Main) {
+                if (words.isEmpty()) {
+                    screen.value = Screen.CONTROLS
+                    controlFocus.intValue = CTRL_SEEK
+                    return@withContext
+                }
+                scannedWords = words
+                wordFocus.intValue = 0
+                Log.d(TAG, "WORD_NAV: ${words.size} words: ${words.map { it.surface }}")
+                scheduleDwell()
+            }
+        }
         return true
     }
 
     private fun scheduleDwell() {
         dwellJob?.cancel()
-        val idx = wordFocus.intValue
-        val word = wordTokens.getOrNull(idx)?.surface ?: "?"
-        Log.d(TAG, "DWELL: start on [$word] idx=$idx")
+        val word = scannedWords.getOrNull(wordFocus.intValue) ?: return
+        Log.d(TAG, "DWELL: start on [${word.surface}]")
         dwellJob = dwellScope.launch {
             delay(300)
-            Log.d(TAG, "DWELL: fire lookup for [$word]")
-            lookupWord(idx)
+            Log.d(TAG, "DWELL: fire lookup for [${word.surface}] base=${word.baseForm}")
+            lookupWord(wordFocus.intValue)
         }
     }
 
-    private fun lookupWord(tokenIdx: Int) {
-        val token = wordTokens.getOrNull(tokenIdx) ?: return
-        val surface = token.surface
-        val baseForm = token.baseForm ?: surface
-        // Build the full conjugated form from the highlight range
-        val range = wordHighlightRanges[tokenIdx] ?: (tokenIdx..tokenIdx)
-        val fullSurface = wordTokens.subList(range.first, range.last + 1).joinToString("") { it.surface }
+    private fun lookupWord(wordIdx: Int) {
+        val word = scannedWords.getOrNull(wordIdx) ?: return
+        val baseForm = word.baseForm
+        val surface = word.surface
         dwellScope.launch(Dispatchers.IO) {
-            // Try: baseForm, surface, fullSurface, then all deinflected candidates
-            val candidates = mutableListOf(baseForm)
-            if (surface != baseForm) candidates.add(surface)
-            if (fullSurface != surface && fullSurface != baseForm) candidates.add(fullSurface)
-            candidates.addAll(Deinflector.deinflect(fullSurface).drop(1)) // skip first (original)
-            if (fullSurface != surface) candidates.addAll(Deinflector.deinflect(surface).drop(1))
-
-            Log.d(TAG, "LOOKUP: '$fullSurface' base='$baseForm' candidates=${candidates.distinct().take(8)}")
+            Log.d(TAG, "LOOKUP: '$surface' base='$baseForm'")
             val results = mutableListOf<DictionaryDatabase.DictEntry>()
-            for (candidate in candidates.distinct()) {
-                results.addAll(dictDb.lookup(candidate))
-                if (results.size >= 5) break
-            }
+            results.addAll(dictDb.lookup(baseForm))
+            if (surface != baseForm) results.addAll(dictDb.lookup(surface))
             Log.d(TAG, "LOOKUP: ${results.size} raw results")
             val unique = results.distinctBy { "${it.term}|${it.reading}" }
 
@@ -1072,7 +1028,17 @@ class PlayerActivity : ComponentActivity(), MpvPlayerView.Listener {
                 idx == listItems.size - 1 -> {
                     subtitleBrowserLauncher.launch(
                         Intent(this, BrowserActivity::class.java)
-                            .putExtra(BrowserActivity.EXTRA_FILE_MODE, "subtitle"))
+                            .putExtra(BrowserActivity.EXTRA_FILE_MODE, "subtitle")
+                            .apply {
+                                // Start in same folder as current video
+                                if (smbServer != null && smbShare != null) {
+                                    putExtra(BrowserActivity.EXTRA_START_SERVER, smbServer)
+                                    putExtra(BrowserActivity.EXTRA_START_SHARE, smbShare)
+                                    putExtra(BrowserActivity.EXTRA_START_PATH, smbPath?.substringBeforeLast("\\") ?: "")
+                                    putExtra(BrowserActivity.EXTRA_START_USER, smbUser)
+                                    putExtra(BrowserActivity.EXTRA_START_PASS, smbPass)
+                                }
+                            })
                 }
                 else -> { playerView.setSubtitleTrack(tracks[idx - 1].id); saveTrackPrefs() }
             }

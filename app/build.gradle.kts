@@ -89,4 +89,5 @@ dependencies {
     implementation("androidx.activity:activity-compose:1.8.2")
     debugImplementation("androidx.compose.ui:ui-tooling")
     testImplementation("junit:junit:4.13.2")
+    testImplementation("org.xerial:sqlite-jdbc:3.45.1.0")
 }

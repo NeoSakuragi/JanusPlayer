@@ -22,6 +22,7 @@ import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.TextView
+import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
@@ -90,6 +91,44 @@ class BrowserActivity : AppCompatActivity() {
     private val items = mutableListOf<Item>()
     private lateinit var adapter: ItemAdapter
 
+    // Favorites: stored as "server|share|path|user|pass" strings
+    private fun getFavorites(): MutableSet<String> {
+        val prefs = getSharedPreferences("browser_prefs", MODE_PRIVATE)
+        return prefs.getStringSet("favorites", mutableSetOf())?.toMutableSet() ?: mutableSetOf()
+    }
+
+    private fun saveFavorites(favs: Set<String>) {
+        getSharedPreferences("browser_prefs", MODE_PRIVATE).edit()
+            .putStringSet("favorites", favs).apply()
+    }
+
+    private fun toggleFavorite(server: String, share: String, path: String, user: String, pass: String) {
+        val key = "$server|$share|$path|$user|$pass"
+        val favs = getFavorites()
+        if (key in favs) favs.remove(key) else favs.add(key)
+        saveFavorites(favs)
+        val label = if (path.isNotEmpty()) path.substringAfterLast("\\") else share
+        Toast.makeText(this, if (key in getFavorites()) "★ $label added to favorites" else "$label removed from favorites", Toast.LENGTH_SHORT).show()
+    }
+
+    private fun isFavorite(server: String, share: String, path: String): Boolean {
+        val key = "$server|$share|$path|$currentUser|$currentPass"
+        return key in getFavorites()
+    }
+
+    // Last path persistence
+    private fun saveLastPath() {
+        if (browseMode == BrowseMode.SMB_FILES) {
+            getSharedPreferences("browser_prefs", MODE_PRIVATE).edit()
+                .putString("last_server", currentServer)
+                .putString("last_share", currentShareName)
+                .putString("last_path", currentPath)
+                .putString("last_user", currentUser)
+                .putString("last_pass", currentPass)
+                .apply()
+        }
+    }
+
     data class Item(val name: String, val subtitle: String = "", val type: ItemType, val size: Long = 0)
     enum class ItemType { DEVICE, SERVER, SHARE, FOLDER, VIDEO }
 
@@ -99,6 +138,11 @@ class BrowserActivity : AppCompatActivity() {
 
     companion object {
         const val EXTRA_FILE_MODE = "file_mode" // "video" (default) or "subtitle"
+        const val EXTRA_START_SERVER = "start_server"
+        const val EXTRA_START_SHARE = "start_share"
+        const val EXTRA_START_PATH = "start_path"
+        const val EXTRA_START_USER = "start_user"
+        const val EXTRA_START_PASS = "start_pass"
         const val RESULT_MODE = "result_mode"
         const val RESULT_LOCAL_URI = "local_uri"
         const val RESULT_SMB_SERVER = "smb_server"
@@ -155,7 +199,44 @@ class BrowserActivity : AppCompatActivity() {
         findViewById<android.widget.ImageButton>(R.id.btnBrowserSettings).setOnClickListener {
             startActivity(Intent(this, SettingsActivity::class.java))
         }
-        showRoot()
+        // Check if we should start in a specific folder (e.g., subtitle loading from same dir)
+        val startServer = intent.getStringExtra(EXTRA_START_SERVER)
+        val startShare = intent.getStringExtra(EXTRA_START_SHARE)
+        val startPath = intent.getStringExtra(EXTRA_START_PATH)
+        if (startServer != null && startShare != null) {
+            currentUser = intent.getStringExtra(EXTRA_START_USER) ?: ""
+            currentPass = intent.getStringExtra(EXTRA_START_PASS) ?: ""
+            executor.execute {
+                try {
+                    connectSmbDirect(startServer, startShare, currentUser, currentPass)
+                    runOnUiThread { listSmbDirAndShow(startPath ?: "") }
+                } catch (e: Exception) {
+                    runOnUiThread { showRoot() }
+                }
+            }
+        } else {
+            showRoot()
+        }
+    }
+
+    private fun connectSmbDirect(server: String, share: String, user: String, pass: String) {
+        disconnectSmb()
+        currentServer = server
+        currentShareName = share
+        val config = SmbConfig.builder().withTimeout(15, TimeUnit.SECONDS).build()
+        smbClient = SMBClient(config)
+        val conn = smbClient!!.connect(server)
+        val auth = if (user.isNotEmpty()) AuthenticationContext(user, pass.toCharArray(), "")
+        else AuthenticationContext.guest()
+        smbSession = conn.authenticate(auth)
+        diskShare = smbSession!!.connectShare(share) as DiskShare
+    }
+
+    private fun listSmbDirAndShow(path: String) {
+        currentPath = path
+        browseMode = BrowseMode.SMB_FILES
+        progressBar.visibility = View.VISIBLE
+        executor.execute { listSmbDir(path) }
     }
 
     // ── Root ─────────────────────────────────────────────────────────
@@ -170,6 +251,25 @@ class BrowserActivity : AppCompatActivity() {
         tvSubtitle.visibility = View.GONE
         progressBar.visibility = View.GONE
         emptyState.visibility = View.GONE
+        // Last path shortcut
+        val prefs = getSharedPreferences("browser_prefs", MODE_PRIVATE)
+        val lastServer = prefs.getString("last_server", null)
+        val lastShare = prefs.getString("last_share", null)
+        val lastPath = prefs.getString("last_path", null)
+        if (lastServer != null && lastShare != null) {
+            val label = if (lastPath.isNullOrEmpty()) lastShare else lastPath.substringAfterLast("\\")
+            items.add(Item("↩ $label", "\\\\$lastServer\\$lastShare", ItemType.SHARE))
+        }
+
+        // Favorites
+        for (fav in getFavorites()) {
+            val parts = fav.split("|", limit = 5)
+            if (parts.size >= 3) {
+                val label = if (parts[2].isNotEmpty()) parts[2].substringAfterLast("\\") else parts[1]
+                items.add(Item("★ $label", "\\\\${parts[0]}\\${parts[1]}", ItemType.SHARE))
+            }
+        }
+
         items.add(Item("This Device", if (isSubMode) "Browse local subtitle files" else "Browse local video files", ItemType.DEVICE))
         items.add(Item("Local Network", "Browse SMB/Samba shares", ItemType.SERVER))
         adapter.notifyDataSetChanged()
@@ -409,7 +509,7 @@ class BrowserActivity : AppCompatActivity() {
     }
 
     private fun selectSmbFile(fileName: String) {
-
+        saveLastPath()
         val fp = if (currentPath.isEmpty()) fileName else "$currentPath\\$fileName"
         setResult(Activity.RESULT_OK, Intent().apply {
             putExtra(RESULT_MODE, "smb")
@@ -427,6 +527,50 @@ class BrowserActivity : AppCompatActivity() {
             BrowseMode.ROOT -> showRoot(); BrowseMode.LOCAL_FILES -> browseLocalFiles(currentPath)
             BrowseMode.NETWORK_SERVERS -> showNetworkServers(); BrowseMode.SMB_SHARES -> connectToServer(currentServer)
             BrowseMode.SMB_FILES -> { progressBar.visibility = View.VISIBLE; executor.execute { listSmbDir(currentPath) } }
+        }
+    }
+
+    private fun openFavoriteOrLast(item: Item) {
+        val prefs = getSharedPreferences("browser_prefs", MODE_PRIVATE)
+        if (item.name.startsWith("↩ ")) {
+            val server = prefs.getString("last_server", "") ?: ""
+            val share = prefs.getString("last_share", "") ?: ""
+            val path = prefs.getString("last_path", "") ?: ""
+            val user = prefs.getString("last_user", "") ?: ""
+            val pass = prefs.getString("last_pass", "") ?: ""
+            if (server.isNotEmpty() && share.isNotEmpty()) {
+                currentUser = user; currentPass = pass
+                progressBar.visibility = View.VISIBLE
+                executor.execute {
+                    try {
+                        connectSmbDirect(server, share, user, pass)
+                        runOnUiThread { listSmbDirAndShow(path) }
+                    } catch (e: Exception) {
+                        runOnUiThread { progressBar.visibility = View.GONE; Toast.makeText(this, "Failed: ${e.message}", Toast.LENGTH_SHORT).show() }
+                    }
+                }
+            }
+        } else if (item.name.startsWith("★ ")) {
+            val favKey = getFavorites().firstOrNull { fav ->
+                val parts = fav.split("|", limit = 5)
+                val label = if (parts.size >= 3 && parts[2].isNotEmpty()) parts[2].substringAfterLast("\\") else parts.getOrElse(1) { "" }
+                item.name == "★ $label"
+            }
+            if (favKey != null) {
+                val parts = favKey.split("|", limit = 5)
+                val server = parts[0]; val share = parts[1]; val path = parts.getOrElse(2) { "" }
+                val user = parts.getOrElse(3) { "" }; val pass = parts.getOrElse(4) { "" }
+                currentUser = user; currentPass = pass
+                progressBar.visibility = View.VISIBLE
+                executor.execute {
+                    try {
+                        connectSmbDirect(server, share, user, pass)
+                        runOnUiThread { listSmbDirAndShow(path) }
+                    } catch (e: Exception) {
+                        runOnUiThread { progressBar.visibility = View.GONE; Toast.makeText(this, "Failed: ${e.message}", Toast.LENGTH_SHORT).show() }
+                    }
+                }
+            }
         }
     }
 
@@ -507,10 +651,24 @@ class BrowserActivity : AppCompatActivity() {
                 when (item.type) {
                     ItemType.DEVICE -> openLocalFiles()
                     ItemType.SERVER -> { if (browseMode == BrowseMode.ROOT) showNetworkServers() else connectToServer(if (item.subtitle.isNotEmpty() && item.subtitle != "SMB Server") item.subtitle else item.name) }
-                    ItemType.SHARE -> openShare(item.name)
+                    ItemType.SHARE -> {
+                        if (browseMode == BrowseMode.ROOT && (item.name.startsWith("★ ") || item.name.startsWith("↩ "))) {
+                            openFavoriteOrLast(item)
+                        } else {
+                            openShare(item.name)
+                        }
+                    }
                     ItemType.FOLDER -> { if (browseMode == BrowseMode.LOCAL_FILES) browseLocalFiles("$currentPath/${item.name}") else openSmbDir(item.name) }
                     ItemType.VIDEO -> { if (browseMode == BrowseMode.LOCAL_FILES) selectLocalFile(item.name) else selectSmbFile(item.name) }
                 }
+            }
+            // Long press on folders to toggle favorite
+            holder.itemView.setOnLongClickListener {
+                if (item.type == ItemType.FOLDER && browseMode == BrowseMode.SMB_FILES) {
+                    val folderPath = if (currentPath.isEmpty()) item.name else "$currentPath\\${item.name}"
+                    toggleFavorite(currentServer, currentShareName, folderPath, currentUser, currentPass)
+                    true
+                } else false
             }
         }
         override fun getItemCount() = items.size
