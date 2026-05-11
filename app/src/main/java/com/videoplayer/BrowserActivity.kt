@@ -86,10 +86,22 @@ class BrowserActivity : AppCompatActivity() {
     private var browseMode = BrowseMode.ROOT
     private val foundIps = mutableSetOf<String>()
 
-    private enum class BrowseMode { ROOT, LOCAL_FILES, NETWORK_SERVERS, SMB_SHARES, SMB_FILES }
+    enum class BrowseMode { ROOT, LOCAL_FILES, NETWORK_SERVERS, SMB_SHARES, SMB_FILES }
 
     private val items = mutableListOf<Item>()
     private lateinit var adapter: ItemAdapter
+
+    // Navigation stack: each entry is (browseMode, server, share, path, user, pass)
+    data class NavEntry(val mode: BrowseMode, val server: String, val share: String, val path: String, val user: String, val pass: String)
+    private val navStack = mutableListOf<NavEntry>()
+
+    private fun pushNav() {
+        navStack.add(NavEntry(browseMode, currentServer, currentShareName, currentPath, currentUser, currentPass))
+    }
+
+    private fun popNav(): NavEntry? {
+        return if (navStack.isNotEmpty()) navStack.removeAt(navStack.size - 1) else null
+    }
 
     // Favorites: stored as "server|share|path|user|pass" strings
     private fun getFavorites(): MutableSet<String> {
@@ -199,10 +211,23 @@ class BrowserActivity : AppCompatActivity() {
         findViewById<android.widget.ImageButton>(R.id.btnBrowserSettings).setOnClickListener {
             startActivity(Intent(this, SettingsActivity::class.java))
         }
-        // Check if we should start in a specific folder (e.g., subtitle loading from same dir)
-        val startServer = intent.getStringExtra(EXTRA_START_SERVER)
-        val startShare = intent.getStringExtra(EXTRA_START_SHARE)
-        val startPath = intent.getStringExtra(EXTRA_START_PATH)
+        // Check if we should start in a specific folder
+        var startServer = intent.getStringExtra(EXTRA_START_SERVER)
+        var startShare = intent.getStringExtra(EXTRA_START_SHARE)
+        var startPath = intent.getStringExtra(EXTRA_START_PATH)
+
+        // If no explicit start folder, restore last browsed location
+        if (startServer == null) {
+            val prefs = getSharedPreferences("browser_prefs", MODE_PRIVATE)
+            startServer = prefs.getString("last_server", null)
+            startShare = prefs.getString("last_share", null)
+            startPath = prefs.getString("last_path", null)
+            if (startServer != null) {
+                intent.putExtra(EXTRA_START_USER, prefs.getString("last_user", "") ?: "")
+                intent.putExtra(EXTRA_START_PASS, prefs.getString("last_pass", "") ?: "")
+            }
+        }
+
         if (startServer != null && startShare != null) {
             currentUser = intent.getStringExtra(EXTRA_START_USER) ?: ""
             currentPass = intent.getStringExtra(EXTRA_START_PASS) ?: ""
@@ -283,6 +308,7 @@ class BrowserActivity : AppCompatActivity() {
     // ── Local files ──────────────────────────────────────────────────
 
     private fun openLocalFiles() {
+        pushNav()
         if (Build.VERSION.SDK_INT >= 30) {
             // Android 11+: need MANAGE_EXTERNAL_STORAGE for full file browsing
             if (Environment.isExternalStorageManager()) {
@@ -347,6 +373,7 @@ class BrowserActivity : AppCompatActivity() {
     // ── Network servers ──────────────────────────────────────────────
 
     private fun showNetworkServers() {
+        pushNav()
         browseMode = BrowseMode.NETWORK_SERVERS
         items.clear()
         adapter.notifyDataSetChanged()
@@ -429,6 +456,7 @@ class BrowserActivity : AppCompatActivity() {
     // ── SMB connection ───────────────────────────────────────────────
 
     private fun connectToServer(server: String) {
+        pushNav()
         currentServer = server; browseMode = BrowseMode.SMB_SHARES
         items.clear(); adapter.notifyDataSetChanged()
         btnBack.visibility = View.VISIBLE; btnAddServer.visibility = View.VISIBLE
@@ -472,6 +500,7 @@ class BrowserActivity : AppCompatActivity() {
     // ── SMB file browsing ────────────────────────────────────────────
 
     private fun openShare(name: String) {
+        pushNav()
         progressBar.visibility = View.VISIBLE
         executor.execute {
             try { diskShare?.close(); diskShare = smbSession!!.connectShare(name) as DiskShare; currentShareName = name; currentPath = ""; listSmbDir("") }
@@ -480,8 +509,10 @@ class BrowserActivity : AppCompatActivity() {
     }
 
     private fun openSmbDir(name: String) {
+        pushNav()
         progressBar.visibility = View.VISIBLE
-        executor.execute { listSmbDir(if (currentPath.isEmpty()) name else "$currentPath\\$name") }
+        val newPath = if (currentPath.isEmpty()) name else "$currentPath\\$name"
+        executor.execute { listSmbDir(newPath) }
     }
 
     private fun listSmbDir(path: String) {
@@ -497,6 +528,7 @@ class BrowserActivity : AppCompatActivity() {
             runOnUiThread {
                 browseMode = BrowseMode.SMB_FILES; currentPath = path
                 items.clear(); items.addAll(dirs); items.addAll(vids); adapter.notifyDataSetChanged()
+                saveLastPath()
                 progressBar.visibility = View.GONE; swipeRefresh.isRefreshing = false
                 btnBack.visibility = View.VISIBLE; btnAddServer.visibility = View.GONE
                 tvTitle.text = if (path.isEmpty()) currentShareName else path.substringAfterLast("\\")
@@ -575,18 +607,22 @@ class BrowserActivity : AppCompatActivity() {
     }
 
     private fun goBack() {
-        when (browseMode) {
-            BrowseMode.LOCAL_FILES -> {
-                val p = File(currentPath).parent
-                if (p != null && currentPath != Environment.getExternalStorageDirectory().absolutePath) browseLocalFiles(p) else showRoot()
+        val prev = popNav()
+        if (prev != null) {
+            when (prev.mode) {
+                BrowseMode.ROOT -> { disconnectSmb(); showRoot() }
+                BrowseMode.LOCAL_FILES -> browseLocalFiles(prev.path)
+                BrowseMode.NETWORK_SERVERS -> { disconnectSmb(); showNetworkServers() }
+                BrowseMode.SMB_SHARES -> connectToServer(prev.server)
+                BrowseMode.SMB_FILES -> {
+                    currentServer = prev.server; currentShareName = prev.share
+                    currentUser = prev.user; currentPass = prev.pass
+                    progressBar.visibility = View.VISIBLE
+                    executor.execute { listSmbDir(prev.path) }
+                }
             }
-            BrowseMode.NETWORK_SERVERS -> { disconnectSmb(); showRoot() }
-            BrowseMode.SMB_SHARES -> { disconnectSmb(); showNetworkServers() }
-            BrowseMode.SMB_FILES -> {
-                if (currentPath.isNotEmpty()) { progressBar.visibility = View.VISIBLE; executor.execute { listSmbDir(if (currentPath.contains("\\")) currentPath.substringBeforeLast("\\") else "") } }
-                else { diskShare?.close(); diskShare = null; connectToServer(currentServer) }
-            }
-            BrowseMode.ROOT -> finish()
+        } else {
+            if (browseMode == BrowseMode.ROOT) finish() else showRoot()
         }
     }
 

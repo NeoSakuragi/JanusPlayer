@@ -30,7 +30,6 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import kotlinx.coroutines.*
 import dev.jdtech.mpv.MPVLib
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
@@ -88,15 +87,17 @@ class PlayerActivity : ComponentActivity(), MpvPlayerView.Listener {
     private val dictFreq = mutableIntStateOf(0)
     private val dictVisible = mutableStateOf(false)
     private lateinit var dictDb: DictionaryDatabase
-    private var dwellJob: Job? = null
-    private val dwellScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+    private val handler = android.os.Handler(android.os.Looper.getMainLooper())
+    private var dwellRunnable: Runnable? = null
     private val dictPitch = mutableStateOf("")
     private val dictTags = mutableStateOf("")
     private var currentDictEntries: List<DictionaryDatabase.DictEntry>? = null
     private var lastSubtitleText: String = ""
+    private var hasTextSubs = false
+    private val BITMAP_CODECS = listOf("hdmv_pgs_subtitle", "dvd_subtitle", "dvb_subtitle")
     private val dictLookup = object : WordScanner.DictLookup {
         override fun hasEntry(term: String): Boolean {
-            return dictDb.lookup(term).isNotEmpty()
+            return dictDb.hasEntry(term)
         }
     }
 
@@ -149,6 +150,7 @@ class PlayerActivity : ComponentActivity(), MpvPlayerView.Listener {
         val savedSize = appSettings.fontSize
         val sizeIdx = FONT_SIZE_PRESETS.indexOf(savedSize)
         if (sizeIdx >= 0) subFontSizeIdx.intValue = sizeIdx
+
         // Build view hierarchy manually — MpvPlayerView must never be inside Compose
         val root = android.widget.FrameLayout(this)
         root.setBackgroundColor(android.graphics.Color.BLACK)
@@ -213,7 +215,7 @@ class PlayerActivity : ComponentActivity(), MpvPlayerView.Listener {
                                     val wf = wordFocus.intValue
                                     val sw = scannedWords.getOrNull(wf) ?: return
                                     Log.d(TAG, "TEST_WORD[$step]: [${sw.surface}] base=[${sw.baseForm}]")
-                                    scheduleDwell()
+                                    triggerDwell()
                                     handler.postDelayed({
                                         val dv = dictVisible.value
                                         val dt = dictTerm.value
@@ -391,25 +393,18 @@ class PlayerActivity : ComponentActivity(), MpvPlayerView.Listener {
             // Subtitle display — fixed position, always above controls area
             if (subs != null && subs!!.isNotBlank()) {
                 val annotated = if (currentScreen == Screen.WORD_NAV && scannedWords.isNotEmpty()) {
-                    val focusedWord = scannedWords.getOrNull(wFocus)
+                    val w = scannedWords[0]
+                    val subText = subs!!
                     androidx.compose.ui.text.buildAnnotatedString {
-                        val subText = subs!!
-                        var pos = 0
-                        for (w in scannedWords) {
-                            // Append any gap before this word
-                            if (w.startChar > pos) append(subText.substring(pos, w.startChar))
-                            // Append word with or without highlight
-                            if (w == focusedWord) {
-                                pushStyle(androidx.compose.ui.text.SpanStyle(background = Color(0xFF7986CB)))
-                                append(subText.substring(w.startChar, w.endChar))
-                                pop()
-                            } else {
-                                append(subText.substring(w.startChar, w.endChar))
-                            }
-                            pos = w.endChar
+                        if (w.startChar > 0 && w.startChar <= subText.length)
+                            append(subText.substring(0, w.startChar))
+                        if (w.endChar <= subText.length) {
+                            pushStyle(androidx.compose.ui.text.SpanStyle(background = Color(0xFF7986CB)))
+                            append(subText.substring(w.startChar, w.endChar))
+                            pop()
                         }
-                        // Append trailing text
-                        if (pos < subText.length) append(subText.substring(pos))
+                        if (w.endChar < subText.length)
+                            append(subText.substring(w.endChar))
                     }
                 } else {
                     androidx.compose.ui.text.buildAnnotatedString { append(subs!!) }
@@ -644,14 +639,8 @@ class PlayerActivity : ComponentActivity(), MpvPlayerView.Listener {
         when (state) {
             Screen.PLAYING -> when (key) {
                 KeyEvent.KEYCODE_BACK -> finish()
-                KeyEvent.KEYCODE_DPAD_LEFT -> {
-                    val prev = subTimeline.prevBefore(playerView.position)
-                    if (prev != null) playerView.seekTo(prev.startSec) else playerView.seekRelative(-10)
-                }
-                KeyEvent.KEYCODE_DPAD_RIGHT -> {
-                    val next = subTimeline.nextAfter(playerView.position)
-                    if (next != null) playerView.seekTo(next.startSec) else playerView.seekRelative(10)
-                }
+                KeyEvent.KEYCODE_DPAD_LEFT -> if (hasTextSubs) playerView.subSeekPrev() else playerView.seekRelative(-10)
+                KeyEvent.KEYCODE_DPAD_RIGHT -> if (hasTextSubs) playerView.subSeekNext() else playerView.seekRelative(10)
                 KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE -> playerView.togglePause()
                 KeyEvent.KEYCODE_DPAD_UP -> {
                     playerView.pause()
@@ -669,12 +658,23 @@ class PlayerActivity : ComponentActivity(), MpvPlayerView.Listener {
                     KeyEvent.KEYCODE_BACK -> { playerView.play(); goto(Screen.PLAYING) }
                     KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE -> playerView.togglePause()
                     KeyEvent.KEYCODE_DPAD_UP -> when {
-                        f == CTRL_SEEK -> if (!enterWordNav()) controlFocus.intValue = CTRL_AUDIO
-                        else -> { playerView.play(); goto(Screen.PLAYING) }
+                        f == CTRL_SEEK -> {
+                            // seekbar UP → try words, else buttons
+                            if (!enterWordNav()) controlFocus.intValue = CTRL_AUDIO
+                        }
+                        else -> {
+                            // buttons UP → exit to playing
+                            playerView.play(); goto(Screen.PLAYING)
+                        }
                     }
                     KeyEvent.KEYCODE_DPAD_DOWN -> when {
-                        f == CTRL_SEEK -> {}
-                        else -> controlFocus.intValue = CTRL_SEEK
+                        f == CTRL_SEEK -> {
+                            // seekbar DOWN → nothing (bottom)
+                        }
+                        else -> {
+                            // buttons DOWN → try words, else seekbar
+                            if (!enterWordNav()) controlFocus.intValue = CTRL_SEEK
+                        }
                     }
                     KeyEvent.KEYCODE_DPAD_LEFT -> when {
                         f == CTRL_SEEK -> playerView.seekRelative(-10)
@@ -704,15 +704,15 @@ class PlayerActivity : ComponentActivity(), MpvPlayerView.Listener {
                     KeyEvent.KEYCODE_DPAD_LEFT -> {
                         if (wf > 0) {
                             wordFocus.intValue = wf - 1
-                            Log.d(TAG, "WORD: ← [${scannedWords[wf - 1].surface}]")
-                            scheduleDwell()
+                            scanCurrentWord()
+                            triggerDwell()
                         }
                     }
                     KeyEvent.KEYCODE_DPAD_RIGHT -> {
-                        if (wf < scannedWords.size - 1) {
+                        if (wf < japanesePositions.size - 1) {
                             wordFocus.intValue = wf + 1
-                            Log.d(TAG, "WORD: → [${scannedWords[wf + 1].surface}]")
-                            scheduleDwell()
+                            scanCurrentWord()
+                            triggerDwell()
                         }
                     }
                     KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> {
@@ -762,71 +762,61 @@ class PlayerActivity : ComponentActivity(), MpvPlayerView.Listener {
 
     // ── Word navigation helpers ──────────────────────────────────────
 
+    private var japanesePositions = listOf<Int>()
+    private var currentSubText = ""
+
     private fun enterWordNav(): Boolean {
         val text = subtitleText.value ?: return false
+        val positions = WordScanner.findJapanesePositions(text)
+        if (positions.isEmpty()) return false
+        japanesePositions = positions
+        currentSubText = text
+        wordFocus.intValue = 0
+        // Scan just the first word
+        val word = WordScanner.scanAt(text, positions[0], dictLookup)
+        scannedWords = if (word != null) listOf(word) else emptyList()
         screen.value = Screen.WORD_NAV
-        // Scan on background thread — dictionary lookups are expensive
-        dwellScope.launch(Dispatchers.IO) {
-            val words = WordScanner.scan(text, dictLookup)
-            withContext(Dispatchers.Main) {
-                if (words.isEmpty()) {
-                    screen.value = Screen.CONTROLS
-                    controlFocus.intValue = CTRL_SEEK
-                    return@withContext
-                }
-                scannedWords = words
-                wordFocus.intValue = 0
-                Log.d(TAG, "WORD_NAV: ${words.size} words: ${words.map { it.surface }}")
-                scheduleDwell()
-            }
-        }
+        triggerDwell()
         return true
     }
 
-    private fun scheduleDwell() {
-        dwellJob?.cancel()
-        val word = scannedWords.getOrNull(wordFocus.intValue) ?: return
+    private fun scanCurrentWord() {
+        val pos = japanesePositions.getOrNull(wordFocus.intValue) ?: return
+        val word = WordScanner.scanAt(currentSubText, pos, dictLookup)
+        scannedWords = if (word != null) listOf(word) else emptyList()
+    }
+
+    private fun triggerDwell() {
+        dwellRunnable?.let { handler.removeCallbacks(it) }
+        val idx = wordFocus.intValue
+        val word = scannedWords.getOrNull(idx) ?: return
         Log.d(TAG, "DWELL: start on [${word.surface}]")
-        dwellJob = dwellScope.launch {
-            delay(300)
+        dwellRunnable = Runnable {
             Log.d(TAG, "DWELL: fire lookup for [${word.surface}] base=${word.baseForm}")
-            lookupWord(wordFocus.intValue)
+            lookupWord(idx)
         }
+        handler.postDelayed(dwellRunnable!!, 300)
     }
 
     private fun lookupWord(wordIdx: Int) {
         val word = scannedWords.getOrNull(wordIdx) ?: return
         val baseForm = word.baseForm
         val surface = word.surface
-        dwellScope.launch(Dispatchers.IO) {
-            Log.d(TAG, "LOOKUP: '$surface' base='$baseForm'")
-            val results = mutableListOf<DictionaryDatabase.DictEntry>()
-            results.addAll(dictDb.lookup(baseForm))
-            if (surface != baseForm) results.addAll(dictDb.lookup(surface))
-            Log.d(TAG, "LOOKUP: ${results.size} raw results")
-            val unique = results.distinctBy { "${it.term}|${it.reading}" }
+        val results = mutableListOf<DictionaryDatabase.DictEntry>()
+        results.addAll(dictDb.lookup(baseForm))
+        if (surface != baseForm) results.addAll(dictDb.lookup(surface))
+        val unique = results.distinctBy { "${it.term}|${it.reading}" }
 
-            val pitchAccents = mutableListOf<DictionaryDatabase.PitchAccent>()
-            pitchAccents.addAll(dictDb.lookupPitchAccent(baseForm))
-            if (baseForm != surface) pitchAccents.addAll(dictDb.lookupPitchAccent(surface))
-
-            if (unique.isNotEmpty()) {
-                val best = unique.first()
-                val meanings = unique.flatMap { it.meanings }.filter { it.isNotBlank() }.distinct().take(5)
-                val pitchText = formatPitchAccents(pitchAccents)
-                val tagsText = formatTags(best.tags)
-                Log.d(TAG, "DICT: found ${unique.size} entries for $baseForm/$surface: ${best.term} [${best.reading}] - ${meanings.first()}")
-                withContext(Dispatchers.Main) {
-                    currentDictEntries = unique
-                    dictTerm.value = best.term
-                    dictReading.value = if (best.reading != best.term) best.reading else ""
-                    dictMeanings.value = meanings
-                    dictFreq.intValue = best.frequency ?: unique.firstNotNullOfOrNull { it.frequency } ?: 0
-                    dictPitch.value = pitchText
-                    dictTags.value = tagsText
-                    dictVisible.value = true
-                }
-            }
+        if (unique.isNotEmpty()) {
+            val best = unique.first()
+            val meanings = unique.flatMap { it.meanings }.filter { it.isNotBlank() }.distinct().take(5)
+            currentDictEntries = unique
+            dictTerm.value = best.term
+            dictReading.value = if (best.reading != best.term) best.reading else ""
+            dictMeanings.value = meanings
+            dictFreq.intValue = best.frequency ?: unique.firstNotNullOfOrNull { it.frequency } ?: 0
+            dictTags.value = formatTags(best.tags)
+            dictVisible.value = true
         }
     }
 
@@ -856,7 +846,7 @@ class PlayerActivity : ComponentActivity(), MpvPlayerView.Listener {
         }.distinct().joinToString("  ")
 
     private fun clearDict() {
-        dwellJob?.cancel()
+        dwellRunnable?.let { handler.removeCallbacks(it) }
         dictVisible.value = false
     }
 
@@ -932,7 +922,7 @@ class PlayerActivity : ComponentActivity(), MpvPlayerView.Listener {
                 runOnUiThread {
                     if (result.success) {
                         cardStatus.value = "Card added!"
-                        dwellScope.launch { delay(1500); goto(Screen.WORD_NAV) }
+                        handler.postDelayed({ goto(Screen.WORD_NAV) }, 1500)
                     } else {
                         cardStatus.value = "Error: ${result.message}"
                     }
@@ -968,7 +958,13 @@ class PlayerActivity : ComponentActivity(), MpvPlayerView.Listener {
         val sid = prefs.getInt("${key}_sid", 0)
         Log.d(TAG, "TRACK_RESTORE: $key aid=$aid sid=$sid")
         if (aid > 0) playerView.setAudioTrack(aid)
-        if (sid > 0) playerView.setSubtitleTrack(sid)
+        if (sid > 0) {
+            playerView.setSubtitleTrack(sid)
+            val track = playerView.getTracks().firstOrNull { it.type == "sub" && it.id == sid }
+            val isBitmap = track?.codec in BITMAP_CODECS
+            hasTextSubs = !isBitmap
+            try { MPVLib.setPropertyString("sub-visibility", if (isBitmap) "yes" else "no") } catch (_: Exception) {}
+        }
     }
 
     // ── List actions ─────────────────────────────────────────────────
@@ -1040,7 +1036,14 @@ class PlayerActivity : ComponentActivity(), MpvPlayerView.Listener {
                                 }
                             })
                 }
-                else -> { playerView.setSubtitleTrack(tracks[idx - 1].id); saveTrackPrefs() }
+                else -> {
+                    val track = tracks[idx - 1]
+                    playerView.setSubtitleTrack(track.id)
+                    val isBitmap = track.codec in BITMAP_CODECS
+                    hasTextSubs = !isBitmap
+                    try { MPVLib.setPropertyString("sub-visibility", if (isBitmap) "yes" else "no") } catch (_: Exception) {}
+                    saveTrackPrefs()
+                }
             }
         }
         screen.value = Screen.LIST_SELECT
@@ -1211,7 +1214,7 @@ class PlayerActivity : ComponentActivity(), MpvPlayerView.Listener {
 
     override fun onDestroy() {
         super.onDestroy()
-        dwellScope.cancel()
+        handler.removeCallbacksAndMessages(null)
         smbStreamServer.stop()
         if (::playerView.isInitialized) playerView.destroy()
     }

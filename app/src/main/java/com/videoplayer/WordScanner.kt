@@ -1,9 +1,8 @@
 package com.videoplayer
 
 /**
- * Yomitan-style word scanner. No Kuromoji needed.
- * Scans from each character position, tries longest substring first,
- * deinflects it, looks up in dictionary. Longest match wins.
+ * Yomitan-style word scanner. Scans from a single character position
+ * to find the longest dictionary match. No full-line scan needed.
  */
 object WordScanner {
 
@@ -30,47 +29,60 @@ object WordScanner {
     }
 
     /**
-     * Scan a subtitle line and return word boundaries.
-     * Each position that starts a Japanese word gets a ScannedWord.
-     * Non-Japanese characters are gaps between words.
+     * Find the word at a specific character position.
+     * Tries longest substring first, deinflects, checks dictionary.
+     */
+    fun scanAt(text: String, pos: Int, dict: DictLookup, maxLen: Int = 12): ScannedWord? {
+        if (pos >= text.length || !isJapaneseChar(text[pos])) return null
+
+        val maxEnd = minOf(pos + maxLen, text.length)
+        for (len in (maxEnd - pos) downTo 1) {
+            val chunk = text.substring(pos, pos + len)
+            for (candidate in Deinflector.deinflect(chunk)) {
+                if (dict.hasEntry(candidate)) {
+                    return ScannedWord(pos, pos + len, chunk, candidate, true)
+                }
+            }
+        }
+        // Single char, no match
+        return ScannedWord(pos, pos + 1, text[pos].toString(), text[pos].toString(), false)
+    }
+
+    /**
+     * Find all navigable word positions in the text.
+     * Returns start positions of Japanese character runs.
+     * Actual word boundaries resolved lazily via scanAt().
+     */
+    fun findJapanesePositions(text: String): List<Int> {
+        val positions = mutableListOf<Int>()
+        var i = 0
+        while (i < text.length) {
+            if (isJapaneseChar(text[i])) {
+                positions.add(i)
+                i++
+            } else {
+                i++
+            }
+        }
+        return positions
+    }
+
+    /**
+     * Full line scan (for unit tests). Scans every position.
      */
     fun scan(text: String, dict: DictLookup, maxLen: Int = 12): List<ScannedWord> {
         val words = mutableListOf<ScannedWord>()
         var i = 0
-
         while (i < text.length) {
-            if (!isJapaneseChar(text[i])) {
-                i++
-                continue
-            }
-
-            var bestWord: ScannedWord? = null
-            val maxEnd = minOf(i + maxLen, text.length)
-
-            // Try longest substring first
-            for (len in (maxEnd - i) downTo 1) {
-                val chunk = text.substring(i, i + len)
-                // Try deinflected forms
-                val candidates = Deinflector.deinflect(chunk)
-                for (candidate in candidates) {
-                    if (dict.hasEntry(candidate)) {
-                        bestWord = ScannedWord(i, i + len, chunk, candidate, true)
-                        break
-                    }
-                }
-                if (bestWord != null) break
-            }
-
-            if (bestWord != null) {
-                words.add(bestWord)
-                i = bestWord.endChar
+            if (!isJapaneseChar(text[i])) { i++; continue }
+            val word = scanAt(text, i, dict, maxLen)
+            if (word != null) {
+                words.add(word)
+                i = word.endChar
             } else {
-                // Single character, no match — skip it
-                words.add(ScannedWord(i, i + 1, text[i].toString(), text[i].toString(), false))
                 i++
             }
         }
-
         return words
     }
 }

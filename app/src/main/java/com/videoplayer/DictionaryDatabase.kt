@@ -291,6 +291,25 @@ class DictionaryDatabase private constructor(private val context: Context) {
         return freq
     }
 
+    fun hasEntry(term: String): Boolean {
+        val db = db ?: return false
+        val cursor = db.rawQuery("SELECT 1 FROM dict_entries WHERE term = ? LIMIT 1", arrayOf(term))
+        val found = cursor.moveToFirst()
+        cursor.close()
+        return found
+    }
+
+    fun getAllTerms(): HashSet<String> {
+        val set = HashSet<String>(500000)
+        val db = db ?: return set
+        val cursor = db.rawQuery("SELECT DISTINCT term FROM dict_entries UNION SELECT DISTINCT reading FROM dict_entries WHERE reading != term", null)
+        while (cursor.moveToNext()) {
+            set.add(cursor.getString(0))
+        }
+        cursor.close()
+        return set
+    }
+
     fun getEntryCount(): Int {
         val db = db ?: return 0
         val cursor = db.rawQuery("SELECT COUNT(*) FROM dict_entries", null)
