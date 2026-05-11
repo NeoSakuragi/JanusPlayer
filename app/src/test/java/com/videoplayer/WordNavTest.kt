@@ -158,4 +158,24 @@ class WordNavTest {
             println()
         }
     }
+
+    @Test
+    fun testPartOfSpeech() {
+        val lines = listOf(
+            "過ぎた",
+            "打ち砕かれ",
+            "忍び寄っていた",
+            "握られると",
+            "抜けるんだ",
+            "戦っている"
+        )
+        for (line in lines) {
+            println("LINE: $line")
+            val tokens = tokenizer.tokenize(line)
+            for (t in tokens) {
+                println("  [${t.surface}] base=${t.baseForm} pos=${t.partOfSpeechLevel1}/${t.partOfSpeechLevel2} conj=${t.conjugationForm}")
+            }
+            println()
+        }
+    }
 }

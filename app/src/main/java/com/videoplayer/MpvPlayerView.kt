@@ -152,6 +152,13 @@ class MpvPlayerView @JvmOverloads constructor(
 
     fun seekTo(seconds: Double) = MPVLib.setPropertyDouble("time-pos", seconds)
     fun seekRelative(seconds: Int) = MPVLib.command(arrayOf("seek", seconds.toString(), "relative"))
+    fun subSeekNext() = MPVLib.command(arrayOf("sub-seek", "1"))
+    fun subSeekPrev() {
+        // sub-seek -1 from middle of a sub goes to its start, not the previous.
+        // So: go to start of current, then go back one more.
+        MPVLib.command(arrayOf("sub-seek", "-1"))
+        MPVLib.command(arrayOf("sub-seek", "-1"))
+    }
 
     fun stop() {
         try { MPVLib.command(arrayOf("stop")) } catch (_: Exception) {}

@@ -340,45 +340,36 @@ class PlayerActivity : ComponentActivity(), MpvPlayerView.Listener {
                 }
             }
 
-            // Subtitle display — plain text or word-by-word navigation
+            // Subtitle display — fixed position, always above controls area
             if (subs != null && subs!!.isNotBlank()) {
-                val bottomPad = when (currentScreen) {
-                    Screen.CONTROLS, Screen.LIST_SELECT -> 140.dp
-                    else -> 48.dp
+                val annotated = if (currentScreen == Screen.WORD_NAV && wordTokens.isNotEmpty()) {
+                    val highlightRange = wordHighlightRanges[wFocus] ?: (wFocus..wFocus)
+                    androidx.compose.ui.text.buildAnnotatedString {
+                        wordTokens.forEachIndexed { idx, token ->
+                            if (idx in highlightRange) {
+                                pushStyle(androidx.compose.ui.text.SpanStyle(
+                                    background = Color(0xFF7986CB)
+                                ))
+                                append(token.surface)
+                                pop()
+                            } else {
+                                append(token.surface)
+                            }
+                        }
+                    }
+                } else {
+                    androidx.compose.ui.text.buildAnnotatedString { append(subs!!) }
                 }
-                Row(
-                    horizontalArrangement = Arrangement.Center,
+                androidx.compose.material3.Text(
+                    text = annotated,
+                    color = Color.White,
+                    fontSize = 22.sp,
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
-                        .padding(bottom = bottomPad, start = 32.dp, end = 32.dp)
+                        .padding(bottom = 150.dp, start = 32.dp, end = 32.dp)
                         .background(Color(0x99000000), RoundedCornerShape(6.dp))
                         .padding(horizontal = 12.dp, vertical = 8.dp)
-                ) {
-                    if (currentScreen == Screen.WORD_NAV && wordTokens.isNotEmpty()) {
-                        wordTokens.forEachIndexed { idx, token ->
-                            val isFocused = idx == wFocus
-                            val isFocusable = isJapanese(token.surface)
-                            androidx.compose.material3.Text(
-                                text = token.surface,
-                                color = Color.White,
-                                fontSize = 24.sp,
-                                fontWeight = if (isFocused) FontWeight.Bold else FontWeight.Normal,
-                                modifier = Modifier
-                                    .background(
-                                        if (isFocused) Color(0xFF7986CB) else Color.Transparent,
-                                        RoundedCornerShape(4.dp)
-                                    )
-                                    .padding(horizontal = if (isFocusable) 3.dp else 0.dp, vertical = 2.dp)
-                            )
-                        }
-                    } else {
-                        androidx.compose.material3.Text(
-                            text = subs!!,
-                            color = Color.White,
-                            fontSize = 22.sp,
-                        )
-                    }
-                }
+                )
             }
 
             // Transport controls
@@ -593,14 +584,13 @@ class PlayerActivity : ComponentActivity(), MpvPlayerView.Listener {
         when (state) {
             Screen.PLAYING -> when (key) {
                 KeyEvent.KEYCODE_BACK -> finish()
-                KeyEvent.KEYCODE_DPAD_LEFT -> playerView.seekRelative(-10)
-                KeyEvent.KEYCODE_DPAD_RIGHT -> playerView.seekRelative(10)
+                KeyEvent.KEYCODE_DPAD_LEFT -> playerView.subSeekPrev()
+                KeyEvent.KEYCODE_DPAD_RIGHT -> playerView.subSeekNext()
                 KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE -> playerView.togglePause()
-                KeyEvent.KEYCODE_DPAD_UP -> {
+                else -> {
                     playerView.pause()
-                    if (enterWordNav()) {} else goto(Screen.CONTROLS, CTRL_SEEK)
+                    if (!enterWordNav()) goto(Screen.CONTROLS, CTRL_SEEK)
                 }
-                else -> { playerView.pause(); goto(Screen.CONTROLS, CTRL_SEEK) }
             }
 
             Screen.CONTROLS -> {
@@ -637,7 +627,7 @@ class PlayerActivity : ComponentActivity(), MpvPlayerView.Listener {
                 val wf = wordFocus.intValue
                 val fiIdx = focusableWordIndices.indexOf(wf)
                 when (key) {
-                    KeyEvent.KEYCODE_BACK -> { clearDict(); goto(Screen.CONTROLS, CTRL_SEEK) }
+                    KeyEvent.KEYCODE_BACK -> { clearDict(); playerView.play(); goto(Screen.PLAYING) }
                     KeyEvent.KEYCODE_DPAD_DOWN -> { clearDict(); goto(Screen.CONTROLS, CTRL_SEEK) }
                     KeyEvent.KEYCODE_DPAD_LEFT -> {
                         if (fiIdx > 0) {
@@ -718,6 +708,16 @@ class PlayerActivity : ComponentActivity(), MpvPlayerView.Listener {
         return true
     }
 
+    // Maps each focusable token index to the range of tokens it highlights (including inflection suffixes)
+    private var wordHighlightRanges = mapOf<Int, IntRange>()
+
+    private fun isInflectionSuffix(token: com.atilika.kuromoji.ipadic.Token): Boolean {
+        val pos1 = token.partOfSpeechLevel1
+        val pos2 = token.partOfSpeechLevel2
+        return pos1 == "助動詞" || pos1 == "助詞" ||
+            (pos1 == "動詞" && (pos2 == "接尾" || pos2 == "非自立"))
+    }
+
     private fun enterWordNav(): Boolean {
         val text = subtitleText.value ?: return false
         val tok = tokenizer ?: run { Log.d(TAG, "WORD_NAV: tokenizer not ready"); return false }
@@ -725,10 +725,19 @@ class PlayerActivity : ComponentActivity(), MpvPlayerView.Listener {
         focusableWordIndices = wordTokens.mapIndexedNotNull { i, t ->
             if (isFocusableWord(t)) i else null
         }
-        Log.d(TAG, "WORD_NAV: ${wordTokens.size} tokens, ${focusableWordIndices.size} focusable: ${wordTokens.map { it.surface }}")
+        // Build highlight ranges: each content word extends through following inflection suffixes
+        val ranges = mutableMapOf<Int, IntRange>()
+        for (fi in focusableWordIndices) {
+            var end = fi
+            for (j in fi + 1 until wordTokens.size) {
+                if (isInflectionSuffix(wordTokens[j])) end = j else break
+            }
+            ranges[fi] = fi..end
+        }
+        wordHighlightRanges = ranges
+        Log.d(TAG, "WORD_NAV: ${wordTokens.size} tokens, ${focusableWordIndices.size} focusable")
         if (focusableWordIndices.isEmpty()) return false
         wordFocus.intValue = focusableWordIndices[0]
-        Log.d(TAG, "WORD_NAV: focus on [${wordTokens[focusableWordIndices[0]].surface}]")
         screen.value = Screen.WORD_NAV
         scheduleDwell()
         return true
