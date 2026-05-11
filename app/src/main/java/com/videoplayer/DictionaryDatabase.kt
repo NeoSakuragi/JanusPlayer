@@ -12,6 +12,7 @@ class DictionaryDatabase private constructor(private val context: Context) {
     companion object {
         private const val TAG = "DictDB"
         private const val DB_NAME = "dictionary.db"
+        const val PREBUILT_URL = "https://neomobiles.duckdns.org/dict/dictionary_lite.db.gz"
 
         @Volatile
         private var instance: DictionaryDatabase? = null
@@ -34,16 +35,105 @@ class DictionaryDatabase private constructor(private val context: Context) {
             ensureExtraTables()
             return
         }
-        Log.d(TAG, "Copying pre-built dictionary from assets...")
-        dbFile.parentFile?.mkdirs()
-        context.assets.open(DB_NAME).use { input ->
-            FileOutputStream(dbFile).use { output ->
-                input.copyTo(output, 8192)
+        // Try to copy from assets as fallback
+        try {
+            Log.d(TAG, "Copying pre-built dictionary from assets...")
+            dbFile.parentFile?.mkdirs()
+            context.assets.open(DB_NAME).use { input ->
+                FileOutputStream(dbFile).use { output ->
+                    input.copyTo(output, 8192)
+                }
             }
+            Log.d(TAG, "Dictionary copied: ${dbFile.length() / 1_048_576} MB")
+        } catch (_: Exception) {
+            Log.d(TAG, "No asset dictionary, creating empty DB")
+            dbFile.parentFile?.mkdirs()
+            val newDb = SQLiteDatabase.openOrCreateDatabase(dbFile, null)
+            newDb.execSQL("CREATE TABLE IF NOT EXISTS dict_entries (term TEXT NOT NULL, reading TEXT NOT NULL, tags TEXT DEFAULT '', score INTEGER DEFAULT 0, meanings TEXT DEFAULT '', sequence INTEGER DEFAULT 0, source TEXT DEFAULT '')")
+            newDb.execSQL("CREATE TABLE IF NOT EXISTS frequencies (term TEXT NOT NULL, reading TEXT, freq INTEGER NOT NULL, source TEXT DEFAULT '')")
+            newDb.execSQL("CREATE INDEX IF NOT EXISTS idx_dict_term ON dict_entries(term)")
+            newDb.execSQL("CREATE INDEX IF NOT EXISTS idx_dict_reading ON dict_entries(reading)")
+            newDb.execSQL("CREATE INDEX IF NOT EXISTS idx_freq_term ON frequencies(term)")
+            newDb.close()
         }
-        Log.d(TAG, "Dictionary copied: ${dbFile.length() / 1_048_576} MB")
         openDb()
         ensureExtraTables()
+    }
+
+    fun downloadPrebuilt(onProgress: (String, Int) -> Unit, onComplete: (Boolean, String) -> Unit) {
+        Thread {
+            try {
+                onProgress("Downloading...", 0)
+                val tempGz = java.io.File(context.cacheDir, "dict_prebuilt.db.gz")
+                val tempDb = java.io.File(context.cacheDir, "dict_prebuilt.db")
+
+                var currentUrl = PREBUILT_URL
+                var redirects = 0
+                while (redirects < 5) {
+                    val conn = java.net.URL(currentUrl).openConnection() as java.net.HttpURLConnection
+                    conn.connectTimeout = 30_000
+                    conn.readTimeout = 60_000
+                    conn.instanceFollowRedirects = false
+                    conn.connect()
+                    val code = conn.responseCode
+                    if (code in 301..303 || code == 307 || code == 308) {
+                        currentUrl = conn.getHeaderField("Location") ?: throw Exception("Redirect without Location")
+                        conn.disconnect()
+                        redirects++
+                        continue
+                    }
+                    if (code != 200) throw Exception("HTTP $code")
+
+                    val total = conn.contentLength.toLong()
+                    var downloaded = 0L
+                    conn.inputStream.use { input ->
+                        FileOutputStream(tempGz).use { output ->
+                            val buf = ByteArray(65536)
+                            while (true) {
+                                val n = input.read(buf)
+                                if (n <= 0) break
+                                output.write(buf, 0, n)
+                                downloaded += n
+                                if (total > 0) onProgress("Downloading...", ((downloaded * 100) / total).toInt())
+                            }
+                        }
+                    }
+                    conn.disconnect()
+                    break
+                }
+
+                onProgress("Decompressing...", 0)
+                java.util.zip.GZIPInputStream(java.io.FileInputStream(tempGz)).use { gis ->
+                    FileOutputStream(tempDb).use { out -> gis.copyTo(out, 65536) }
+                }
+                tempGz.delete()
+
+                // Close existing DB, replace
+                close()
+                dbFile.parentFile?.mkdirs()
+                tempDb.renameTo(dbFile)
+
+                onProgress("Done", 100)
+                openDb()
+                ensureExtraTables()
+
+                val entryCount = try {
+                    db?.rawQuery("SELECT COUNT(*) FROM dict_entries", null)?.use { c ->
+                        if (c.moveToFirst()) c.getInt(0) else 0
+                    } ?: 0
+                } catch (_: Exception) { 0 }
+
+                onComplete(true, "$entryCount dictionary entries ready")
+            } catch (e: Exception) {
+                Log.e(TAG, "Prebuilt download failed: ${e.message}", e)
+                onComplete(false, e.message ?: "Unknown error")
+            }
+        }.start()
+    }
+
+    fun close() {
+        try { db?.close() } catch (_: Exception) {}
+        db = null
     }
 
     private fun openDb() {

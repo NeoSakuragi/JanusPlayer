@@ -129,6 +129,7 @@ class PlayerActivity : ComponentActivity(), MpvPlayerView.Listener {
         enterFullscreen()
 
         dictDb = DictionaryDatabase.getInstance(this)
+        dictDb.ensureReady()
         appSettings = AppSettings(this)
         mediaCapture = MediaCapture(this)
         Thread {
@@ -177,20 +178,34 @@ class PlayerActivity : ComponentActivity(), MpvPlayerView.Listener {
                     when (action) {
                         "wordnav" -> {
                             if (enterWordNav()) {
-                                Log.d(TAG, "TEST: WORD_NAV entered, navigating right...")
-                                for (i in 0 until 10) {
+                                Log.d(TAG, "TEST: WORD_NAV entered, dwelling on each word...")
+                                val handler = android.os.Handler(android.os.Looper.getMainLooper())
+                                var step = 0
+                                fun dwellNext() {
                                     val wf = wordFocus.intValue
-                                    val word = wordTokens.getOrNull(wf)?.surface ?: break
+                                    val word = wordTokens.getOrNull(wf)?.surface ?: return
                                     val base = wordTokens.getOrNull(wf)?.baseForm ?: word
-                                    Log.d(TAG, "TEST_WORD[$i]: [$word] base=[$base] idx=$wf")
-                                    val fiIdx = focusableWordIndices.indexOf(wf)
-                                    if (fiIdx < focusableWordIndices.size - 1) {
-                                        wordFocus.intValue = focusableWordIndices[fiIdx + 1]
-                                    } else break
+                                    Log.d(TAG, "TEST_WORD[$step]: [$word] base=[$base]")
+                                    scheduleDwell()
+                                    handler.postDelayed({
+                                        val dv = dictVisible.value
+                                        val dt = dictTerm.value
+                                        val dm = dictMeanings.value.firstOrNull() ?: "(none)"
+                                        Log.d(TAG, "TEST_DICT[$step]: visible=$dv term='$dt' meaning='${dm.take(60)}'")
+                                        step++
+                                        val fiIdx = focusableWordIndices.indexOf(wf)
+                                        if (fiIdx < focusableWordIndices.size - 1) {
+                                            wordFocus.intValue = focusableWordIndices[fiIdx + 1]
+                                            dwellNext()
+                                        } else {
+                                            Log.d(TAG, "TEST: done, $step words tested")
+                                            clearDict()
+                                            goto(Screen.PLAYING)
+                                            playerView.play()
+                                        }
+                                    }, 500)
                                 }
-                                clearDict()
-                                goto(Screen.PLAYING)
-                                playerView.play()
+                                dwellNext()
                             } else {
                                 Log.d(TAG, "TEST: no focusable words")
                                 playerView.play()
@@ -736,9 +751,11 @@ class PlayerActivity : ComponentActivity(), MpvPlayerView.Listener {
         val surface = token.surface
         val baseForm = token.baseForm ?: surface
         dwellScope.launch(Dispatchers.IO) {
+            Log.d(TAG, "LOOKUP: querying '$baseForm' / '$surface', db ready=${dictDb.isReady()}")
             val results = mutableListOf<DictionaryDatabase.DictEntry>()
             results.addAll(dictDb.lookup(baseForm))
             if (baseForm != surface) results.addAll(dictDb.lookup(surface))
+            Log.d(TAG, "LOOKUP: ${results.size} raw results")
             val unique = results.distinctBy { "${it.term}|${it.reading}" }
 
             val pitchAccents = mutableListOf<DictionaryDatabase.PitchAccent>()

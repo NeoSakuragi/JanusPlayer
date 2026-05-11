@@ -19,6 +19,22 @@ data class DictCatalogEntry(
 object DictionaryCatalog {
     val entries = listOf(
         DictCatalogEntry(
+            id = "jmdict_en",
+            name = "JMdict English",
+            description = "Main Japanese-English dictionary (~200k entries)",
+            url = "https://github.com/yomidevs/jmdict-yomitan/releases/latest/download/JMdict_english.zip",
+            type = DictType.TERMS,
+            sizeMb = 15f
+        ),
+        DictCatalogEntry(
+            id = "jitendex",
+            name = "Jitendex",
+            description = "Improved J-E dictionary with better definitions and examples",
+            url = "https://github.com/stephenmk/stephenmk.github.io/releases/latest/download/jitendex-yomitan.zip",
+            type = DictType.TERMS,
+            sizeMb = 38f
+        ),
+        DictCatalogEntry(
             id = "kanjium_pitch",
             name = "Kanjium Pitch Accent",
             description = "Pitch accent patterns for ~116k words",

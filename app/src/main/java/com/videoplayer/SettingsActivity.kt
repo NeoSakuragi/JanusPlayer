@@ -223,6 +223,47 @@ class SettingsActivity : AppCompatActivity() {
         val installed = dictDb.getInstalledDicts()
         val downloader = DictionaryDownloader(this)
 
+        // Quick Setup button — downloads prebuilt DB with everything
+        if (installed.isEmpty()) {
+            val quickBtn = MaterialButton(this).apply {
+                text = "Quick Setup (JMdict + Freq + Pitch + Kanji — 63MB)"
+                setBackgroundColor(0xFF7986CB.toInt())
+                setTextColor(0xFFFFFFFF.toInt())
+                textSize = 14f
+                isFocusable = true
+            }
+            val statusText = TextView(this).apply {
+                setTextColor(0xFF81C784.toInt())
+                textSize = 12f
+                setPadding(0, 8, 0, 16)
+                visibility = View.GONE
+            }
+            quickBtn.setOnClickListener {
+                quickBtn.isEnabled = false
+                quickBtn.text = "Downloading..."
+                statusText.visibility = View.VISIBLE
+                dictDb.downloadPrebuilt(
+                    onProgress = { phase, pct ->
+                        mainHandler.post { statusText.text = "$phase $pct%" }
+                    },
+                    onComplete = { success, msg ->
+                        mainHandler.post {
+                            if (success) {
+                                Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
+                                setupDictionaries()
+                            } else {
+                                statusText.text = "Failed: $msg"
+                                quickBtn.isEnabled = true
+                                quickBtn.text = "Retry Quick Setup"
+                            }
+                        }
+                    }
+                )
+            }
+            container.addView(quickBtn)
+            container.addView(statusText)
+        }
+
         for (entry in DictionaryCatalog.entries) {
             val row = layoutInflater.inflate(R.layout.item_dictionary, container, false)
             val tvName = row.findViewById<TextView>(R.id.tvDictName)
@@ -245,7 +286,7 @@ class SettingsActivity : AppCompatActivity() {
                 btnAction.text = "Download"
             }
 
-            btnAction.setOnClickListener {
+            val clickAction = android.view.View.OnClickListener {
                 if (installed.contains(entry.id) || dictDb.getInstalledDicts().contains(entry.id)) {
                     // Delete
                     AlertDialog.Builder(this)
@@ -294,6 +335,8 @@ class SettingsActivity : AppCompatActivity() {
                 }
             }
 
+            btnAction.setOnClickListener(clickAction)
+            row.setOnClickListener(clickAction)
             container.addView(row)
         }
     }
