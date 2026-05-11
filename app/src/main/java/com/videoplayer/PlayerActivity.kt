@@ -49,7 +49,7 @@ class PlayerActivity : ComponentActivity(), MpvPlayerView.Listener {
 
     // ── UI State Machine ─────────────────────────────────────────────
 
-    enum class Screen { PLAYING, CONTROLS, LIST_SELECT, WORD_NAV }
+    enum class Screen { PLAYING, CONTROLS, LIST_SELECT, WORD_NAV, CARD_CREATE }
 
     // Control bar items: [seekbar, audio, subs]
     private val CTRL_SEEK = 0
@@ -82,6 +82,19 @@ class PlayerActivity : ComponentActivity(), MpvPlayerView.Listener {
     private lateinit var dictDb: DictionaryDatabase
     private var dwellJob: Job? = null
     private val dwellScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+    private val dictPitch = mutableStateOf("")
+    private val dictTags = mutableStateOf("")
+    private var currentDictEntries: List<DictionaryDatabase.DictEntry>? = null
+    private var lastSubtitleText: String = ""
+
+    // Card creation state
+    private val CARD_SEND = 0
+    private val CARD_CANCEL = 1
+    private val cardFocus = mutableIntStateOf(CARD_SEND)
+    private val cardStatus = mutableStateOf("")
+    private var currentCardData: CardData? = null
+    private lateinit var appSettings: AppSettings
+    private lateinit var mediaCapture: MediaCapture
 
     data class ListItem(val label: String, val subtitle: String? = null, val selected: Boolean = false)
 
@@ -114,6 +127,8 @@ class PlayerActivity : ComponentActivity(), MpvPlayerView.Listener {
         enterFullscreen()
 
         dictDb = DictionaryDatabase.getInstance(this)
+        appSettings = AppSettings(this)
+        mediaCapture = MediaCapture(this)
         Thread {
             try { tokenizer = com.atilika.kuromoji.ipadic.Tokenizer() } catch (_: Exception) {}
         }.start()
@@ -167,50 +182,102 @@ class PlayerActivity : ComponentActivity(), MpvPlayerView.Listener {
         val dReading by dictReading
         val dMeanings by dictMeanings
         val dFreq by dictFreq
+        val dPitch by dictPitch
+        val dTagsVal by dictTags
+        val cFocus by cardFocus
+        val cStatus by cardStatus
 
         Box(modifier = Modifier.fillMaxSize()) {
 
             // Dictionary popup — top
             AnimatedVisibility(
-                visible = dVisible && currentScreen == Screen.WORD_NAV,
+                visible = dVisible && (currentScreen == Screen.WORD_NAV || currentScreen == Screen.CARD_CREATE),
                 enter = fadeIn(tween(150)),
                 exit = fadeOut(tween(100)),
                 modifier = Modifier.align(Alignment.TopCenter).padding(top = 12.dp)
             ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
+                Column(
                     modifier = Modifier
                         .padding(horizontal = 24.dp)
                         .background(Color(0xEE1E1E2E), RoundedCornerShape(10.dp))
                         .padding(16.dp)
                 ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            androidx.compose.material3.Text(dTerm, color = Color.White, fontSize = 26.sp, fontWeight = FontWeight.Bold)
-                            if (dReading.isNotEmpty()) {
-                                Spacer(Modifier.width(10.dp))
-                                androidx.compose.material3.Text(dReading, color = Color(0xFFAAAAAA), fontSize = 16.sp)
-                            }
-                            if (dFreq > 0) {
-                                Spacer(Modifier.width(10.dp))
-                                androidx.compose.material3.Text(
-                                    "#$dFreq",
-                                    color = Color(0xFF81C784),
-                                    fontSize = 12.sp,
-                                    modifier = Modifier
-                                        .background(Color(0x33FFFFFF), RoundedCornerShape(4.dp))
-                                        .padding(horizontal = 6.dp, vertical = 2.dp)
-                                )
-                            }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        androidx.compose.material3.Text(dTerm, color = Color.White, fontSize = 26.sp, fontWeight = FontWeight.Bold)
+                        if (dReading.isNotEmpty()) {
+                            Spacer(Modifier.width(10.dp))
+                            androidx.compose.material3.Text(dReading, color = Color(0xFFAAAAAA), fontSize = 16.sp)
                         }
-                        Spacer(Modifier.height(6.dp))
-                        dMeanings.forEachIndexed { i, m ->
+                        if (dFreq > 0) {
+                            Spacer(Modifier.width(10.dp))
                             androidx.compose.material3.Text(
-                                "${i + 1}. $m",
-                                color = Color(0xFFCCCCCC),
-                                fontSize = 14.sp,
-                                lineHeight = 18.sp
+                                "#$dFreq", color = Color(0xFF81C784), fontSize = 12.sp,
+                                modifier = Modifier.background(Color(0x33FFFFFF), RoundedCornerShape(4.dp)).padding(horizontal = 6.dp, vertical = 2.dp)
                             )
+                        }
+                    }
+                    if (dTagsVal.isNotBlank()) {
+                        androidx.compose.material3.Text(dTagsVal, color = Color(0xFF7986CB), fontSize = 11.sp, modifier = Modifier.padding(top = 4.dp))
+                    }
+                    if (dPitch.isNotBlank()) {
+                        androidx.compose.material3.Text(dPitch, color = Color(0xFFCE93D8), fontSize = 12.sp, modifier = Modifier.padding(top = 2.dp))
+                    }
+                    Spacer(Modifier.height(6.dp))
+                    dMeanings.forEachIndexed { i, m ->
+                        androidx.compose.material3.Text("${i + 1}. $m", color = Color(0xFFCCCCCC), fontSize = 14.sp, lineHeight = 18.sp)
+                    }
+                    if (currentScreen == Screen.WORD_NAV) {
+                        androidx.compose.material3.Text(
+                            "Press OK to create Anki card",
+                            color = Color(0xFF666666), fontSize = 11.sp, modifier = Modifier.padding(top = 8.dp)
+                        )
+                    }
+                }
+            }
+
+            // Card creation overlay
+            AnimatedVisibility(
+                visible = currentScreen == Screen.CARD_CREATE,
+                enter = fadeIn(tween(150)),
+                exit = fadeOut(tween(100)),
+                modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 48.dp)
+            ) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    modifier = Modifier
+                        .padding(horizontal = 32.dp)
+                        .background(Color(0xEE1E1E2E), RoundedCornerShape(10.dp))
+                        .padding(20.dp)
+                ) {
+                    val card = currentCardData
+                    if (card != null) {
+                        androidx.compose.material3.Text(card.word, color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.Bold)
+                        if (card.sentence.isNotBlank()) {
+                            androidx.compose.material3.Text(card.sentence, color = Color(0xFFAAAAAA), fontSize = 13.sp, modifier = Modifier.padding(top = 4.dp))
+                        }
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    androidx.compose.material3.Text(cStatus, color = Color(0xFF81C784), fontSize = 13.sp)
+                    Spacer(Modifier.height(12.dp))
+                    Row(horizontalArrangement = Arrangement.Center) {
+                        Box(
+                            contentAlignment = Alignment.Center,
+                            modifier = Modifier
+                                .background(if (cFocus == CARD_SEND) Color(0xFFBB86FC) else Color(0xFF333344), RoundedCornerShape(8.dp))
+                                .then(if (cFocus == CARD_SEND) Modifier.border(1.dp, Color.White, RoundedCornerShape(8.dp)) else Modifier)
+                                .padding(horizontal = 24.dp, vertical = 10.dp)
+                        ) {
+                            androidx.compose.material3.Text("Send to Anki", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                        }
+                        Spacer(Modifier.width(16.dp))
+                        Box(
+                            contentAlignment = Alignment.Center,
+                            modifier = Modifier
+                                .background(if (cFocus == CARD_CANCEL) Color(0xFFBB86FC) else Color(0xFF333344), RoundedCornerShape(8.dp))
+                                .then(if (cFocus == CARD_CANCEL) Modifier.border(1.dp, Color.White, RoundedCornerShape(8.dp)) else Modifier)
+                                .padding(horizontal = 24.dp, vertical = 10.dp)
+                        ) {
+                            androidx.compose.material3.Text("Cancel", color = Color.White, fontSize = 14.sp)
                         }
                     }
                 }
@@ -444,8 +511,13 @@ class PlayerActivity : ComponentActivity(), MpvPlayerView.Listener {
     //    LEFT           → prev focusable word (clamp)
     //    RIGHT          → next focusable word (clamp)
     //    DOWN           → go CONTROLS(SEEK)
-    //    CENTER         → (reserved for Anki later)
+    //    CENTER         → if dict visible: go CARD_CREATE
     //    300ms dwell    → auto dictionary lookup
+    //
+    //  CARD_CREATE(cardFocus):
+    //    BACK           → go WORD_NAV
+    //    LEFT/RIGHT     → toggle Send / Cancel
+    //    CENTER         → Send: send to Anki. Cancel: go WORD_NAV
     //
     //  LIST_SELECT(focusIdx):
     //    BACK/LEFT      → go CONTROLS (restore focus)
@@ -523,10 +595,22 @@ class PlayerActivity : ComponentActivity(), MpvPlayerView.Listener {
                         }
                     }
                     KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> {
-                        // reserved for Anki card creation
+                        if (dictVisible.value) openCardCreator()
                     }
                     else -> return false
                 }
+            }
+
+            Screen.CARD_CREATE -> when (key) {
+                KeyEvent.KEYCODE_BACK -> { goto(Screen.WORD_NAV) }
+                KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT -> {
+                    cardFocus.intValue = if (cardFocus.intValue == CARD_SEND) CARD_CANCEL else CARD_SEND
+                }
+                KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> {
+                    if (cardFocus.intValue == CARD_SEND) sendToAnki()
+                    else goto(Screen.WORD_NAV)
+                }
+                else -> return false
             }
 
             Screen.LIST_SELECT -> when (key) {
@@ -599,23 +683,167 @@ class PlayerActivity : ComponentActivity(), MpvPlayerView.Listener {
             results.addAll(dictDb.lookup(baseForm))
             if (baseForm != surface) results.addAll(dictDb.lookup(surface))
             val unique = results.distinctBy { "${it.term}|${it.reading}" }
+
+            val pitchAccents = mutableListOf<DictionaryDatabase.PitchAccent>()
+            pitchAccents.addAll(dictDb.lookupPitchAccent(baseForm))
+            if (baseForm != surface) pitchAccents.addAll(dictDb.lookupPitchAccent(surface))
+
             if (unique.isNotEmpty()) {
                 val best = unique.first()
                 val meanings = unique.flatMap { it.meanings }.filter { it.isNotBlank() }.distinct().take(5)
+                val pitchText = formatPitchAccents(pitchAccents)
+                val tagsText = formatTags(best.tags)
                 withContext(Dispatchers.Main) {
+                    currentDictEntries = unique
                     dictTerm.value = best.term
                     dictReading.value = if (best.reading != best.term) best.reading else ""
                     dictMeanings.value = meanings
                     dictFreq.intValue = best.frequency ?: unique.firstNotNullOfOrNull { it.frequency } ?: 0
+                    dictPitch.value = pitchText
+                    dictTags.value = tagsText
                     dictVisible.value = true
                 }
             }
         }
     }
 
+    private fun formatTags(tags: String): String = tags.trim().split(" ").joinToString(" ") { tag ->
+        when (tag) {
+            "v1" -> "ichidan"; "v5" -> "godan"; "vs" -> "suru"
+            "vt" -> "trans."; "vi" -> "intrans."
+            "adj-i" -> "i-adj"; "adj-na" -> "na-adj"
+            "n" -> "noun"; "adv" -> "adv"; "exp" -> "expr"
+            "prt" -> "particle"; "conj" -> "conj"; "int" -> "interj"
+            else -> tag
+        }
+    }
+
+    private fun formatPitchAccents(accents: List<DictionaryDatabase.PitchAccent>): String =
+        accents.mapNotNull { pa ->
+            try {
+                val json = org.json.JSONObject(pa.pitchData)
+                val reading = json.optString("reading", pa.term)
+                val pitches = json.optJSONArray("pitches") ?: return@mapNotNull null
+                val positions = (0 until pitches.length()).mapNotNull { i ->
+                    val pos = pitches.getJSONObject(i).optInt("position", -1)
+                    if (pos >= 0) when (pos) { 0 -> "heiban"; 1 -> "atamadaka"; else -> "[$pos]" } else null
+                }
+                if (positions.isEmpty()) null else "$reading: ${positions.joinToString(", ")}"
+            } catch (_: Exception) { null }
+        }.distinct().joinToString("  ")
+
     private fun clearDict() {
         dwellJob?.cancel()
         dictVisible.value = false
+    }
+
+    // ── Card creation ────────────────────────────────────────────────
+
+    private fun openCardCreator() {
+        if (!appSettings.ankiEnabled) {
+            Toast.makeText(this, "Enable Anki in Settings first", Toast.LENGTH_LONG).show()
+            return
+        }
+        val entries = currentDictEntries ?: return
+        val best = entries.first()
+        val meanings = entries.flatMap { it.meanings }.filter { it.isNotBlank() }.distinct().take(5)
+        val timing = mediaCapture.getSubtitleTiming()
+
+        currentCardData = CardData(
+            word = best.term,
+            reading = best.reading,
+            meaning = meanings.joinToString("\n"),
+            sentence = lastSubtitleText,
+            frequency = best.frequency ?: entries.firstNotNullOfOrNull { it.frequency },
+            audioStartSec = timing?.first ?: 0.0,
+            audioEndSec = timing?.second ?: 0.0,
+            audioPadBefore = appSettings.audioPadBefore,
+            audioPadAfter = appSettings.audioPadAfter,
+            source = try { dev.jdtech.mpv.MPVLib.getPropertyString("media-title") ?: "" } catch (_: Exception) { "" }
+        )
+        cardFocus.intValue = CARD_SEND
+        cardStatus.value = "Capturing..."
+        screen.value = Screen.CARD_CREATE
+
+        playerView.captureFrame { bitmap ->
+            val card = currentCardData ?: return@captureFrame
+            Thread {
+                if (bitmap != null) card.screenshotFile = mediaCapture.saveBitmap(bitmap)
+                val sourceUrl = currentPlaybackUrl
+                if (sourceUrl != null && (card.audioStartSec > 0 || card.audioEndSec > 0)) {
+                    card.audioFile = mediaCapture.extractAudio(sourceUrl, card.adjustedStart, card.adjustedEnd)
+                }
+                runOnUiThread { cardStatus.value = "Ready to send" }
+            }.start()
+        }
+    }
+
+    private fun sendToAnki() {
+        val card = currentCardData ?: return
+        cardStatus.value = "Sending..."
+        Thread {
+            try {
+                val client = AnkiConnectClient(appSettings.ankiConnectUrl)
+                val fields = mutableMapOf<String, String>()
+                fun mapField(key: String, value: String) {
+                    val fieldName = appSettings.getFieldMapping(key)
+                    if (fieldName.isNotEmpty()) fields[fieldName] = value
+                }
+                mapField("field_word", card.word)
+                mapField("field_word_furigana", card.wordWithFurigana)
+                mapField("field_reading", card.reading)
+                mapField("field_meaning", card.meaning)
+                mapField("field_sentence", card.sentence)
+                mapField("field_sentence_furigana", card.sentence)
+                mapField("field_frequency", card.frequency?.toString() ?: "")
+                mapField("field_source", card.source)
+                val tags = appSettings.ankiTags.split(" ").filter { it.isNotBlank() }
+                val screenshotField = appSettings.getFieldMapping("field_screenshot")
+                val audioField = appSettings.getFieldMapping("field_audio")
+                val result = client.addNote(
+                    deckName = appSettings.ankiDeck, modelName = appSettings.ankiNoteType,
+                    fields = fields, tags = tags,
+                    audioFile = card.audioFile, audioFieldName = audioField.ifEmpty { null },
+                    imageFile = card.screenshotFile, imageFieldName = screenshotField.ifEmpty { null }
+                )
+                runOnUiThread {
+                    if (result.success) {
+                        cardStatus.value = "Card added!"
+                        dwellScope.launch { delay(1500); goto(Screen.WORD_NAV) }
+                    } else {
+                        cardStatus.value = "Error: ${result.message}"
+                    }
+                }
+            } catch (e: Exception) {
+                runOnUiThread { cardStatus.value = "Error: ${e.message}" }
+            }
+        }.start()
+    }
+
+    // ── Per-file track preferences ───────────────────────────────────
+
+    private fun getFileKey(): String {
+        val path = smbPath ?: currentPlaybackUrl ?: return ""
+        return path.substringAfterLast("/").substringAfterLast("\\")
+    }
+
+    private fun saveTrackPrefs() {
+        val key = getFileKey()
+        if (key.isEmpty()) return
+        val prefs = getSharedPreferences("track_prefs", MODE_PRIVATE)
+        val aid = try { dev.jdtech.mpv.MPVLib.getPropertyInt("aid") } catch (_: Exception) { 0 }
+        val sid = try { dev.jdtech.mpv.MPVLib.getPropertyInt("sid") } catch (_: Exception) { 0 }
+        prefs.edit().putInt("${key}_aid", aid).putInt("${key}_sid", sid).apply()
+    }
+
+    private fun restoreTrackPrefs() {
+        val key = getFileKey()
+        if (key.isEmpty()) return
+        val prefs = getSharedPreferences("track_prefs", MODE_PRIVATE)
+        val aid = prefs.getInt("${key}_aid", 0)
+        val sid = prefs.getInt("${key}_sid", 0)
+        if (aid > 0) playerView.setAudioTrack(aid)
+        if (sid > 0) playerView.setSubtitleTrack(sid)
     }
 
     // ── List actions ─────────────────────────────────────────────────
@@ -634,7 +862,7 @@ class PlayerActivity : ComponentActivity(), MpvPlayerView.Listener {
         })
         listTitle.value = "Audio Track"
         listFocus.intValue = tracks.indexOfFirst { it.id == currentAid }.coerceAtLeast(0)
-        listCallback = { idx -> playerView.setAudioTrack(tracks[idx].id) }
+        listCallback = { idx -> playerView.setAudioTrack(tracks[idx].id); saveTrackPrefs() }
         screen.value = Screen.LIST_SELECT
     }
 
@@ -659,13 +887,13 @@ class PlayerActivity : ComponentActivity(), MpvPlayerView.Listener {
         listFocus.intValue = selectedIdx
         listCallback = { idx ->
             when {
-                idx == 0 -> playerView.disableSubtitles()
+                idx == 0 -> { playerView.disableSubtitles(); saveTrackPrefs() }
                 idx == listItems.size - 1 -> {
                     subtitleBrowserLauncher.launch(
                         Intent(this, BrowserActivity::class.java)
                             .putExtra(BrowserActivity.EXTRA_FILE_MODE, "subtitle"))
                 }
-                else -> playerView.setSubtitleTrack(tracks[idx - 1].id)
+                else -> { playerView.setSubtitleTrack(tracks[idx - 1].id); saveTrackPrefs() }
             }
         }
         screen.value = Screen.LIST_SELECT
@@ -719,6 +947,7 @@ class PlayerActivity : ComponentActivity(), MpvPlayerView.Listener {
 
     override fun onSubtitleTextChanged(text: String) {
         subtitleText.value = text.ifEmpty { null }
+        if (text.isNotEmpty()) lastSubtitleText = text
     }
 
     override fun onPauseChanged(paused: Boolean) {
@@ -730,7 +959,10 @@ class PlayerActivity : ComponentActivity(), MpvPlayerView.Listener {
         this.durationSec.doubleValue = durationSec
     }
 
-    override fun onFileLoaded() { Log.d(TAG, "File loaded") }
+    override fun onFileLoaded() {
+        Log.d(TAG, "File loaded")
+        restoreTrackPrefs()
+    }
     override fun onFileEnded() { Log.d(TAG, "File ended"); finish() }
     override fun onTracksChanged() {}
     override fun onError(message: String) {
