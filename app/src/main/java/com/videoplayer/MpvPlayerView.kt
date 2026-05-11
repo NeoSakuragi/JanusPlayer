@@ -93,6 +93,11 @@ class MpvPlayerView @JvmOverloads constructor(
             MPVLib.setOptionString("keep-open", "yes")
             MPVLib.setOptionString("save-position-on-quit", "no")
             MPVLib.setOptionString("vd-lavc-dr", "no")
+            // Aggressive buffering for smooth seeking
+            MPVLib.setOptionString("cache", "yes")
+            MPVLib.setOptionString("demuxer-max-bytes", "150MiB")
+            MPVLib.setOptionString("demuxer-max-back-bytes", "50MiB")
+            MPVLib.setOptionString("cache-secs", "300")
             // Fallbacks for older GPUs
             MPVLib.setOptionString("gpu-shader-cache-dir", context.cacheDir.absolutePath)
             MPVLib.setOptionString("gpu-sw", "yes") // allow software fallback
