@@ -714,8 +714,9 @@ class PlayerActivity : ComponentActivity(), MpvPlayerView.Listener {
     private fun isInflectionSuffix(token: com.atilika.kuromoji.ipadic.Token): Boolean {
         val pos1 = token.partOfSpeechLevel1
         val pos2 = token.partOfSpeechLevel2
-        return pos1 == "助動詞" || pos1 == "助詞" ||
-            (pos1 == "動詞" && (pos2 == "接尾" || pos2 == "非自立"))
+        return pos1 == "助動詞" ||
+            (pos1 == "動詞" && (pos2 == "接尾" || pos2 == "非自立")) ||
+            (pos1 == "助詞" && pos2 == "接続助詞")
     }
 
     private fun enterWordNav(): Boolean {
