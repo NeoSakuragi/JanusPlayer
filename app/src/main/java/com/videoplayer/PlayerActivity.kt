@@ -759,11 +759,23 @@ class PlayerActivity : ComponentActivity(), MpvPlayerView.Listener {
         val token = wordTokens.getOrNull(tokenIdx) ?: return
         val surface = token.surface
         val baseForm = token.baseForm ?: surface
+        // Build the full conjugated form from the highlight range
+        val range = wordHighlightRanges[tokenIdx] ?: (tokenIdx..tokenIdx)
+        val fullSurface = wordTokens.subList(range.first, range.last + 1).joinToString("") { it.surface }
         dwellScope.launch(Dispatchers.IO) {
-            Log.d(TAG, "LOOKUP: querying '$baseForm' / '$surface', db ready=${dictDb.isReady()}")
+            // Try: baseForm, surface, fullSurface, then all deinflected candidates
+            val candidates = mutableListOf(baseForm)
+            if (surface != baseForm) candidates.add(surface)
+            if (fullSurface != surface && fullSurface != baseForm) candidates.add(fullSurface)
+            candidates.addAll(Deinflector.deinflect(fullSurface).drop(1)) // skip first (original)
+            if (fullSurface != surface) candidates.addAll(Deinflector.deinflect(surface).drop(1))
+
+            Log.d(TAG, "LOOKUP: '$fullSurface' base='$baseForm' candidates=${candidates.distinct().take(8)}")
             val results = mutableListOf<DictionaryDatabase.DictEntry>()
-            results.addAll(dictDb.lookup(baseForm))
-            if (baseForm != surface) results.addAll(dictDb.lookup(surface))
+            for (candidate in candidates.distinct()) {
+                results.addAll(dictDb.lookup(candidate))
+                if (results.size >= 5) break
+            }
             Log.d(TAG, "LOOKUP: ${results.size} raw results")
             val unique = results.distinctBy { "${it.term}|${it.reading}" }
 
@@ -918,6 +930,7 @@ class PlayerActivity : ComponentActivity(), MpvPlayerView.Listener {
         val aid = try { dev.jdtech.mpv.MPVLib.getPropertyInt("aid") } catch (_: Exception) { 0 }
         val sid = try { dev.jdtech.mpv.MPVLib.getPropertyInt("sid") } catch (_: Exception) { 0 }
         prefs.edit().putInt("${key}_aid", aid).putInt("${key}_sid", sid).apply()
+        Log.d(TAG, "TRACK_SAVE: $key aid=$aid sid=$sid")
     }
 
     private fun restoreTrackPrefs() {
@@ -926,6 +939,7 @@ class PlayerActivity : ComponentActivity(), MpvPlayerView.Listener {
         val prefs = getSharedPreferences("track_prefs", MODE_PRIVATE)
         val aid = prefs.getInt("${key}_aid", 0)
         val sid = prefs.getInt("${key}_sid", 0)
+        Log.d(TAG, "TRACK_RESTORE: $key aid=$aid sid=$sid")
         if (aid > 0) playerView.setAudioTrack(aid)
         if (sid > 0) playerView.setSubtitleTrack(sid)
     }
@@ -1054,11 +1068,16 @@ class PlayerActivity : ComponentActivity(), MpvPlayerView.Listener {
 
     override fun onFileLoaded() {
         Log.d(TAG, "File loaded")
+        // Intent extras override saved prefs (for debug/testing)
         val subTrack = intent.getIntExtra(EXTRA_SUB_TRACK, 0)
-        if (subTrack > 0) playerView.setSubtitleTrack(subTrack)
-        else restoreTrackPrefs()
         val seekSec = intent.getFloatExtra(EXTRA_SEEK_SEC, 0f).toDouble()
-        if (seekSec > 0) playerView.seekTo(seekSec)
+        if (subTrack > 0 || seekSec > 0) {
+            if (subTrack > 0) playerView.setSubtitleTrack(subTrack)
+            if (seekSec > 0) playerView.seekTo(seekSec)
+        } else {
+            restoreTrackPrefs()
+        }
+        Log.d(TAG, "File loaded: key=${getFileKey()} subTrack=$subTrack seekSec=$seekSec")
     }
     override fun onFileEnded() { Log.d(TAG, "File ended"); finish() }
     override fun onTracksChanged() {}
