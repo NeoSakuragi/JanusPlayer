@@ -31,6 +31,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.*
+import dev.jdtech.mpv.MPVLib
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
@@ -61,6 +62,7 @@ class PlayerActivity : ComponentActivity(), MpvPlayerView.Listener {
     private val CTRL_FONT = 4
 
     private val FONT_SIZE_PRESETS = listOf(24, 32, 44)
+    private val subTimeline = SubtitleTimeline()
     private val subFontSizeIdx = mutableIntStateOf(1) // start at 24
     private val subFontKey = mutableStateOf("noto_sans")
 
@@ -181,6 +183,21 @@ class PlayerActivity : ComponentActivity(), MpvPlayerView.Listener {
             override fun onReceive(ctx: android.content.Context, intent: android.content.Intent) {
                 val sec = intent.getFloatExtra("sec", 0f).toDouble()
                 val action = intent.getStringExtra("do") ?: "wordnav"
+                if (action == "peektest") {
+                    val pos = playerView.position
+                    Log.d(TAG, "PEEKTEST: starting at pos=$pos")
+                    val t0 = System.currentTimeMillis()
+                    playerView.pause()
+                    try { MPVLib.command(arrayOf("sub-seek", "1")) } catch (_: Exception) {}
+                    Thread.sleep(20)
+                    val nextPos = playerView.position
+                    playerView.seekTo(pos)
+                    Thread.sleep(20)
+                    playerView.play()
+                    val elapsed = System.currentTimeMillis() - t0
+                    Log.d(TAG, "PEEKTEST: next sub at $nextPos (${nextPos - pos}s away) took ${elapsed}ms")
+                    return
+                }
                 Log.d(TAG, "TEST: seek=$sec action=$action")
                 playerView.seekTo(sec)
                 playerView.pause()
@@ -624,8 +641,14 @@ class PlayerActivity : ComponentActivity(), MpvPlayerView.Listener {
         when (state) {
             Screen.PLAYING -> when (key) {
                 KeyEvent.KEYCODE_BACK -> finish()
-                KeyEvent.KEYCODE_DPAD_LEFT -> playerView.subSeekPrev()
-                KeyEvent.KEYCODE_DPAD_RIGHT -> playerView.subSeekNext()
+                KeyEvent.KEYCODE_DPAD_LEFT -> {
+                    val prev = subTimeline.prevBefore(playerView.position)
+                    if (prev != null) playerView.seekTo(prev.startSec) else playerView.seekRelative(-10)
+                }
+                KeyEvent.KEYCODE_DPAD_RIGHT -> {
+                    val next = subTimeline.nextAfter(playerView.position)
+                    if (next != null) playerView.seekTo(next.startSec) else playerView.seekRelative(10)
+                }
                 KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE -> playerView.togglePause()
                 KeyEvent.KEYCODE_DPAD_UP -> {
                     playerView.pause()
@@ -1104,11 +1127,13 @@ class PlayerActivity : ComponentActivity(), MpvPlayerView.Listener {
     // ── MpvPlayerView.Listener ───────────────────────────────────────
 
     override fun onSubtitleTextChanged(text: String) {
-        // Strip furigana annotations like 悟飯(ごはん) → 悟飯
         val clean = text.replace(Regex("\\([\\u3040-\\u309F\\u30A0-\\u30FF\\s]+\\)"), "")
         subtitleText.value = clean.ifEmpty { null }
-        if (clean.isNotEmpty()) lastSubtitleText = clean
-        if (clean.isNotEmpty()) Log.d(TAG, "SUB: $clean")
+        if (clean.isNotEmpty()) {
+            lastSubtitleText = clean
+            Log.d(TAG, "SUB: $clean")
+            subTimeline.recordCurrentSub(clean, playerView.position)
+        }
     }
 
     fun seekPauseAndLog(seconds: Double) {
@@ -1128,7 +1153,6 @@ class PlayerActivity : ComponentActivity(), MpvPlayerView.Listener {
 
     override fun onFileLoaded() {
         Log.d(TAG, "File loaded")
-        // Intent extras override saved prefs (for debug/testing)
         val subTrack = intent.getIntExtra(EXTRA_SUB_TRACK, 0)
         val seekSec = intent.getFloatExtra(EXTRA_SEEK_SEC, 0f).toDouble()
         if (subTrack > 0 || seekSec > 0) {
@@ -1137,7 +1161,8 @@ class PlayerActivity : ComponentActivity(), MpvPlayerView.Listener {
         } else {
             restoreTrackPrefs()
         }
-        Log.d(TAG, "File loaded: key=${getFileKey()} subTrack=$subTrack seekSec=$seekSec")
+        Log.d(TAG, "File loaded: key=${getFileKey()}")
+
     }
     override fun onFileEnded() { Log.d(TAG, "File ended"); finish() }
     override fun onTracksChanged() {}
