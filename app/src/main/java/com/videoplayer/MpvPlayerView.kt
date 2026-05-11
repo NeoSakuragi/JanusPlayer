@@ -128,9 +128,7 @@ class MpvPlayerView @JvmOverloads constructor(
             return
         }
         fileLoaded = false
-        // Reset state for new file
         try {
-            MPVLib.setPropertyString("vo", "gpu")
             MPVLib.setPropertyString("sid", "auto")
             MPVLib.setPropertyString("aid", "auto")
         } catch (_: Exception) {}
