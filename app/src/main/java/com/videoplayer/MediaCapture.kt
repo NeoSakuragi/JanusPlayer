@@ -3,7 +3,6 @@ package com.videoplayer
 import android.content.Context
 import android.graphics.Bitmap
 import android.util.Log
-import dev.jdtech.mpv.MPVLib
 import java.io.File
 import java.io.FileOutputStream
 
@@ -33,14 +32,8 @@ class MediaCapture(private val context: Context) {
     }
 
     fun getSubtitleTiming(): Pair<Double, Double>? {
-        return try {
-            val start = MPVLib.getPropertyDouble("sub-start") ?: return null
-            val end = MPVLib.getPropertyDouble("sub-end") ?: return null
-            if (start >= 0 && end > start) Pair(start, end) else null
-        } catch (e: Exception) {
-            Log.w(TAG, "Cannot get subtitle timing: ${e.message}")
-            null
-        }
+        // TODO: implement with ExoPlayer subtitle cue timing
+        return null
     }
 
     fun extractAudio(sourceUrl: String, startSec: Double, endSec: Double): File? {
