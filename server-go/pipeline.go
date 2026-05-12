@@ -32,6 +32,15 @@ func runCommand(cmd string, args []string) {
 		cmdExtractThumbs()
 	case "strip-tags":
 		cmdStripTags()
+	case "add-user":
+		initAuth()
+		cmdAddUser(args)
+	case "list-users":
+		initAuth()
+		cmdListUsers()
+	case "delete-user":
+		initAuth()
+		cmdDeleteUser(args)
 	default:
 		fmt.Printf("Unknown command: %s\n\n", cmd)
 		fmt.Println("Usage: janus-server [command]")
@@ -39,11 +48,14 @@ func runCommand(cmd string, args []string) {
 		fmt.Println("Commands:")
 		fmt.Println("  (none)          Start HTTP server")
 		fmt.Println("  status          Show library stats")
-		fmt.Println("  add-series      Add a TV series: add-series <video-dir> --id=<id> --pattern=<regex> [--tmdb=<id>] [--season=<n>] [--tmdb-offset=<n>]")
-		fmt.Println("  add-movie       Add a movie: add-movie <video-file> --id=<id> [--tmdb=<id>]")
-		fmt.Println("  fetch-tmdb      Refresh TMDB data for all items")
-		fmt.Println("  extract-thumbs  Generate missing thumbnails from video files")
-		fmt.Println("  strip-tags      Strip HTML/ASS tags from all SRT files")
+		fmt.Println("  add-series      Add a TV series")
+		fmt.Println("  add-movie       Add a movie")
+		fmt.Println("  fetch-tmdb      Refresh TMDB data")
+		fmt.Println("  extract-thumbs  Generate missing thumbnails")
+		fmt.Println("  strip-tags      Strip SRT tags")
+		fmt.Println("  add-user        Create user: --name=X --password=Y [--role=admin|viewer]")
+		fmt.Println("  list-users      List all users")
+		fmt.Println("  delete-user     Delete user: --name=X")
 		os.Exit(1)
 	}
 }

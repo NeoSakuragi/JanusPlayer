@@ -26,12 +26,36 @@ class SettingsActivity : AppCompatActivity() {
 
         findViewById<ImageButton>(R.id.btnBack).setOnClickListener { finish() }
 
+        setupAccount()
         setupUpdates()
         setupDownloads()
         setupPlaybackSettings()
         setupDictionaries()
         setupAnkiSettings()
         setupFieldMappings()
+    }
+
+    private fun setupAccount() {
+        val prefs = getSharedPreferences("janus_settings", MODE_PRIVATE)
+        val username = prefs.getString("username", "unknown") ?: "unknown"
+        val tvStatus = findViewById<TextView>(R.id.tvLogoutStatus)
+        tvStatus.text = "Logged in as $username"
+
+        findViewById<LinearLayout>(R.id.settingLogout).setOnClickListener {
+            AlertDialog.Builder(this)
+                .setTitle("Logout")
+                .setMessage("This will clear your session and cached library.")
+                .setPositiveButton("Logout") { _, _ ->
+                    prefs.edit().remove("auth_token").remove("username").apply()
+                    val intent = android.content.Intent(this, LibraryActivity::class.java)
+                    intent.addFlags(android.content.Intent.FLAG_ACTIVITY_CLEAR_TOP or android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                    intent.putExtra("open_screen", "login")
+                    startActivity(intent)
+                    finish()
+                }
+                .setNegativeButton("Cancel", null)
+                .show()
+        }
     }
 
     private fun setupDownloads() {

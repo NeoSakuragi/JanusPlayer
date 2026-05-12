@@ -1,8 +1,10 @@
 package com.videoplayer
 
 import android.util.Log
+import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 
@@ -12,6 +14,34 @@ class JanusApi(private val baseUrl: String) {
         .connectTimeout(10, TimeUnit.SECONDS)
         .readTimeout(30, TimeUnit.SECONDS)
         .build()
+
+    var token: String? = null
+
+    data class LoginResult(val token: String, val username: String, val role: String)
+
+    fun login(username: String, password: String): LoginResult? {
+        val body = JSONObject().put("username", username).put("password", password).toString()
+        val request = Request.Builder()
+            .url("$baseUrl/api/login")
+            .post(okhttp3.RequestBody.create("application/json".toMediaTypeOrNull(), body))
+            .build()
+        val response = client.newCall(request).execute()
+        if (!response.isSuccessful) return null
+        val json = JSONObject(response.body?.string() ?: return null)
+        val result = LoginResult(
+            token = json.getString("token"),
+            username = json.getString("username"),
+            role = json.getString("role")
+        )
+        token = result.token
+        return result
+    }
+
+    private fun authRequest(url: String): Request.Builder {
+        val builder = Request.Builder().url(url)
+        if (token != null) builder.header("Authorization", "Bearer $token")
+        return builder
+    }
 
     data class LibraryItem(
         val id: String,
@@ -70,7 +100,7 @@ class JanusApi(private val baseUrl: String) {
     )
 
     fun fetchLibrary(): List<LibraryItem> {
-        val request = Request.Builder().url("$baseUrl/api/library").build()
+        val request = authRequest("$baseUrl/api/library").build()
         val response = client.newCall(request).execute()
         if (!response.isSuccessful) {
             Log.e("JanusApi", "Library fetch failed: ${response.code}")
@@ -94,7 +124,7 @@ class JanusApi(private val baseUrl: String) {
     }
 
     fun fetchSeriesDetail(seriesId: String): SeriesDetail? {
-        val request = Request.Builder().url("$baseUrl/api/items/$seriesId/info.json").build()
+        val request = authRequest("$baseUrl/api/items/$seriesId/info.json").build()
         val response = client.newCall(request).execute()
         if (!response.isSuccessful) return null
         val obj = JSONObject(response.body?.string() ?: return null)
@@ -114,7 +144,7 @@ class JanusApi(private val baseUrl: String) {
     }
 
     fun fetchSeason(seriesId: String, seasonNum: Int): SeasonData? {
-        val request = Request.Builder().url("$baseUrl/api/items/$seriesId/season-$seasonNum.json").build()
+        val request = authRequest("$baseUrl/api/items/$seriesId/season-$seasonNum.json").build()
         val response = client.newCall(request).execute()
         if (!response.isSuccessful) return null
         val obj = JSONObject(response.body?.string() ?: return null)
@@ -127,7 +157,7 @@ class JanusApi(private val baseUrl: String) {
     }
 
     fun fetchMovieDetail(movieId: String): MovieDetail? {
-        val request = Request.Builder().url("$baseUrl/api/items/$movieId.json").build()
+        val request = authRequest("$baseUrl/api/items/$movieId.json").build()
         val response = client.newCall(request).execute()
         if (!response.isSuccessful) return null
         val obj = JSONObject(response.body?.string() ?: return null)

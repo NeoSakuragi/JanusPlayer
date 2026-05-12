@@ -52,7 +52,7 @@ class LibraryActivity : ComponentActivity() {
         private const val PREFS_NAME = "janus_settings"
     }
 
-    enum class Screen { MAIN, ITEM_DETAIL, DOWNLOADS }
+    enum class Screen { LOGIN, MAIN, ITEM_DETAIL, DOWNLOADS }
     enum class LibraryRow { HEADER, CONTINUE, SERIES, MOVIES }
 
     private val screen = mutableStateOf(Screen.MAIN)
@@ -67,6 +67,7 @@ class LibraryActivity : ComponentActivity() {
     private val loading = mutableStateOf(true)
     private val serverUrl = mutableStateOf(DEFAULT_SERVER_URL)
     private val showCursorState = mutableStateOf(true)
+    private val loginError = mutableStateOf("")
     private val selectedLibItem = mutableStateOf<JanusApi.LibraryItem?>(null)
     private val detailEpisodes = mutableStateListOf<JanusApi.Episode>()
     private val detailSeasons = mutableStateListOf<JanusApi.SeasonInfo>()
@@ -85,13 +86,20 @@ class LibraryActivity : ComponentActivity() {
         api = JanusApi(serverUrl.value)
         DownloadManager.init(this)
 
-        loadLibrary()
+        // Check for saved session
+        val savedToken = prefs.getString("auth_token", null)
+        if (savedToken != null) {
+            api.token = savedToken
+            loadLibrary()
+        } else {
+            screen.value = Screen.LOGIN
+        }
 
         AppNavigator.registerOnExit(AppNavigator.Screen.ITEM_DETAIL) { releasePreviewPlayer() }
 
-        if (intent.getStringExtra("open_screen") == "downloads") {
-            screen.value = Screen.DOWNLOADS
-        }
+        val openScreen = intent.getStringExtra("open_screen")
+        if (openScreen == "downloads") screen.value = Screen.DOWNLOADS
+        else if (openScreen == "login") { logout(); return }
 
         setContent {
             LibraryScreen()
@@ -101,6 +109,7 @@ class LibraryActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         val navScreen = when (screen.value) {
+            Screen.LOGIN -> AppNavigator.Screen.MAIN
             Screen.MAIN, Screen.DOWNLOADS -> AppNavigator.Screen.MAIN
             Screen.ITEM_DETAIL -> AppNavigator.Screen.ITEM_DETAIL
         }
@@ -181,7 +190,9 @@ class LibraryActivity : ComponentActivity() {
                 }
 
                 // Content area
-                if (isLoading) {
+                if (currentScreen == Screen.LOGIN) {
+                    LoginScreen()
+                } else if (isLoading) {
                     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                         androidx.compose.material3.Text(
                             "Loading library...", color = Color.White, fontSize = 18.sp
@@ -253,6 +264,7 @@ class LibraryActivity : ComponentActivity() {
                     }
                 } else {
                     when (currentScreen) {
+                        Screen.LOGIN -> {} // handled above
                         Screen.MAIN -> LibraryRows(sFocus, showCursor)
                         Screen.ITEM_DETAIL -> {
                             val item = selectedLibItem.value
@@ -511,6 +523,119 @@ class LibraryActivity : ComponentActivity() {
                 )
             }
         }
+    }
+
+    @Composable
+    private fun LoginScreen() {
+        var serverInput by remember { mutableStateOf(serverUrl.value) }
+        var username by remember { mutableStateOf("") }
+        var password by remember { mutableStateOf("") }
+        val error by loginError
+
+        Column(
+            modifier = Modifier.fillMaxSize().padding(horizontal = 64.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
+        ) {
+            androidx.compose.material3.Text(
+                "Janus", color = Color(0xFFBB86FC), fontSize = 36.sp, fontWeight = FontWeight.Bold
+            )
+            Spacer(Modifier.height(32.dp))
+
+            val fieldColors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(
+                focusedTextColor = Color.White, unfocusedTextColor = Color.White,
+                focusedBorderColor = Color(0xFFBB86FC), unfocusedBorderColor = Color(0xFF444444),
+                cursorColor = Color(0xFFBB86FC),
+                focusedContainerColor = Color(0xFF1E1E2E), unfocusedContainerColor = Color(0xFF1E1E2E),
+            )
+
+            androidx.compose.material3.Text("Server", color = Color(0xFFAAAAAA), fontSize = 13.sp)
+            Spacer(Modifier.height(4.dp))
+            androidx.compose.material3.OutlinedTextField(
+                value = serverInput, onValueChange = { serverInput = it },
+                singleLine = true, colors = fieldColors,
+                modifier = Modifier.fillMaxWidth(0.5f)
+            )
+            Spacer(Modifier.height(16.dp))
+
+            androidx.compose.material3.Text("Username", color = Color(0xFFAAAAAA), fontSize = 13.sp)
+            Spacer(Modifier.height(4.dp))
+            androidx.compose.material3.OutlinedTextField(
+                value = username, onValueChange = { username = it },
+                singleLine = true, colors = fieldColors,
+                modifier = Modifier.fillMaxWidth(0.5f)
+            )
+            Spacer(Modifier.height(16.dp))
+
+            androidx.compose.material3.Text("Password", color = Color(0xFFAAAAAA), fontSize = 13.sp)
+            Spacer(Modifier.height(4.dp))
+            androidx.compose.material3.OutlinedTextField(
+                value = password, onValueChange = { password = it },
+                singleLine = true, colors = fieldColors,
+                visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
+                modifier = Modifier.fillMaxWidth(0.5f)
+            )
+
+            if (error.isNotEmpty()) {
+                Spacer(Modifier.height(8.dp))
+                androidx.compose.material3.Text(error, color = Color(0xFFFF5252), fontSize = 13.sp)
+            }
+
+            Spacer(Modifier.height(24.dp))
+            Box(
+                modifier = Modifier
+                    .background(Color(0xFFBB86FC), RoundedCornerShape(8.dp))
+                    .clickable {
+                        var url = serverInput.trim()
+                        if (url.isNotEmpty() && !url.startsWith("http")) url = "http://$url"
+                        val user = username.trim()
+                        val pass = password.trim()
+                        if (url.isEmpty() || user.isEmpty() || pass.isEmpty()) {
+                            loginError.value = "All fields required"
+                            return@clickable
+                        }
+                        loginError.value = ""
+                        serverUrl.value = url
+                        api = JanusApi(url)
+                        Thread {
+                            try {
+                                val result = api.login(user, pass)
+                                runOnUiThread {
+                                    if (result != null) {
+                                        getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
+                                            .putString("server_url", url)
+                                            .putString("auth_token", result.token)
+                                            .putString("username", result.username)
+                                            .apply()
+                                        screen.value = Screen.MAIN
+                                        loadLibrary()
+                                    } else {
+                                        loginError.value = "Invalid credentials"
+                                    }
+                                }
+                            } catch (e: Exception) {
+                                runOnUiThread { loginError.value = "Connection failed: ${e.message}" }
+                            }
+                        }.start()
+                    }
+                    .padding(horizontal = 48.dp, vertical = 14.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                androidx.compose.material3.Text("Login", color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+            }
+        }
+    }
+
+    private fun logout() {
+        getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
+            .remove("auth_token")
+            .remove("username")
+            .apply()
+        api.token = null
+        library.clear()
+        seriesList.clear()
+        movieList.clear()
+        screen.value = Screen.LOGIN
     }
 
     private fun releasePreviewPlayer() {
@@ -996,6 +1121,7 @@ class LibraryActivity : ComponentActivity() {
         if (isDpad) showCursorState.value = true
 
         when (screen.value) {
+            Screen.LOGIN -> return super.dispatchKeyEvent(event)
             Screen.MAIN -> when (event.keyCode) {
                 KeyEvent.KEYCODE_BACK -> { finish(); return true }
                 KeyEvent.KEYCODE_DPAD_UP -> rowMoveUp()

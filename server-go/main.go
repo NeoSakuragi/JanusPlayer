@@ -30,12 +30,16 @@ func main() {
 	}
 
 	initDB()
+	initAuth()
 	startTime = time.Now()
 
 	host := envOr("JANUS_HOST", "0.0.0.0")
 	port := envOr("JANUS_PORT", "8900")
 
 	mux := http.NewServeMux()
+
+	// Auth
+	mux.HandleFunc("/api/login", handleLogin)
 
 	// Data endpoints (from DB)
 	mux.HandleFunc("/api/health", handleHealth)
@@ -58,7 +62,7 @@ func main() {
 
 	server := &http.Server{
 		Addr:         addr,
-		Handler:      cors(logger(mux)),
+		Handler:      cors(authMiddleware(logger(mux))),
 		ReadTimeout:  5 * time.Second,
 		WriteTimeout: 10 * time.Minute,
 		IdleTimeout:  60 * time.Second,
@@ -143,6 +147,13 @@ var schema = []string{
 		filename TEXT DEFAULT '',
 		updated_at INTEGER DEFAULT (strftime('%s','now')),
 		PRIMARY KEY (series_id, episode_num)
+	)`,
+	`CREATE TABLE IF NOT EXISTS users (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		username TEXT UNIQUE NOT NULL,
+		password_hash TEXT NOT NULL,
+		role TEXT DEFAULT 'viewer',
+		created_at INTEGER DEFAULT (strftime('%s','now'))
 	)`,
 	`INSERT OR IGNORE INTO meta (key, value) VALUES ('library_version', '1')`,
 	`INSERT OR IGNORE INTO meta (key, value) VALUES ('app_version_code', '9')`,

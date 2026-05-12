@@ -47,6 +47,12 @@
             android:orientation="vertical"
             android:padding="16dp">
 
+            <!-- Account -->
+            <LinearLayout android:id="@+id/settingLogout" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:padding="12dp" android:background="@drawable/focus_highlight" android:focusable="true" android:clickable="true">
+                <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Logout" android:textColor="#FF5252" android:textSize="15sp" />
+                <TextView android:id="@+id/tvLogoutStatus" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Logged in" android:textColor="#888888" android:textSize="13sp" android:layout_marginTop="2dp" />
+            </LinearLayout>
+
             <!-- Updates section -->
             <TextView
                 android:layout_width="match_parent"
