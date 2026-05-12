@@ -6,13 +6,21 @@ import android.util.Log
 import android.view.KeyEvent
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -20,8 +28,14 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.media3.common.MediaItem
+import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.ui.PlayerView
+import kotlinx.coroutines.delay
 
 /**
  * Netflix-style library browser.
@@ -35,11 +49,12 @@ class LibraryActivity : ComponentActivity() {
         private const val PREFS_NAME = "janus_settings"
     }
 
-    enum class Screen { SERIES_LIST, EPISODE_LIST, SETTINGS }
+    enum class Screen { MAIN, SETTINGS, ITEM_DETAIL }
     enum class LibraryRow { CONTINUE, SERIES, MOVIES }
 
-    private val screen = mutableStateOf(Screen.SERIES_LIST)
+    private val screen = mutableStateOf(Screen.MAIN)
     private val currentRow = mutableStateOf(LibraryRow.SERIES)
+    private val continueFocus = mutableIntStateOf(0)
     private val seriesFocus = mutableIntStateOf(0)
     private val movieFocus = mutableIntStateOf(0)
     private val episodeFocus = mutableIntStateOf(0)
@@ -53,6 +68,9 @@ class LibraryActivity : ComponentActivity() {
     private val updateAvailable = mutableStateOf<AppUpdater.UpdateInfo?>(null)
     private val updateDownloading = mutableStateOf(false)
     private var appUpdater: AppUpdater? = null
+    private val dpadDetected = mutableStateOf(false)
+    private val selectedItem = mutableStateOf<JanusApi.Series?>(null)
+    private val detailVisitCount = mutableIntStateOf(0)
 
     private lateinit var api: JanusApi
 
@@ -93,6 +111,7 @@ class LibraryActivity : ComponentActivity() {
         val isLoading by loading
         val sFocus by seriesFocus
         val eFocus by episodeFocus
+        val showCursor by dpadDetected
 
         Box(
             modifier = Modifier.fillMaxSize().background(Color(0xFF0A0A1A))
@@ -113,10 +132,12 @@ class LibraryActivity : ComponentActivity() {
                 )
             } else {
                 Column(
-                    modifier = Modifier.fillMaxSize().padding(top = 32.dp)
+                    modifier = Modifier.fillMaxSize().then(
+                        if (currentScreen != Screen.ITEM_DETAIL) Modifier.padding(top = 32.dp) else Modifier
+                    )
                 ) {
-                    // Header with settings gear
-                    Row(
+                    // Header with settings gear (not on item detail)
+                    if (currentScreen != Screen.ITEM_DETAIL) Row(
                         verticalAlignment = Alignment.CenterVertically,
                         modifier = Modifier.fillMaxWidth().padding(horizontal = 32.dp, vertical = 8.dp)
                     ) {
@@ -124,7 +145,10 @@ class LibraryActivity : ComponentActivity() {
                             "Janus",
                             color = Color(0xFFBB86FC),
                             fontSize = 28.sp,
-                            fontWeight = FontWeight.Bold
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.clickable {
+                                if (currentScreen != Screen.MAIN) screen.value = Screen.MAIN
+                            }
                         )
                         Spacer(Modifier.weight(1f))
                         androidx.compose.material3.Text(
@@ -135,10 +159,10 @@ class LibraryActivity : ComponentActivity() {
                         )
                     }
 
-                    // Update banner
+                    // Update banner (not on item detail)
                     val update by updateAvailable
                     val downloading by updateDownloading
-                    if (update != null) {
+                    if (update != null && currentScreen != Screen.ITEM_DETAIL) {
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
                             modifier = Modifier.fillMaxWidth()
@@ -168,12 +192,13 @@ class LibraryActivity : ComponentActivity() {
                     }
 
                     when (currentScreen) {
-                        Screen.SERIES_LIST -> SeriesRow(sFocus)
-                        Screen.EPISODE_LIST -> {
-                            val series = seriesList.getOrNull(sFocus)
-                            if (series != null) EpisodeList(series, eFocus)
-                        }
+                        Screen.MAIN -> LibraryRows(sFocus, showCursor)
                         Screen.SETTINGS -> SettingsScreen()
+                        Screen.ITEM_DETAIL -> {
+                            val item = selectedItem.value
+                            if (item != null) ItemDetailPage(item, eFocus, showCursor)
+                            else screen.value = Screen.MAIN
+                        }
                     }
                 }
             }
@@ -197,30 +222,51 @@ class LibraryActivity : ComponentActivity() {
     }
 
     @Composable
-    private fun SeriesRow(focusIdx: Int) {
+    private fun LibraryRows(focusIdx: Int, showCursor: Boolean) {
         val continueItems = remember { getContinueWatching() }
         val activeRow by currentRow
+        val cFocus by continueFocus
         val mFocus by movieFocus
+        val continueListState = rememberLazyListState()
+        val seriesListState = rememberLazyListState()
+        val moviesListState = rememberLazyListState()
+
+        LaunchedEffect(cFocus, activeRow) {
+            if (activeRow == LibraryRow.CONTINUE) continueListState.animateScrollToItem(cFocus.coerceAtLeast(0))
+        }
+        LaunchedEffect(focusIdx, activeRow) {
+            if (activeRow == LibraryRow.SERIES) seriesListState.animateScrollToItem(focusIdx.coerceAtLeast(0))
+        }
+        LaunchedEffect(mFocus, activeRow) {
+            if (activeRow == LibraryRow.MOVIES) moviesListState.animateScrollToItem(mFocus.coerceAtLeast(0))
+        }
 
         Column {
             // Continue Watching row
             if (continueItems.isNotEmpty()) {
                 androidx.compose.material3.Text(
                     "Continue Watching",
-                    color = if (activeRow == LibraryRow.CONTINUE) Color(0xFFBB86FC) else Color(0xFFCCCCCC),
+                    color = if (showCursor && activeRow == LibraryRow.CONTINUE) Color(0xFFBB86FC) else Color(0xFFCCCCCC),
                     fontSize = 16.sp,
                     modifier = Modifier.padding(horizontal = 32.dp, vertical = 8.dp)
                 )
                 LazyRow(
+                    state = continueListState,
                     contentPadding = PaddingValues(horizontal = 32.dp),
                     horizontalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
-                    itemsIndexed(continueItems) { _, item ->
+                    itemsIndexed(continueItems) { idx, item ->
+                        val focused = showCursor && activeRow == LibraryRow.CONTINUE && idx == cFocus
                         val progress = (item.positionMs / 1000.0 / item.episode.durationSec).toFloat().coerceIn(0f, 1f)
                         Column(
                             modifier = Modifier.width(220.dp)
+                                .then(if (focused) Modifier.border(2.dp, Color(0xFFBB86FC), RoundedCornerShape(8.dp)) else Modifier)
                                 .background(Color(0xFF1A1A2E), RoundedCornerShape(8.dp))
-                                .clickable { playContinueItem(item) }
+                                .clickable {
+                                    currentRow.value = LibraryRow.CONTINUE
+                                    continueFocus.intValue = idx
+                                    playContinueItem(item)
+                                }
                                 .padding(12.dp)
                         ) {
                             androidx.compose.material3.Text(
@@ -248,19 +294,20 @@ class LibraryActivity : ComponentActivity() {
             if (seriesList.isNotEmpty()) {
                 androidx.compose.material3.Text(
                     "Series",
-                    color = if (activeRow == LibraryRow.SERIES) Color(0xFFBB86FC) else Color(0xFFCCCCCC),
+                    color = if (showCursor && activeRow == LibraryRow.SERIES) Color(0xFFBB86FC) else Color(0xFFCCCCCC),
                     fontSize = 16.sp,
                     modifier = Modifier.padding(horizontal = 32.dp, vertical = 8.dp)
                 )
                 LazyRow(
+                    state = seriesListState,
                     contentPadding = PaddingValues(horizontal = 32.dp),
                     horizontalArrangement = Arrangement.spacedBy(16.dp)
                 ) {
                     itemsIndexed(seriesList) { idx, series ->
-                        SeriesCard(series, focused = activeRow == LibraryRow.SERIES && idx == focusIdx) {
+                        SeriesCard(series, focused = showCursor && activeRow == LibraryRow.SERIES && idx == focusIdx) {
                             currentRow.value = LibraryRow.SERIES
                             seriesFocus.intValue = idx
-                            selectSeries(idx)
+                            openItemDetail(series)
                         }
                     }
                 }
@@ -271,19 +318,20 @@ class LibraryActivity : ComponentActivity() {
             if (movieList.isNotEmpty()) {
                 androidx.compose.material3.Text(
                     "Movies",
-                    color = if (activeRow == LibraryRow.MOVIES) Color(0xFFBB86FC) else Color(0xFFCCCCCC),
+                    color = if (showCursor && activeRow == LibraryRow.MOVIES) Color(0xFFBB86FC) else Color(0xFFCCCCCC),
                     fontSize = 16.sp,
                     modifier = Modifier.padding(horizontal = 32.dp, vertical = 8.dp)
                 )
                 LazyRow(
+                    state = moviesListState,
                     contentPadding = PaddingValues(horizontal = 32.dp),
                     horizontalArrangement = Arrangement.spacedBy(16.dp)
                 ) {
                     itemsIndexed(movieList) { idx, movie ->
-                        SeriesCard(movie, focused = activeRow == LibraryRow.MOVIES && idx == mFocus) {
+                        SeriesCard(movie, focused = showCursor && activeRow == LibraryRow.MOVIES && idx == mFocus) {
                             currentRow.value = LibraryRow.MOVIES
                             movieFocus.intValue = idx
-                            selectMovie(idx)
+                            openItemDetail(movie)
                         }
                     }
                 }
@@ -362,40 +410,242 @@ class LibraryActivity : ComponentActivity() {
         }
     }
 
+    private var previewPlayer: ExoPlayer? = null
+
+    private fun releasePreviewPlayer() {
+        previewPlayer?.release()
+        previewPlayer = null
+    }
+
+    @OptIn(androidx.media3.common.util.UnstableApi::class)
     @Composable
-    private fun EpisodeList(series: JanusApi.Series, focusIdx: Int) {
-        Column(modifier = Modifier.padding(horizontal = 32.dp)) {
-            // Series header (tap to go back)
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier.clickable { screen.value = Screen.SERIES_LIST }
+    private fun ItemDetailPage(item: JanusApi.Series, focusIdx: Int, showCursor: Boolean) {
+        val scrollState = rememberScrollState()
+        var showPreview by remember { mutableStateOf(false) }
+
+        // Scroll to keep focused episode visible
+        val heroHeight = 400
+        val rowHeight = 200
+        val cols = 4
+        LaunchedEffect(focusIdx) {
+            if (item.type != "MOVIE" && item.episodes.isNotEmpty()) {
+                val row = focusIdx / cols
+                val targetScroll = heroHeight + 40 + (row * rowHeight) - 100
+                scrollState.animateScrollTo(targetScroll.coerceAtLeast(0))
+            }
+        }
+
+        val visitKey by detailVisitCount
+        DisposableEffect(visitKey) {
+            onDispose { releasePreviewPlayer() }
+        }
+        LaunchedEffect(visitKey) {
+            showPreview = false
+            delay(3000)
+            showPreview = true
+        }
+
+        Column(
+            modifier = Modifier.fillMaxSize().verticalScroll(scrollState)
+        ) {
+            // Hero area
+            Box(
+                modifier = Modifier.fillMaxWidth().height(400.dp)
             ) {
-                androidx.compose.material3.Text(
-                    series.titleJa,
-                    color = Color.White,
-                    fontSize = 24.sp,
-                    fontWeight = FontWeight.Bold
+                // Backdrop: cover image (banner if available, else cover)
+                coil.compose.AsyncImage(
+                    model = "${serverUrl.value}/api/covers/${item.id}-banner.jpg",
+                    contentDescription = null,
+                    contentScale = androidx.compose.ui.layout.ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize()
                 )
-                Spacer(Modifier.width(12.dp))
+
+                // Video preview fades in after 3s
+                androidx.compose.animation.AnimatedVisibility(
+                    visible = showPreview,
+                    enter = fadeIn(tween(1500)),
+                    modifier = Modifier.fillMaxSize()
+                ) {
+                    val firstEp = item.episodes.firstOrNull()
+                    if (firstEp != null) {
+                        AndroidView(
+                            factory = { ctx ->
+                                releasePreviewPlayer()
+                                val player = ExoPlayer.Builder(ctx).build().apply {
+                                    trackSelectionParameters = trackSelectionParameters.buildUpon()
+                                        .setTrackTypeDisabled(androidx.media3.common.C.TRACK_TYPE_TEXT, true)
+                                        .build()
+                                    val url = api.videoUrl(item.id, firstEp.filename)
+                                    setMediaItem(MediaItem.fromUri(url))
+                                    prepare()
+                                    seekTo(8 * 60 * 1000L)
+                                    volume = 1f
+                                    play()
+                                }
+                                previewPlayer = player
+                                PlayerView(ctx).apply {
+                                    this.player = player
+                                    useController = false
+                                }
+                            },
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    }
+                }
+
+                // Dark gradient on left for text readability
+                Box(
+                    modifier = Modifier.fillMaxSize()
+                        .background(Brush.horizontalGradient(
+                            listOf(Color(0xDD0A0A1A), Color(0x880A0A1A), Color.Transparent),
+                            startX = 0f, endX = 800f
+                        ))
+                )
+                // Bottom fade
+                Box(
+                    modifier = Modifier.fillMaxWidth().height(100.dp).align(Alignment.BottomCenter)
+                        .background(Brush.verticalGradient(listOf(Color.Transparent, Color(0xFF0A0A1A))))
+                )
+
+                // Content overlaid on hero
+                Column(
+                    modifier = Modifier.align(Alignment.BottomStart)
+                        .padding(start = 32.dp, bottom = 16.dp, end = 32.dp)
+                        .widthIn(max = 500.dp)
+                ) {
+                    // Back
+                    androidx.compose.material3.Text(
+                        "← Back", color = Color(0xFF888888), fontSize = 13.sp,
+                        modifier = Modifier.clickable { releasePreviewPlayer(); screen.value = Screen.MAIN }
+                            .padding(bottom = 12.dp)
+                    )
+
+                    // Title
+                    androidx.compose.material3.Text(
+                        item.titleJa, color = Color.White, fontSize = 28.sp, fontWeight = FontWeight.Bold
+                    )
+                    androidx.compose.material3.Text(
+                        item.titleEn, color = Color(0xFFCCCCCC), fontSize = 16.sp
+                    )
+
+                    Spacer(Modifier.height(12.dp))
+
+                    // Play button
+                    val lastWatched = getLastWatched(item.id)
+                    val resumeLabel = when {
+                        lastWatched != null && item.type == "MOVIE" -> "▶  Resume"
+                        lastWatched != null -> "▶  Resume Ep. ${lastWatched.first}"
+                        item.type == "MOVIE" -> "▶  Play"
+                        else -> "▶  Play Episode 1"
+                    }
+                    Box(
+                        modifier = Modifier.width(240.dp)
+                            .background(Color(0xFFBB86FC), RoundedCornerShape(8.dp))
+                            .clickable { releasePreviewPlayer(); playItem(item) }
+                            .padding(horizontal = 20.dp, vertical = 14.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        androidx.compose.material3.Text(
+                            resumeLabel, color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Bold
+                        )
+                    }
+
+                    Spacer(Modifier.height(12.dp))
+
+                    // Metadata line
+                    val metaParts = mutableListOf<String>()
+                    if (item.type == "MOVIE") {
+                        val mins = item.episodes.firstOrNull()?.let { (it.durationSec / 60).toInt() } ?: 0
+                        metaParts.add("${mins} min")
+                    } else {
+                        metaParts.add("${item.episodeCount} episodes")
+                    }
+                    val jaCount = item.episodes.count { it.hasJaSubs }
+                    if (jaCount > 0) metaParts.add("JP subs")
+                    androidx.compose.material3.Text(
+                        metaParts.joinToString("  ·  "),
+                        color = Color(0xFF888888), fontSize = 13.sp
+                    )
+                }
+            }
+
+            // Episode grid (for series)
+            if (item.type != "MOVIE" && item.episodes.isNotEmpty()) {
+                Spacer(Modifier.height(8.dp))
                 androidx.compose.material3.Text(
-                    series.titleEn,
-                    color = Color(0xFFAAAAAA),
-                    fontSize = 16.sp
+                    "${item.episodeCount} episodes",
+                    color = Color(0xFFCCCCCC), fontSize = 15.sp,
+                    modifier = Modifier.padding(horizontal = 32.dp, vertical = 8.dp)
+                )
+                // Use a fixed-height grid since we're inside a scrollable Column
+                val rows = (item.episodes.size + 3) / 4
+                val gridHeight = (rows * 200).dp
+                LazyVerticalGrid(
+                    columns = GridCells.Fixed(4),
+                    modifier = Modifier.fillMaxWidth().height(gridHeight).padding(horizontal = 24.dp),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                    userScrollEnabled = false
+                ) {
+                    itemsIndexed(item.episodes) { idx, ep ->
+                        EpisodeGridCard(item, ep, focused = showCursor && idx == focusIdx) {
+                            episodeFocus.intValue = idx
+                            releasePreviewPlayer()
+                            playEpisode(item, ep)
+                        }
+                    }
+                }
+            }
+
+            Spacer(Modifier.height(32.dp))
+        }
+    }
+
+    @Composable
+    private fun EpisodeGridCard(series: JanusApi.Series, ep: JanusApi.Episode, focused: Boolean, onTap: () -> Unit) {
+        val savedPos = remember(series.id, ep.episode) { getWatchProgress(series.id, ep.episode) }
+        val progressFraction = if (ep.durationSec > 0) (savedPos / 1000.0 / ep.durationSec).toFloat().coerceIn(0f, 1f) else 0f
+        val mins = (ep.durationSec / 60).toInt()
+
+        Column(
+            modifier = Modifier.fillMaxWidth()
+                .then(if (focused) Modifier.border(2.dp, Color(0xFFBB86FC), RoundedCornerShape(8.dp)) else Modifier)
+                .background(if (focused) Color(0xFF2A2A4A) else Color(0xFF1A1A2E), RoundedCornerShape(8.dp))
+                .clickable { onTap() }
+                .padding(8.dp)
+        ) {
+            // Episode number + title
+            androidx.compose.material3.Text(
+                "${ep.episode}. Episode ${ep.episode}",
+                color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.SemiBold,
+                maxLines = 1, overflow = TextOverflow.Ellipsis
+            )
+
+            Spacer(Modifier.height(4.dp))
+
+            // Metadata row
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                val subs = mutableListOf<String>()
+                if (ep.hasJaSubs) subs.add("JP")
+                if (ep.hasEnSubs) subs.add("EN")
+                if (ep.hasFrSubs) subs.add("FR")
+                androidx.compose.material3.Text(
+                    "${mins} min" + if (subs.isNotEmpty()) "  ·  ${subs.joinToString(" ")}" else "",
+                    color = Color(0xFF888888), fontSize = 11.sp
                 )
             }
 
-            Spacer(Modifier.height(16.dp))
-
-            // Episode rows
-            LazyRow(
-                contentPadding = PaddingValues(end = 32.dp),
-                horizontalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                itemsIndexed(series.episodes) { idx, ep ->
-                    EpisodeCard(series, ep, focused = idx == focusIdx) {
-                        episodeFocus.intValue = idx
-                        playEpisode(series, ep)
-                    }
+            // Watch progress
+            if (progressFraction > 0.01f) {
+                Spacer(Modifier.height(6.dp))
+                Box(
+                    Modifier.fillMaxWidth().height(3.dp).clip(RoundedCornerShape(2.dp)).background(Color(0xFF444444))
+                ) {
+                    Box(Modifier.fillMaxHeight().fillMaxWidth(progressFraction).background(Color(0xFFBB86FC), RoundedCornerShape(2.dp)))
+                }
+                if (progressFraction >= 0.95f) {
+                    Spacer(Modifier.height(2.dp))
+                    androidx.compose.material3.Text("✓ Watched", color = Color(0xFF81C784), fontSize = 10.sp)
                 }
             }
         }
@@ -607,84 +857,30 @@ class LibraryActivity : ComponentActivity() {
         }.start()
     }
 
-    // D-pad navigation
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         if (event.action != KeyEvent.ACTION_DOWN) return super.dispatchKeyEvent(event)
 
+        val isDpad = event.keyCode in listOf(
+            KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN,
+            KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT,
+            KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER
+        )
+        if (isDpad) dpadDetected.value = true
+
         when (screen.value) {
-            Screen.SERIES_LIST -> when (event.keyCode) {
+            Screen.MAIN -> when (event.keyCode) {
                 KeyEvent.KEYCODE_BACK -> { finish(); return true }
-                KeyEvent.KEYCODE_DPAD_UP -> {
-                    val continueItems = getContinueWatching()
-                    when (currentRow.value) {
-                        LibraryRow.MOVIES -> {
-                            if (seriesList.isNotEmpty()) currentRow.value = LibraryRow.SERIES
-                            else if (continueItems.isNotEmpty()) currentRow.value = LibraryRow.CONTINUE
-                            else openSettings()
-                        }
-                        LibraryRow.SERIES -> {
-                            if (continueItems.isNotEmpty()) currentRow.value = LibraryRow.CONTINUE
-                            else openSettings()
-                        }
-                        LibraryRow.CONTINUE -> openSettings()
-                    }
-                }
-                KeyEvent.KEYCODE_DPAD_DOWN -> {
-                    when (currentRow.value) {
-                        LibraryRow.CONTINUE -> {
-                            if (seriesList.isNotEmpty()) currentRow.value = LibraryRow.SERIES
-                            else if (movieList.isNotEmpty()) currentRow.value = LibraryRow.MOVIES
-                        }
-                        LibraryRow.SERIES -> {
-                            if (movieList.isNotEmpty()) currentRow.value = LibraryRow.MOVIES
-                        }
-                        LibraryRow.MOVIES -> {}
-                    }
-                }
-                KeyEvent.KEYCODE_DPAD_LEFT -> {
-                    when (currentRow.value) {
-                        LibraryRow.SERIES -> { if (seriesFocus.intValue > 0) seriesFocus.intValue-- }
-                        LibraryRow.MOVIES -> { if (movieFocus.intValue > 0) movieFocus.intValue-- }
-                        LibraryRow.CONTINUE -> {}
-                    }
-                }
-                KeyEvent.KEYCODE_DPAD_RIGHT -> {
-                    when (currentRow.value) {
-                        LibraryRow.SERIES -> { if (seriesFocus.intValue < seriesList.size - 1) seriesFocus.intValue++ }
-                        LibraryRow.MOVIES -> { if (movieFocus.intValue < movieList.size - 1) movieFocus.intValue++ }
-                        LibraryRow.CONTINUE -> {}
-                    }
-                }
-                KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> {
-                    when (currentRow.value) {
-                        LibraryRow.SERIES -> selectSeries(seriesFocus.intValue)
-                        LibraryRow.MOVIES -> selectMovie(movieFocus.intValue)
-                        LibraryRow.CONTINUE -> {
-                            val items = getContinueWatching()
-                            if (items.isNotEmpty()) playContinueItem(items.first())
-                        }
-                    }
-                }
+                KeyEvent.KEYCODE_DPAD_UP -> rowMoveUp()
+                KeyEvent.KEYCODE_DPAD_DOWN -> rowMoveDown()
+                KeyEvent.KEYCODE_DPAD_LEFT -> rowMoveLeft()
+                KeyEvent.KEYCODE_DPAD_RIGHT -> rowMoveRight()
+                KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> rowSelect()
                 else -> return false
             }
-            Screen.EPISODE_LIST -> {
-                val series = seriesList.getOrNull(seriesFocus.intValue) ?: return false
-                when (event.keyCode) {
-                    KeyEvent.KEYCODE_BACK -> { screen.value = Screen.SERIES_LIST; return true }
-                    KeyEvent.KEYCODE_DPAD_LEFT -> {
-                        if (episodeFocus.intValue > 0) episodeFocus.intValue--
-                    }
-                    KeyEvent.KEYCODE_DPAD_RIGHT -> {
-                        if (episodeFocus.intValue < series.episodes.size - 1) episodeFocus.intValue++
-                    }
-                    KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> {
-                        playEpisode(series, series.episodes[episodeFocus.intValue])
-                    }
-                    else -> return false
-                }
-            }
+
             Screen.SETTINGS -> when (event.keyCode) {
-                KeyEvent.KEYCODE_BACK, KeyEvent.KEYCODE_DPAD_DOWN -> {
+                KeyEvent.KEYCODE_BACK -> { screen.value = Screen.MAIN }
+                KeyEvent.KEYCODE_DPAD_DOWN -> {
                     val continueItems = getContinueWatching()
                     currentRow.value = when {
                         continueItems.isNotEmpty() -> LibraryRow.CONTINUE
@@ -692,10 +888,9 @@ class LibraryActivity : ComponentActivity() {
                         movieList.isNotEmpty() -> LibraryRow.MOVIES
                         else -> LibraryRow.SERIES
                     }
-                    screen.value = Screen.SERIES_LIST
+                    screen.value = Screen.MAIN
                 }
                 KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> {
-                    // Save and apply new URL
                     val newUrl = settingsEditUrl.value.trim()
                     if (newUrl.isNotEmpty()) {
                         serverUrl.value = newUrl
@@ -704,9 +899,45 @@ class LibraryActivity : ComponentActivity() {
                         api = JanusApi(newUrl)
                         reloadLibrary()
                     }
-                    screen.value = Screen.SERIES_LIST
+                    screen.value = Screen.MAIN
                 }
                 else -> return super.dispatchKeyEvent(event)
+            }
+
+            Screen.ITEM_DETAIL -> {
+                val item = selectedItem.value ?: return false
+                val cols = 4
+                val maxIdx = item.episodes.size - 1
+                when (event.keyCode) {
+                    KeyEvent.KEYCODE_BACK -> { releasePreviewPlayer(); screen.value = Screen.MAIN; return true }
+                    KeyEvent.KEYCODE_DPAD_LEFT -> {
+                        if (item.type != "MOVIE" && episodeFocus.intValue > 0) episodeFocus.intValue--
+                    }
+                    KeyEvent.KEYCODE_DPAD_RIGHT -> {
+                        if (item.type != "MOVIE" && episodeFocus.intValue < maxIdx) episodeFocus.intValue++
+                    }
+                    KeyEvent.KEYCODE_DPAD_DOWN -> {
+                        if (item.type != "MOVIE") {
+                            val next = episodeFocus.intValue + cols
+                            if (next <= maxIdx) episodeFocus.intValue = next
+                        }
+                    }
+                    KeyEvent.KEYCODE_DPAD_UP -> {
+                        if (item.type != "MOVIE") {
+                            val prev = episodeFocus.intValue - cols
+                            if (prev >= 0) episodeFocus.intValue = prev
+                        }
+                    }
+                    KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> {
+                        if (item.type == "MOVIE") {
+                            playItem(item)
+                        } else {
+                            val ep = item.episodes.getOrNull(episodeFocus.intValue)
+                            if (ep != null) { releasePreviewPlayer(); playEpisode(item, ep) }
+                        }
+                    }
+                    else -> return false
+                }
             }
         }
         return true
@@ -725,26 +956,85 @@ class LibraryActivity : ComponentActivity() {
         return ep to pos
     }
 
+    private fun rowFocus(): MutableIntState = when (currentRow.value) {
+        LibraryRow.CONTINUE -> continueFocus
+        LibraryRow.SERIES -> seriesFocus
+        LibraryRow.MOVIES -> movieFocus
+    }
+
+    private fun rowSize(): Int = when (currentRow.value) {
+        LibraryRow.CONTINUE -> getContinueWatching().size
+        LibraryRow.SERIES -> seriesList.size
+        LibraryRow.MOVIES -> movieList.size
+    }
+
+    private fun rowMoveLeft() {
+        val focus = rowFocus()
+        if (focus.intValue > 0) focus.intValue--
+    }
+
+    private fun rowMoveRight() {
+        val focus = rowFocus()
+        if (focus.intValue < rowSize() - 1) focus.intValue++
+    }
+
+    private fun rowSelect() {
+        val idx = rowFocus().intValue
+        when (currentRow.value) {
+            LibraryRow.CONTINUE -> {
+                val items = getContinueWatching()
+                items.getOrNull(idx)?.let { playContinueItem(it) }
+            }
+            LibraryRow.SERIES -> seriesList.getOrNull(idx)?.let { openItemDetail(it) }
+            LibraryRow.MOVIES -> movieList.getOrNull(idx)?.let { openItemDetail(it) }
+        }
+    }
+
+    private fun availableRows(): List<LibraryRow> {
+        val rows = mutableListOf<LibraryRow>()
+        if (getContinueWatching().isNotEmpty()) rows.add(LibraryRow.CONTINUE)
+        if (seriesList.isNotEmpty()) rows.add(LibraryRow.SERIES)
+        if (movieList.isNotEmpty()) rows.add(LibraryRow.MOVIES)
+        return rows
+    }
+
+    private fun rowMoveUp() {
+        val rows = availableRows()
+        val curIdx = rows.indexOf(currentRow.value)
+        if (curIdx > 0) currentRow.value = rows[curIdx - 1]
+        else openSettings()
+    }
+
+    private fun rowMoveDown() {
+        val rows = availableRows()
+        val curIdx = rows.indexOf(currentRow.value)
+        if (curIdx < rows.size - 1) currentRow.value = rows[curIdx + 1]
+    }
+
     private fun openSettings() {
         settingsEditUrl.value = serverUrl.value
         screen.value = Screen.SETTINGS
     }
 
-    private fun selectSeries(idx: Int) {
-        val series = seriesList.getOrNull(idx) ?: return
-        val lastWatched = getLastWatched(series.id)
-        if (lastWatched != null) {
-            val ep = series.episodes.firstOrNull { it.episode == lastWatched.first }
-            if (ep != null) { playEpisode(series, ep); return }
-        }
+    private fun openItemDetail(item: JanusApi.Series) {
+        selectedItem.value = item
         episodeFocus.intValue = 0
-        screen.value = Screen.EPISODE_LIST
+        detailVisitCount.intValue++
+        screen.value = Screen.ITEM_DETAIL
     }
 
-    private fun selectMovie(idx: Int) {
-        val movie = movieList.getOrNull(idx) ?: return
-        val ep = movie.episodes.firstOrNull() ?: return
-        playMovie(movie, ep)
+    private fun playItem(item: JanusApi.Series) {
+        releasePreviewPlayer()
+        val lastWatched = getLastWatched(item.id)
+        if (lastWatched != null) {
+            val ep = item.episodes.firstOrNull { it.episode == lastWatched.first }
+            if (ep != null) {
+                if (item.type == "MOVIE") playMovie(item, ep) else playEpisode(item, ep)
+                return
+            }
+        }
+        val ep = item.episodes.firstOrNull() ?: return
+        if (item.type == "MOVIE") playMovie(item, ep) else playEpisode(item, ep)
     }
 
     private fun playContinueItem(item: ContinueItem) {
@@ -782,5 +1072,15 @@ class LibraryActivity : ComponentActivity() {
             putExtra(ExoPlayerActivity.EXTRA_SERIES_ID, movie.id)
             putExtra(ExoPlayerActivity.EXTRA_EPISODE_NUM, episode.episode)
         })
+    }
+
+    override fun onPause() {
+        super.onPause()
+        previewPlayer?.pause()
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        releasePreviewPlayer()
     }
 }

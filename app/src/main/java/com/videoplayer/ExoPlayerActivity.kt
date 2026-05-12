@@ -313,17 +313,21 @@ class ExoPlayerActivity : ComponentActivity() {
                 }
             }
 
-            // Title
+            // Title + back button
             AnimatedVisibility(
                 visible = scr == Screen.CONTROLS || scr == Screen.LIST_SELECT || scr == Screen.WORD_NAV,
                 enter = fadeIn(tween(200)),
                 exit = fadeOut(tween(200)),
                 modifier = Modifier.align(Alignment.TopStart)
             ) {
-                androidx.compose.material3.Text(
-                    title, color = Color.White, fontSize = 14.sp,
-                    modifier = Modifier.padding(16.dp)
-                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.padding(top = 16.dp, start = 24.dp)
+                ) {
+                    CtrlBtn("←", "Back", -1, cFocus) { saveProgress(); finish() }
+                    Spacer(Modifier.width(12.dp))
+                    androidx.compose.material3.Text(title, color = Color.White, fontSize = 14.sp)
+                }
             }
 
             // Dictionary popup
@@ -372,7 +376,6 @@ class ExoPlayerActivity : ComponentActivity() {
                 val subText = sub!!
                 val annotated = buildAnnotatedString {
                     for (i in subText.indices) {
-                        pushStringAnnotation("idx", i.toString())
                         if (scr == Screen.WORD_NAV && hS >= 0 && hE > hS && i in hS until hE) {
                             pushStyle(SpanStyle(background = Color(0xFF7986CB)))
                             append(subText[i])
@@ -380,27 +383,33 @@ class ExoPlayerActivity : ComponentActivity() {
                         } else {
                             append(subText[i])
                         }
-                        pop()
                     }
                 }
 
+                var charBoxes by remember(subText) { mutableStateOf(emptyArray<androidx.compose.ui.geometry.Rect>()) }
                 Box(
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
                         .padding(bottom = 60.dp, start = 32.dp, end = 32.dp)
                         .background(Color(0x99000000), RoundedCornerShape(6.dp))
                         .padding(horizontal = 12.dp, vertical = 8.dp)
+                        .pointerInput(subText) {
+                            detectTapGestures { pos ->
+                                val boxes = charBoxes
+                                for (i in boxes.indices) {
+                                    if (boxes[i].contains(pos)) { onSubtitleTap(i); break }
+                                }
+                            }
+                        }
                 ) {
                     androidx.compose.material3.Text(
                         text = annotated, color = Color.Black, fontSize = subFontSize, fontFamily = subFontFamily,
                         style = androidx.compose.ui.text.TextStyle(drawStyle = androidx.compose.ui.graphics.drawscope.Stroke(width = 6f))
                     )
-                    ClickableText(
-                        text = annotated,
-                        style = androidx.compose.ui.text.TextStyle(color = Color.White, fontSize = subFontSize, fontFamily = subFontFamily),
-                        onClick = { offset ->
-                            annotated.getStringAnnotations("idx", offset, offset)
-                                .firstOrNull()?.let { onSubtitleTap(it.item.toInt()) }
+                    androidx.compose.material3.Text(
+                        text = annotated, color = Color.White, fontSize = subFontSize, fontFamily = subFontFamily,
+                        onTextLayout = { layout ->
+                            charBoxes = Array(subText.length) { i -> layout.getBoundingBox(i) }
                         }
                     )
                 }
