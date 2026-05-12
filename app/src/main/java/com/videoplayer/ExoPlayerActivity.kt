@@ -159,6 +159,7 @@ class ExoPlayerActivity : ComponentActivity() {
     @OptIn(androidx.media3.common.util.UnstableApi::class)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        AppNavigator.onActivityResumed(AppNavigator.Screen.VIDEO_PLAYER)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         enterFullscreen()
 

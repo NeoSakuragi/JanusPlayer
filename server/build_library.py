@@ -8,11 +8,16 @@ import os
 import subprocess
 import re
 import sys
+import requests
+import time
 
 DATA_DIR = "/data/janus"
 VIDEOS_DIR = os.path.join(DATA_DIR, "videos")
 SUBS_DIR = os.path.join(DATA_DIR, "subs")
+THUMBS_DIR = os.path.join(DATA_DIR, "thumbs")
 LIBRARY_FILE = os.path.join(DATA_DIR, "library.json")
+TMDB_API_KEY = "86d0df9095f6e5d35ba68f7660189c27"
+TMDB_IMG_BASE = "https://image.tmdb.org/t/p/w400"
 
 SERIES = [
     {
@@ -23,7 +28,9 @@ SERIES = [
         "video_dir": os.path.join(VIDEOS_DIR, "saint-seiya"),
         "subs_dir": os.path.join(SUBS_DIR, "saint-seiya"),
         "file_pattern": r"Saint Seiya - S(\d+)E(\d+)\.mkv",
-        "ja_sub_stream": "jpn",  # language code to find
+        "ja_sub_stream": "jpn",
+        "tmdb_id": 42444,
+        "tmdb_season": 1,
     },
     {
         "id": "maison-ikkoku",
@@ -33,7 +40,9 @@ SERIES = [
         "video_dir": os.path.join(VIDEOS_DIR, "maison-ikkoku"),
         "subs_dir": os.path.join(SUBS_DIR, "maison-ikkoku"),
         "file_pattern": r"Maison Ikkoku - (\d+)",
-        "ja_sub_stream": None,  # external SRT files
+        "ja_sub_stream": None,
+        "tmdb_id": 43018,
+        "tmdb_season": 1,
     },
     {
         "id": "dbz",
@@ -43,7 +52,9 @@ SERIES = [
         "video_dir": os.path.join(VIDEOS_DIR, "dbz"),
         "subs_dir": os.path.join(SUBS_DIR, "dbz"),
         "file_pattern": r"Dragon Ball Z - (\d+)",
-        "ja_sub_stream": None,  # external SRT files
+        "ja_sub_stream": None,
+        "tmdb_id": 12971,
+        "tmdb_season": 7,
     },
 ]
 
@@ -56,6 +67,7 @@ MOVIES = [
         "video_dir": os.path.join(VIDEOS_DIR, "the-running-man"),
         "subs_dir": os.path.join(SUBS_DIR, "the-running-man"),
         "filename": "the-running-man.mkv",
+        "tmdb_id": 865,
     },
 ]
 
@@ -145,6 +157,75 @@ def extract_srt(video_path, stream_index, output_path):
     return result.returncode == 0
 
 
+def fetch_tmdb_episode(tmdb_id, season, ep_num):
+    """Fetch episode synopsis in EN/FR/JA and thumbnail from TMDB."""
+    result = {"synopsis_en": "", "synopsis_fr": "", "synopsis_ja": "", "tmdb_thumb": None, "tmdb_title_en": ""}
+    try:
+        for lang, key in [("en", "synopsis_en"), ("fr", "synopsis_fr"), ("ja", "synopsis_ja")]:
+            url = f"https://api.themoviedb.org/3/tv/{tmdb_id}/season/{season}/episode/{ep_num}?api_key={TMDB_API_KEY}&language={lang}"
+            resp = requests.get(url, timeout=10)
+            if resp.status_code == 200:
+                data = resp.json()
+                result[key] = data.get("overview", "")
+                if lang == "en":
+                    result["tmdb_title_en"] = data.get("name", "")
+                    still = data.get("still_path")
+                    if still:
+                        result["tmdb_thumb"] = still
+            time.sleep(0.03)
+    except Exception as e:
+        print(f"    TMDB error: {e}")
+    return result
+
+
+def fetch_tmdb_movie(tmdb_id):
+    """Fetch movie synopsis in EN/FR/JA from TMDB."""
+    result = {"synopsis_en": "", "synopsis_fr": "", "synopsis_ja": "", "tmdb_backdrop": None}
+    try:
+        for lang, key in [("en", "synopsis_en"), ("fr", "synopsis_fr"), ("ja", "synopsis_ja")]:
+            url = f"https://api.themoviedb.org/3/movie/{tmdb_id}?api_key={TMDB_API_KEY}&language={lang}"
+            resp = requests.get(url, timeout=10)
+            if resp.status_code == 200:
+                data = resp.json()
+                result[key] = data.get("overview", "")
+                if lang == "en":
+                    result["tmdb_backdrop"] = data.get("backdrop_path")
+            time.sleep(0.03)
+    except Exception as e:
+        print(f"    TMDB error: {e}")
+    return result
+
+
+def download_thumb(url, filepath):
+    """Download a thumbnail if not already cached."""
+    if os.path.exists(filepath) and os.path.getsize(filepath) > 1000:
+        return True
+    try:
+        resp = requests.get(url, timeout=15)
+        if resp.status_code == 200 and len(resp.content) > 1000:
+            with open(filepath, "wb") as f:
+                f.write(resp.content)
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def extract_video_thumb(video_path, output_path, seek_sec=360):
+    """Extract a thumbnail from video at seek_sec using ffmpeg."""
+    if os.path.exists(output_path) and os.path.getsize(output_path) > 1000:
+        return True
+    cmd = [
+        "ffmpeg", "-v", "quiet", "-y",
+        "-ss", str(seek_sec),
+        "-i", video_path,
+        "-vframes", "1", "-q:v", "2",
+        output_path
+    ]
+    result = subprocess.run(cmd, capture_output=True)
+    return result.returncode == 0
+
+
 def parse_episode_number(filename, pattern):
     """Extract episode number from filename."""
     m = re.search(pattern, filename)
@@ -216,6 +297,25 @@ def build_series(config):
             with open(srt_ja, encoding="utf-8", errors="replace") as f:
                 sub_count = sum(1 for line in f if "-->" in line)
 
+        # TMDB episode data
+        tmdb_data = {}
+        tmdb_id = config.get("tmdb_id")
+        if tmdb_id:
+            tmdb_season = config.get("tmdb_season", 1)
+            tmdb_data = fetch_tmdb_episode(tmdb_id, tmdb_season, ep_num)
+            if tmdb_data.get("tmdb_title_en"):
+                print(f"    TMDB: {tmdb_data['tmdb_title_en']}")
+
+        # Thumbnail: prefer TMDB, fallback to ffmpeg at 6min
+        thumb_dir = os.path.join(THUMBS_DIR, config["id"])
+        os.makedirs(thumb_dir, exist_ok=True)
+        thumb_file = f"ep{ep_num:03d}.jpg"
+        thumb_path = os.path.join(thumb_dir, thumb_file)
+        if tmdb_data.get("tmdb_thumb"):
+            download_thumb(f"{TMDB_IMG_BASE}{tmdb_data['tmdb_thumb']}", thumb_path)
+        if not os.path.exists(thumb_path) or os.path.getsize(thumb_path) < 1000:
+            extract_video_thumb(filepath, thumb_path, seek_sec=360)
+
         episode = {
             "season": season,
             "episode": ep_num,
@@ -232,6 +332,11 @@ def build_series(config):
             "ja_sub_lines": sub_count,
             "watch_progress_sec": 0,
             "completed": False,
+            "title_en": tmdb_data.get("tmdb_title_en", ""),
+            "synopsis_en": tmdb_data.get("synopsis_en", ""),
+            "synopsis_fr": tmdb_data.get("synopsis_fr", ""),
+            "synopsis_ja": tmdb_data.get("synopsis_ja", ""),
+            "thumb": f"thumbs/{config['id']}/{thumb_file}" if os.path.exists(thumb_path) else None,
         }
         episodes.append(episode)
 
@@ -284,6 +389,14 @@ def build_movie(config):
         with open(first_ja, encoding="utf-8", errors="replace") as f:
             sub_count = sum(1 for line in f if "-->" in line)
 
+    # TMDB movie data
+    tmdb_data = {}
+    tmdb_id = config.get("tmdb_id")
+    if tmdb_id:
+        tmdb_data = fetch_tmdb_movie(tmdb_id)
+        if tmdb_data.get("synopsis_en"):
+            print(f"    TMDB: synopsis found in {sum(1 for k in ['synopsis_en','synopsis_fr','synopsis_ja'] if tmdb_data.get(k))} languages")
+
     return {
         "season": 1,
         "episode": 1,
@@ -301,6 +414,9 @@ def build_movie(config):
         "ja_sub_lines": sub_count,
         "watch_progress_sec": 0,
         "completed": False,
+        "synopsis_en": tmdb_data.get("synopsis_en", ""),
+        "synopsis_fr": tmdb_data.get("synopsis_fr", ""),
+        "synopsis_ja": tmdb_data.get("synopsis_ja", ""),
     }
 
 

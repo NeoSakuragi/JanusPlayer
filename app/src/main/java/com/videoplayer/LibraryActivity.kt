@@ -27,6 +27,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInParent
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -49,8 +52,8 @@ class LibraryActivity : ComponentActivity() {
         private const val PREFS_NAME = "janus_settings"
     }
 
-    enum class Screen { MAIN, SETTINGS, ITEM_DETAIL }
-    enum class LibraryRow { CONTINUE, SERIES, MOVIES }
+    enum class Screen { MAIN, ITEM_DETAIL, DOWNLOADS }
+    enum class LibraryRow { HEADER, CONTINUE, SERIES, MOVIES }
 
     private val screen = mutableStateOf(Screen.MAIN)
     private val currentRow = mutableStateOf(LibraryRow.SERIES)
@@ -63,14 +66,12 @@ class LibraryActivity : ComponentActivity() {
     private val movieList = mutableStateListOf<JanusApi.Series>()
     private val loading = mutableStateOf(true)
     private val serverUrl = mutableStateOf(DEFAULT_SERVER_URL)
-    private val settingsEditUrl = mutableStateOf("")
-    private val settingsCursorPos = mutableIntStateOf(0)
     private val updateAvailable = mutableStateOf<AppUpdater.UpdateInfo?>(null)
     private val updateDownloading = mutableStateOf(false)
     private var appUpdater: AppUpdater? = null
-    private val dpadDetected = mutableStateOf(false)
+    private val showCursorState = mutableStateOf(true)
     private val selectedItem = mutableStateOf<JanusApi.Series?>(null)
-    private val detailVisitCount = mutableIntStateOf(0)
+    private val previewRequested = mutableStateOf(false)
 
     private lateinit var api: JanusApi
 
@@ -80,6 +81,7 @@ class LibraryActivity : ComponentActivity() {
         val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
         serverUrl.value = prefs.getString("server_url", DEFAULT_SERVER_URL) ?: DEFAULT_SERVER_URL
         api = JanusApi(serverUrl.value)
+        DownloadManager.init(this)
 
         // Load library
         Thread {
@@ -100,8 +102,22 @@ class LibraryActivity : ComponentActivity() {
             }
         }.start()
 
+        AppNavigator.registerOnExit(AppNavigator.Screen.ITEM_DETAIL) { releasePreviewPlayer() }
+
         setContent {
             LibraryScreen()
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        val navScreen = when (screen.value) {
+            Screen.MAIN, Screen.DOWNLOADS -> AppNavigator.Screen.MAIN
+            Screen.ITEM_DETAIL -> AppNavigator.Screen.ITEM_DETAIL
+        }
+        AppNavigator.onActivityResumed(navScreen)
+        if (screen.value == Screen.ITEM_DETAIL) {
+            refreshItemDetail()
         }
     }
 
@@ -111,33 +127,27 @@ class LibraryActivity : ComponentActivity() {
         val isLoading by loading
         val sFocus by seriesFocus
         val eFocus by episodeFocus
-        val showCursor by dpadDetected
+        val showCursor by showCursorState
 
         Box(
             modifier = Modifier.fillMaxSize().background(Color(0xFF0A0A1A))
+                .pointerInput(Unit) {
+                    awaitPointerEventScope {
+                        while (true) {
+                            awaitPointerEvent()
+                            showCursorState.value = false
+                        }
+                    }
+                }
         ) {
-            if (isLoading) {
-                androidx.compose.material3.Text(
-                    "Loading library...",
-                    color = Color.White,
-                    fontSize = 18.sp,
-                    modifier = Modifier.align(Alignment.Center)
+            Column(
+                modifier = Modifier.fillMaxSize().then(
+                    if (currentScreen != Screen.ITEM_DETAIL) Modifier.padding(top = 32.dp) else Modifier
                 )
-            } else if (library.isEmpty()) {
-                androidx.compose.material3.Text(
-                    "No series found",
-                    color = Color(0xFF888888),
-                    fontSize = 18.sp,
-                    modifier = Modifier.align(Alignment.Center)
-                )
-            } else {
-                Column(
-                    modifier = Modifier.fillMaxSize().then(
-                        if (currentScreen != Screen.ITEM_DETAIL) Modifier.padding(top = 32.dp) else Modifier
-                    )
-                ) {
-                    // Header with settings gear (not on item detail)
-                    if (currentScreen != Screen.ITEM_DETAIL) Row(
+            ) {
+                // Header (always visible except item detail)
+                if (currentScreen != Screen.ITEM_DETAIL) {
+                    Row(
                         verticalAlignment = Alignment.CenterVertically,
                         modifier = Modifier.fillMaxWidth().padding(horizontal = 32.dp, vertical = 8.dp)
                     ) {
@@ -145,24 +155,44 @@ class LibraryActivity : ComponentActivity() {
                             "Janus",
                             color = Color(0xFFBB86FC),
                             fontSize = 28.sp,
-                            fontWeight = FontWeight.Bold,
-                            modifier = Modifier.clickable {
-                                if (currentScreen != Screen.MAIN) screen.value = Screen.MAIN
-                            }
+                            fontWeight = FontWeight.Bold
                         )
                         Spacer(Modifier.weight(1f))
-                        androidx.compose.material3.Text(
-                            "⚙",
-                            color = if (currentScreen == Screen.SETTINGS) Color(0xFFBB86FC) else Color(0xFF666666),
-                            fontSize = 22.sp,
-                            modifier = Modifier.clickable { openSettings() }
-                        )
+                        val headerFocused = showCursor && currentScreen == Screen.MAIN && currentRow.value == LibraryRow.HEADER
+                        if (DownloadManager.items.isNotEmpty()) {
+                            Box(
+                                modifier = Modifier
+                                    .background(Color(0xFF2A2A3A), RoundedCornerShape(8.dp))
+                                    .clickable { screen.value = Screen.DOWNLOADS }
+                                    .padding(horizontal = 14.dp, vertical = 6.dp)
+                            ) {
+                                val active = DownloadManager.items.count { it.state == DownloadManager.State.DOWNLOADING || it.state == DownloadManager.State.QUEUED }
+                                androidx.compose.material3.Text(
+                                    if (active > 0) "↓ Downloads ($active)" else "↓ Downloads",
+                                    color = Color(0xFFCCCCCC), fontSize = 14.sp
+                                )
+                            }
+                            Spacer(Modifier.width(8.dp))
+                        }
+                        Box(
+                            modifier = Modifier
+                                .then(if (headerFocused) Modifier.border(2.dp, Color(0xFFBB86FC), RoundedCornerShape(8.dp)) else Modifier)
+                                .background(if (headerFocused) Color(0xFF3A3A5A) else Color(0xFF2A2A3A), RoundedCornerShape(8.dp))
+                                .clickable { openSettings() }
+                                .padding(horizontal = 14.dp, vertical = 6.dp)
+                        ) {
+                            androidx.compose.material3.Text(
+                                "⚙ Settings",
+                                color = if (headerFocused) Color.White else Color(0xFFCCCCCC),
+                                fontSize = 14.sp
+                            )
+                        }
                     }
 
-                    // Update banner (not on item detail)
+                    // Update banner
                     val update by updateAvailable
                     val downloading by updateDownloading
-                    if (update != null && currentScreen != Screen.ITEM_DETAIL) {
+                    if (update != null) {
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
                             modifier = Modifier.fillMaxWidth()
@@ -190,15 +220,73 @@ class LibraryActivity : ComponentActivity() {
                             }
                         }
                     }
+                }
 
+                // Content area
+                if (isLoading) {
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        androidx.compose.material3.Text(
+                            "Loading library...", color = Color.White, fontSize = 18.sp
+                        )
+                    }
+                } else if (library.isEmpty() && currentScreen == Screen.MAIN) {
+                    var editUrl by remember { mutableStateOf(serverUrl.value) }
+                    Column(
+                        modifier = Modifier.fillMaxSize().padding(horizontal = 64.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center
+                    ) {
+                        androidx.compose.material3.Text(
+                            "Could not connect to server", color = Color(0xFF888888), fontSize = 18.sp
+                        )
+                        Spacer(Modifier.height(24.dp))
+                        androidx.compose.material3.Text("Server URL", color = Color(0xFFAAAAAA), fontSize = 13.sp)
+                        Spacer(Modifier.height(8.dp))
+                        androidx.compose.material3.OutlinedTextField(
+                            value = editUrl,
+                            onValueChange = { editUrl = it },
+                            singleLine = true,
+                            colors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(
+                                focusedTextColor = Color.White,
+                                unfocusedTextColor = Color.White,
+                                focusedBorderColor = Color(0xFFBB86FC),
+                                unfocusedBorderColor = Color(0xFF444444),
+                                cursorColor = Color(0xFFBB86FC),
+                                focusedContainerColor = Color(0xFF1E1E2E),
+                                unfocusedContainerColor = Color(0xFF1E1E2E),
+                            ),
+                            modifier = Modifier.fillMaxWidth(0.6f)
+                        )
+                        Spacer(Modifier.height(16.dp))
+                        Box(
+                            modifier = Modifier
+                                .background(Color(0xFFBB86FC), RoundedCornerShape(8.dp))
+                                .clickable {
+                                    val newUrl = editUrl.trim()
+                                    if (newUrl.isNotEmpty()) {
+                                        serverUrl.value = newUrl
+                                        getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
+                                            .putString("server_url", newUrl).apply()
+                                        api = JanusApi(newUrl)
+                                        reloadLibrary()
+                                    }
+                                }
+                                .padding(horizontal = 32.dp, vertical = 12.dp)
+                        ) {
+                            androidx.compose.material3.Text(
+                                "Connect", color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
+                } else {
                     when (currentScreen) {
                         Screen.MAIN -> LibraryRows(sFocus, showCursor)
-                        Screen.SETTINGS -> SettingsScreen()
                         Screen.ITEM_DETAIL -> {
                             val item = selectedItem.value
                             if (item != null) ItemDetailPage(item, eFocus, showCursor)
                             else screen.value = Screen.MAIN
                         }
+                        Screen.DOWNLOADS -> DownloadsScreen()
                     }
                 }
             }
@@ -230,6 +318,9 @@ class LibraryActivity : ComponentActivity() {
         val continueListState = rememberLazyListState()
         val seriesListState = rememberLazyListState()
         val moviesListState = rememberLazyListState()
+        val mainScrollState = rememberScrollState()
+        val rowPositions = remember { mutableStateMapOf<LibraryRow, Pair<Int, Int>>() }
+        var viewportHeight by remember { mutableIntStateOf(1080) }
 
         LaunchedEffect(cFocus, activeRow) {
             if (activeRow == LibraryRow.CONTINUE) continueListState.animateScrollToItem(cFocus.coerceAtLeast(0))
@@ -240,10 +331,34 @@ class LibraryActivity : ComponentActivity() {
         LaunchedEffect(mFocus, activeRow) {
             if (activeRow == LibraryRow.MOVIES) moviesListState.animateScrollToItem(mFocus.coerceAtLeast(0))
         }
+        LaunchedEffect(activeRow) {
+            val bounds = rowPositions[activeRow] ?: return@LaunchedEffect
+            val itemTop = bounds.first
+            val itemBottom = bounds.second
+            val itemHeight = itemBottom - itemTop
+            val visibleTop = mainScrollState.value
+            val visibleBottom = visibleTop + viewportHeight
+            if (itemHeight <= viewportHeight) {
+                // Row fits — make sure both top and bottom are visible
+                if (itemBottom > visibleBottom) {
+                    mainScrollState.animateScrollTo(itemBottom - viewportHeight + 16)
+                } else if (itemTop < visibleTop) {
+                    mainScrollState.animateScrollTo((itemTop - 16).coerceAtLeast(0))
+                }
+            } else {
+                // Row taller than viewport — show the top
+                mainScrollState.animateScrollTo((itemTop - 16).coerceAtLeast(0))
+            }
+        }
 
-        Column {
+        Box(modifier = Modifier.fillMaxSize().onGloballyPositioned { viewportHeight = it.size.height }) {
+        Column(modifier = Modifier.verticalScroll(mainScrollState)) {
             // Continue Watching row
             if (continueItems.isNotEmpty()) {
+                Column(modifier = Modifier.onGloballyPositioned { coords ->
+                    val y = coords.positionInParent().y.toInt()
+                    rowPositions[LibraryRow.CONTINUE] = y to (y + coords.size.height)
+                }) {
                 androidx.compose.material3.Text(
                     "Continue Watching",
                     color = if (showCursor && activeRow == LibraryRow.CONTINUE) Color(0xFFBB86FC) else Color(0xFFCCCCCC),
@@ -288,10 +403,15 @@ class LibraryActivity : ComponentActivity() {
                     }
                 }
                 Spacer(Modifier.height(16.dp))
+                } // end Continue column
             }
 
             // Series row
             if (seriesList.isNotEmpty()) {
+                Column(modifier = Modifier.onGloballyPositioned { coords ->
+                    val y = coords.positionInParent().y.toInt()
+                    rowPositions[LibraryRow.SERIES] = y to (y + coords.size.height)
+                }) {
                 androidx.compose.material3.Text(
                     "Series",
                     color = if (showCursor && activeRow == LibraryRow.SERIES) Color(0xFFBB86FC) else Color(0xFFCCCCCC),
@@ -312,10 +432,15 @@ class LibraryActivity : ComponentActivity() {
                     }
                 }
                 Spacer(Modifier.height(16.dp))
+                } // end Series column
             }
 
             // Movies row
             if (movieList.isNotEmpty()) {
+                Column(modifier = Modifier.onGloballyPositioned { coords ->
+                    val y = coords.positionInParent().y.toInt()
+                    rowPositions[LibraryRow.MOVIES] = y to (y + coords.size.height)
+                }) {
                 androidx.compose.material3.Text(
                     "Movies",
                     color = if (showCursor && activeRow == LibraryRow.MOVIES) Color(0xFFBB86FC) else Color(0xFFCCCCCC),
@@ -335,8 +460,10 @@ class LibraryActivity : ComponentActivity() {
                         }
                     }
                 }
+                } // end Movies column
             }
         }
+        } // end viewport Box
     }
 
     @Composable
@@ -423,28 +550,35 @@ class LibraryActivity : ComponentActivity() {
         val scrollState = rememberScrollState()
         var showPreview by remember { mutableStateOf(false) }
 
-        // Scroll to keep focused episode visible
-        val heroHeight = 400
-        val rowHeight = 200
-        val cols = 4
+        val epCardPositions = remember { mutableStateMapOf<Int, Pair<Int, Int>>() }
+        var detailViewportHeight by remember { mutableIntStateOf(1080) }
         LaunchedEffect(focusIdx) {
             if (item.type != "MOVIE" && item.episodes.isNotEmpty()) {
-                val row = focusIdx / cols
-                val targetScroll = heroHeight + 40 + (row * rowHeight) - 100
-                scrollState.animateScrollTo(targetScroll.coerceAtLeast(0))
+                val bounds = epCardPositions[focusIdx] ?: return@LaunchedEffect
+                val visibleTop = scrollState.value
+                val visibleBottom = visibleTop + detailViewportHeight
+                if (bounds.second > visibleBottom) {
+                    scrollState.animateScrollTo(bounds.second - detailViewportHeight + 32)
+                } else if (bounds.first < visibleTop) {
+                    scrollState.animateScrollTo((bounds.first - 32).coerceAtLeast(0))
+                }
             }
         }
 
-        val visitKey by detailVisitCount
-        DisposableEffect(visitKey) {
+        DisposableEffect(item.id) {
             onDispose { releasePreviewPlayer() }
         }
-        LaunchedEffect(visitKey) {
-            showPreview = false
-            delay(3000)
-            showPreview = true
+        val shouldStartPreview by previewRequested
+        LaunchedEffect(shouldStartPreview) {
+            if (shouldStartPreview) {
+                showPreview = false
+                delay(3000)
+                showPreview = true
+                previewRequested.value = false
+            }
         }
 
+        Box(modifier = Modifier.fillMaxSize().onGloballyPositioned { detailViewportHeight = it.size.height }) {
         Column(
             modifier = Modifier.fillMaxSize().verticalScroll(scrollState)
         ) {
@@ -493,19 +627,20 @@ class LibraryActivity : ComponentActivity() {
                     }
                 }
 
-                // Dark gradient on left for text readability
-                Box(
-                    modifier = Modifier.fillMaxSize()
-                        .background(Brush.horizontalGradient(
-                            listOf(Color(0xDD0A0A1A), Color(0x880A0A1A), Color.Transparent),
-                            startX = 0f, endX = 800f
-                        ))
+                // Faded borders — left, bottom, top, right
+                Box(modifier = Modifier.fillMaxSize().background(Brush.horizontalGradient(
+                    listOf(Color(0xDD0A0A1A), Color(0x660A0A1A), Color.Transparent),
+                    startX = 0f, endX = 600f
+                )))
+                Box(modifier = Modifier.fillMaxWidth().height(120.dp).align(Alignment.BottomCenter)
+                    .background(Brush.verticalGradient(listOf(Color.Transparent, Color(0xFF0A0A1A))))
                 )
-                // Bottom fade
-                Box(
-                    modifier = Modifier.fillMaxWidth().height(100.dp).align(Alignment.BottomCenter)
-                        .background(Brush.verticalGradient(listOf(Color.Transparent, Color(0xFF0A0A1A))))
+                Box(modifier = Modifier.fillMaxWidth().height(60.dp).align(Alignment.TopCenter)
+                    .background(Brush.verticalGradient(listOf(Color(0xAA0A0A1A), Color.Transparent)))
                 )
+                Box(modifier = Modifier.fillMaxHeight().width(80.dp).align(Alignment.CenterEnd)
+                    .background(Brush.horizontalGradient(listOf(Color.Transparent, Color(0xAA0A0A1A)))
+                ))
 
                 // Content overlaid on hero
                 Column(
@@ -516,7 +651,7 @@ class LibraryActivity : ComponentActivity() {
                     // Back
                     androidx.compose.material3.Text(
                         "← Back", color = Color(0xFF888888), fontSize = 13.sp,
-                        modifier = Modifier.clickable { releasePreviewPlayer(); screen.value = Screen.MAIN }
+                        modifier = Modifier.clickable { closeItemDetail() }
                             .padding(bottom = 12.dp)
                     )
 
@@ -538,16 +673,35 @@ class LibraryActivity : ComponentActivity() {
                         item.type == "MOVIE" -> "▶  Play"
                         else -> "▶  Play Episode 1"
                     }
-                    Box(
-                        modifier = Modifier.width(240.dp)
-                            .background(Color(0xFFBB86FC), RoundedCornerShape(8.dp))
-                            .clickable { releasePreviewPlayer(); playItem(item) }
-                            .padding(horizontal = 20.dp, vertical = 14.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        androidx.compose.material3.Text(
-                            resumeLabel, color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Bold
-                        )
+                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Box(
+                            modifier = Modifier.weight(1f)
+                                .background(Color(0xFFBB86FC), RoundedCornerShape(8.dp))
+                                .clickable { releasePreviewPlayer(); playItem(item) }
+                                .padding(horizontal = 20.dp, vertical = 14.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            androidx.compose.material3.Text(
+                                resumeLabel, color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Bold
+                            )
+                        }
+                        val allDownloaded = item.episodes.all { ep ->
+                            DownloadManager.getItemState(item.id, ep.episode)?.state == DownloadManager.State.COMPLETED
+                        }
+                        if (!allDownloaded) {
+                            Box(
+                                modifier = Modifier
+                                    .background(Color(0xFF2A2A3A), RoundedCornerShape(8.dp))
+                                    .clickable { startDownload(item) }
+                                    .padding(horizontal = 20.dp, vertical = 14.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                androidx.compose.material3.Text(
+                                    if (item.type == "MOVIE") "↓ Download" else "↓ Download All",
+                                    color = Color(0xFFCCCCCC), fontSize = 14.sp
+                                )
+                            }
+                        }
                     }
 
                     Spacer(Modifier.height(12.dp))
@@ -579,7 +733,7 @@ class LibraryActivity : ComponentActivity() {
                 )
                 // Use a fixed-height grid since we're inside a scrollable Column
                 val rows = (item.episodes.size + 3) / 4
-                val gridHeight = (rows * 200).dp
+                val gridHeight = (rows * 280).dp
                 LazyVerticalGrid(
                     columns = GridCells.Fixed(4),
                     modifier = Modifier.fillMaxWidth().height(gridHeight).padding(horizontal = 24.dp),
@@ -588,15 +742,125 @@ class LibraryActivity : ComponentActivity() {
                     userScrollEnabled = false
                 ) {
                     itemsIndexed(item.episodes) { idx, ep ->
-                        EpisodeGridCard(item, ep, focused = showCursor && idx == focusIdx) {
-                            episodeFocus.intValue = idx
-                            releasePreviewPlayer()
-                            playEpisode(item, ep)
+                        Box(modifier = Modifier.onGloballyPositioned { coords ->
+                            val y = coords.positionInParent().y.toInt()
+                            epCardPositions[idx] = y to (y + coords.size.height)
+                        }) {
+                            EpisodeGridCard(item, ep, focused = showCursor && idx == focusIdx) {
+                                episodeFocus.intValue = idx
+                                releasePreviewPlayer()
+                                playEpisode(item, ep)
+                            }
                         }
                     }
                 }
             }
 
+            Spacer(Modifier.height(32.dp))
+        }
+        } // end viewport Box
+    }
+
+    @Composable
+    private fun DownloadsScreen() {
+        val dlItems = DownloadManager.items
+        val totalSize = remember(dlItems.size) { DownloadManager.totalDiskUsage() }
+        val totalMb = totalSize / (1024 * 1024)
+
+        Column(modifier = Modifier.fillMaxSize().padding(horizontal = 32.dp).verticalScroll(rememberScrollState())) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                androidx.compose.material3.Text(
+                    "Downloads", color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.Bold
+                )
+                Spacer(Modifier.weight(1f))
+                androidx.compose.material3.Text(
+                    if (totalMb > 1024) "%.1f GB".format(totalMb / 1024f) else "$totalMb MB",
+                    color = Color(0xFF888888), fontSize = 14.sp
+                )
+            }
+            Spacer(Modifier.height(16.dp))
+
+            if (dlItems.isEmpty()) {
+                androidx.compose.material3.Text(
+                    "No downloads yet", color = Color(0xFF888888), fontSize = 16.sp
+                )
+            } else {
+                val grouped = dlItems.groupBy { it.seriesId }
+                for ((seriesId, episodes) in grouped) {
+                    val seriesTitle = episodes.first().seriesTitleEn.ifEmpty { seriesId }
+                    val completedCount = episodes.count { it.state == DownloadManager.State.COMPLETED }
+                    val seriesSize = episodes.filter { it.state == DownloadManager.State.COMPLETED }.sumOf { it.totalBytes }
+                    val seriesMb = seriesSize / (1024 * 1024)
+
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(vertical = 8.dp)) {
+                        androidx.compose.material3.Text(
+                            "$seriesTitle ($completedCount/${episodes.size})",
+                            color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.SemiBold
+                        )
+                        Spacer(Modifier.weight(1f))
+                        androidx.compose.material3.Text(
+                            if (seriesMb > 1024) "%.1f GB".format(seriesMb / 1024f) else "$seriesMb MB",
+                            color = Color(0xFF888888), fontSize = 13.sp
+                        )
+                        Spacer(Modifier.width(12.dp))
+                        androidx.compose.material3.Text(
+                            "Delete All", color = Color(0xFFFF5252), fontSize = 12.sp,
+                            modifier = Modifier.clickable { DownloadManager.deleteSeries(seriesId) }
+                        )
+                    }
+
+                    for (item in episodes) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.fillMaxWidth()
+                                .padding(start = 16.dp, top = 2.dp, bottom = 2.dp)
+                                .background(Color(0xFF1A1A2E), RoundedCornerShape(6.dp))
+                                .padding(horizontal = 12.dp, vertical = 8.dp)
+                        ) {
+                            val stateText = when (item.state) {
+                                DownloadManager.State.COMPLETED -> "✓"
+                                DownloadManager.State.DOWNLOADING -> "↓ ${item.progress}%"
+                                DownloadManager.State.QUEUED -> "⏳"
+                                DownloadManager.State.FAILED -> "✗ Failed"
+                            }
+                            val stateColor = when (item.state) {
+                                DownloadManager.State.COMPLETED -> Color(0xFF81C784)
+                                DownloadManager.State.DOWNLOADING -> Color(0xFFBB86FC)
+                                DownloadManager.State.QUEUED -> Color(0xFF888888)
+                                DownloadManager.State.FAILED -> Color(0xFFFF5252)
+                            }
+                            androidx.compose.material3.Text(stateText, color = stateColor, fontSize = 13.sp)
+                            Spacer(Modifier.width(12.dp))
+                            androidx.compose.material3.Text(
+                                item.titleEn.ifEmpty { "Episode ${item.episodeNum}" },
+                                color = Color.White, fontSize = 14.sp, modifier = Modifier.weight(1f)
+                            )
+                            if (item.state == DownloadManager.State.COMPLETED) {
+                                val mb = item.totalBytes / (1024 * 1024)
+                                androidx.compose.material3.Text("$mb MB", color = Color(0xFF888888), fontSize = 11.sp)
+                            }
+                            Spacer(Modifier.width(8.dp))
+                            androidx.compose.material3.Text(
+                                "×", color = Color(0xFFFF5252), fontSize = 16.sp,
+                                modifier = Modifier.clickable { DownloadManager.delete(item.seriesId, item.episodeNum) }
+                            )
+                        }
+                    }
+                    Spacer(Modifier.height(12.dp))
+                }
+
+                Spacer(Modifier.height(24.dp))
+                Box(
+                    modifier = Modifier
+                        .background(Color(0xFF442222), RoundedCornerShape(8.dp))
+                        .clickable { DownloadManager.deleteAll() }
+                        .padding(horizontal = 24.dp, vertical = 12.dp)
+                ) {
+                    androidx.compose.material3.Text(
+                        "Delete All Downloads", color = Color(0xFFFF5252), fontSize = 14.sp
+                    )
+                }
+            }
             Spacer(Modifier.height(32.dp))
         }
     }
@@ -612,40 +876,68 @@ class LibraryActivity : ComponentActivity() {
                 .then(if (focused) Modifier.border(2.dp, Color(0xFFBB86FC), RoundedCornerShape(8.dp)) else Modifier)
                 .background(if (focused) Color(0xFF2A2A4A) else Color(0xFF1A1A2E), RoundedCornerShape(8.dp))
                 .clickable { onTap() }
-                .padding(8.dp)
         ) {
-            // Episode number + title
-            androidx.compose.material3.Text(
-                "${ep.episode}. Episode ${ep.episode}",
-                color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.SemiBold,
-                maxLines = 1, overflow = TextOverflow.Ellipsis
-            )
-
-            Spacer(Modifier.height(4.dp))
-
-            // Metadata row
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                val subs = mutableListOf<String>()
-                if (ep.hasJaSubs) subs.add("JP")
-                if (ep.hasEnSubs) subs.add("EN")
-                if (ep.hasFrSubs) subs.add("FR")
-                androidx.compose.material3.Text(
-                    "${mins} min" + if (subs.isNotEmpty()) "  ·  ${subs.joinToString(" ")}" else "",
-                    color = Color(0xFF888888), fontSize = 11.sp
+            // Thumbnail
+            if (ep.thumb != null) {
+                coil.compose.AsyncImage(
+                    model = "${serverUrl.value}/api/${ep.thumb}",
+                    contentDescription = null,
+                    contentScale = androidx.compose.ui.layout.ContentScale.Crop,
+                    modifier = Modifier.fillMaxWidth().height(100.dp)
+                        .clip(RoundedCornerShape(topStart = 8.dp, topEnd = 8.dp))
                 )
             }
 
-            // Watch progress
-            if (progressFraction > 0.01f) {
-                Spacer(Modifier.height(6.dp))
-                Box(
-                    Modifier.fillMaxWidth().height(3.dp).clip(RoundedCornerShape(2.dp)).background(Color(0xFF444444))
-                ) {
-                    Box(Modifier.fillMaxHeight().fillMaxWidth(progressFraction).background(Color(0xFFBB86FC), RoundedCornerShape(2.dp)))
-                }
-                if (progressFraction >= 0.95f) {
+            Column(modifier = Modifier.padding(8.dp)) {
+                // Episode number + title
+                val title = if (ep.titleEn.isNotEmpty()) "${ep.episode}. ${ep.titleEn}" else "Episode ${ep.episode}"
+                androidx.compose.material3.Text(
+                    title, color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.SemiBold,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis
+                )
+
+                // Synopsis
+                if (ep.synopsisEn.isNotEmpty()) {
                     Spacer(Modifier.height(2.dp))
-                    androidx.compose.material3.Text("✓ Watched", color = Color(0xFF81C784), fontSize = 10.sp)
+                    androidx.compose.material3.Text(
+                        ep.synopsisEn, color = Color(0xFF999999), fontSize = 11.sp,
+                        maxLines = 2, overflow = TextOverflow.Ellipsis, lineHeight = 14.sp
+                    )
+                }
+
+                Spacer(Modifier.height(4.dp))
+
+                // Metadata + download state
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    val subs = mutableListOf<String>()
+                    if (ep.hasJaSubs) subs.add("JP")
+                    if (ep.hasEnSubs) subs.add("EN")
+                    if (ep.hasFrSubs) subs.add("FR")
+                    androidx.compose.material3.Text(
+                        "${mins} min" + if (subs.isNotEmpty()) " · ${subs.joinToString(" ")}" else "",
+                        color = Color(0xFF888888), fontSize = 10.sp
+                    )
+                    Spacer(Modifier.weight(1f))
+                    val dlItem = DownloadManager.getItemState(series.id, ep.episode)
+                    when (dlItem?.state) {
+                        DownloadManager.State.COMPLETED -> androidx.compose.material3.Text("✓", color = Color(0xFF81C784), fontSize = 12.sp)
+                        DownloadManager.State.DOWNLOADING -> androidx.compose.material3.Text("↓${dlItem.progress}%", color = Color(0xFFBB86FC), fontSize = 10.sp)
+                        DownloadManager.State.QUEUED -> androidx.compose.material3.Text("⏳", color = Color(0xFF888888), fontSize = 10.sp)
+                        DownloadManager.State.FAILED -> androidx.compose.material3.Text("✗", color = Color(0xFFFF5252), fontSize = 12.sp)
+                        null -> {}
+                    }
+                }
+
+                // Watch progress
+                if (progressFraction > 0.01f) {
+                    Spacer(Modifier.height(4.dp))
+                    Box(Modifier.fillMaxWidth().height(3.dp).clip(RoundedCornerShape(2.dp)).background(Color(0xFF444444))) {
+                        Box(Modifier.fillMaxHeight().fillMaxWidth(progressFraction).background(Color(0xFFBB86FC), RoundedCornerShape(2.dp)))
+                    }
+                    if (progressFraction >= 0.95f) {
+                        Spacer(Modifier.height(2.dp))
+                        androidx.compose.material3.Text("✓ Watched", color = Color(0xFF81C784), fontSize = 10.sp)
+                    }
                 }
             }
         }
@@ -722,120 +1014,6 @@ class LibraryActivity : ComponentActivity() {
         }
     }
 
-    @Composable
-    private fun SettingsScreen() {
-        val url by settingsEditUrl
-
-        Column(modifier = Modifier.padding(horizontal = 32.dp, vertical = 16.dp)) {
-            androidx.compose.material3.Text(
-                "Settings",
-                color = Color.White,
-                fontSize = 22.sp,
-                fontWeight = FontWeight.Bold
-            )
-            Spacer(Modifier.height(24.dp))
-
-            // Server URL
-            androidx.compose.material3.Text("Server URL", color = Color(0xFFAAAAAA), fontSize = 13.sp)
-            Spacer(Modifier.height(8.dp))
-            androidx.compose.material3.OutlinedTextField(
-                value = url,
-                onValueChange = { settingsEditUrl.value = it },
-                singleLine = true,
-                colors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(
-                    focusedTextColor = Color.White,
-                    unfocusedTextColor = Color.White,
-                    focusedBorderColor = Color(0xFFBB86FC),
-                    unfocusedBorderColor = Color(0xFF444444),
-                    cursorColor = Color(0xFFBB86FC),
-                    focusedContainerColor = Color(0xFF1E1E2E),
-                    unfocusedContainerColor = Color(0xFF1E1E2E),
-                ),
-                modifier = Modifier.fillMaxWidth()
-            )
-            Spacer(Modifier.height(24.dp))
-
-            // Anki section
-            androidx.compose.material3.Text("Anki Connect", color = Color(0xFFBB86FC), fontSize = 16.sp, fontWeight = FontWeight.Bold)
-            Spacer(Modifier.height(8.dp))
-
-            val ankiSettings = remember { AppSettings(this@LibraryActivity) }
-            val ankiEnabled = remember { mutableStateOf(ankiSettings.ankiEnabled) }
-            val ankiUrl = remember { mutableStateOf(ankiSettings.ankiConnectUrl) }
-            val ankiDeck = remember { mutableStateOf(ankiSettings.ankiDeck) }
-            val ankiNoteType = remember { mutableStateOf(ankiSettings.ankiNoteType) }
-
-            // Enabled toggle
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
-            ) {
-                androidx.compose.material3.Text("Enabled", color = Color.White, fontSize = 14.sp, modifier = Modifier.weight(1f))
-                androidx.compose.material3.Text(
-                    if (ankiEnabled.value) "ON" else "OFF",
-                    color = if (ankiEnabled.value) Color(0xFF81C784) else Color(0xFF888888),
-                    fontSize = 14.sp
-                )
-            }
-
-            // URL
-            androidx.compose.material3.Text("URL", color = Color(0xFFAAAAAA), fontSize = 12.sp)
-            androidx.compose.material3.OutlinedTextField(
-                value = ankiUrl.value,
-                onValueChange = { ankiUrl.value = it; ankiSettings.ankiConnectUrl = it },
-                singleLine = true,
-                colors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(
-                    focusedTextColor = Color.White, unfocusedTextColor = Color.White,
-                    focusedBorderColor = Color(0xFF444444), unfocusedBorderColor = Color(0xFF333333),
-                    cursorColor = Color(0xFFBB86FC),
-                    focusedContainerColor = Color(0xFF1E1E2E), unfocusedContainerColor = Color(0xFF1E1E2E),
-                ),
-                modifier = Modifier.fillMaxWidth()
-            )
-
-            Spacer(Modifier.height(4.dp))
-
-            // Deck
-            androidx.compose.material3.Text("Deck", color = Color(0xFFAAAAAA), fontSize = 12.sp)
-            androidx.compose.material3.OutlinedTextField(
-                value = ankiDeck.value,
-                onValueChange = { ankiDeck.value = it; ankiSettings.ankiDeck = it },
-                singleLine = true,
-                colors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(
-                    focusedTextColor = Color.White, unfocusedTextColor = Color.White,
-                    focusedBorderColor = Color(0xFF444444), unfocusedBorderColor = Color(0xFF333333),
-                    cursorColor = Color(0xFFBB86FC),
-                    focusedContainerColor = Color(0xFF1E1E2E), unfocusedContainerColor = Color(0xFF1E1E2E),
-                ),
-                modifier = Modifier.fillMaxWidth()
-            )
-
-            Spacer(Modifier.height(4.dp))
-
-            // Note type
-            androidx.compose.material3.Text("Note Type", color = Color(0xFFAAAAAA), fontSize = 12.sp)
-            androidx.compose.material3.OutlinedTextField(
-                value = ankiNoteType.value,
-                onValueChange = { ankiNoteType.value = it; ankiSettings.ankiNoteType = it },
-                singleLine = true,
-                colors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(
-                    focusedTextColor = Color.White, unfocusedTextColor = Color.White,
-                    focusedBorderColor = Color(0xFF444444), unfocusedBorderColor = Color(0xFF333333),
-                    cursorColor = Color(0xFFBB86FC),
-                    focusedContainerColor = Color(0xFF1E1E2E), unfocusedContainerColor = Color(0xFF1E1E2E),
-                ),
-                modifier = Modifier.fillMaxWidth()
-            )
-
-            Spacer(Modifier.height(16.dp))
-            androidx.compose.material3.Text(
-                "Press OK to save · BACK to cancel",
-                color = Color(0xFF666666),
-                fontSize = 12.sp
-            )
-        }
-    }
-
     private fun reloadLibrary() {
         loading.value = true
         library.clear()
@@ -865,7 +1043,7 @@ class LibraryActivity : ComponentActivity() {
             KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT,
             KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER
         )
-        if (isDpad) dpadDetected.value = true
+        if (isDpad) showCursorState.value = true
 
         when (screen.value) {
             Screen.MAIN -> when (event.keyCode) {
@@ -878,38 +1056,12 @@ class LibraryActivity : ComponentActivity() {
                 else -> return false
             }
 
-            Screen.SETTINGS -> when (event.keyCode) {
-                KeyEvent.KEYCODE_BACK -> { screen.value = Screen.MAIN }
-                KeyEvent.KEYCODE_DPAD_DOWN -> {
-                    val continueItems = getContinueWatching()
-                    currentRow.value = when {
-                        continueItems.isNotEmpty() -> LibraryRow.CONTINUE
-                        seriesList.isNotEmpty() -> LibraryRow.SERIES
-                        movieList.isNotEmpty() -> LibraryRow.MOVIES
-                        else -> LibraryRow.SERIES
-                    }
-                    screen.value = Screen.MAIN
-                }
-                KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> {
-                    val newUrl = settingsEditUrl.value.trim()
-                    if (newUrl.isNotEmpty()) {
-                        serverUrl.value = newUrl
-                        getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
-                            .putString("server_url", newUrl).apply()
-                        api = JanusApi(newUrl)
-                        reloadLibrary()
-                    }
-                    screen.value = Screen.MAIN
-                }
-                else -> return super.dispatchKeyEvent(event)
-            }
-
             Screen.ITEM_DETAIL -> {
                 val item = selectedItem.value ?: return false
                 val cols = 4
                 val maxIdx = item.episodes.size - 1
                 when (event.keyCode) {
-                    KeyEvent.KEYCODE_BACK -> { releasePreviewPlayer(); screen.value = Screen.MAIN; return true }
+                    KeyEvent.KEYCODE_BACK -> { closeItemDetail(); return true }
                     KeyEvent.KEYCODE_DPAD_LEFT -> {
                         if (item.type != "MOVIE" && episodeFocus.intValue > 0) episodeFocus.intValue--
                     }
@@ -939,6 +1091,11 @@ class LibraryActivity : ComponentActivity() {
                     else -> return false
                 }
             }
+
+            Screen.DOWNLOADS -> when (event.keyCode) {
+                KeyEvent.KEYCODE_BACK -> { screen.value = Screen.MAIN; return true }
+                else -> return super.dispatchKeyEvent(event)
+            }
         }
         return true
     }
@@ -957,12 +1114,14 @@ class LibraryActivity : ComponentActivity() {
     }
 
     private fun rowFocus(): MutableIntState = when (currentRow.value) {
+        LibraryRow.HEADER -> seriesFocus
         LibraryRow.CONTINUE -> continueFocus
         LibraryRow.SERIES -> seriesFocus
         LibraryRow.MOVIES -> movieFocus
     }
 
     private fun rowSize(): Int = when (currentRow.value) {
+        LibraryRow.HEADER -> 1
         LibraryRow.CONTINUE -> getContinueWatching().size
         LibraryRow.SERIES -> seriesList.size
         LibraryRow.MOVIES -> movieList.size
@@ -981,6 +1140,7 @@ class LibraryActivity : ComponentActivity() {
     private fun rowSelect() {
         val idx = rowFocus().intValue
         when (currentRow.value) {
+            LibraryRow.HEADER -> openSettings()
             LibraryRow.CONTINUE -> {
                 val items = getContinueWatching()
                 items.getOrNull(idx)?.let { playContinueItem(it) }
@@ -991,7 +1151,7 @@ class LibraryActivity : ComponentActivity() {
     }
 
     private fun availableRows(): List<LibraryRow> {
-        val rows = mutableListOf<LibraryRow>()
+        val rows = mutableListOf(LibraryRow.HEADER)
         if (getContinueWatching().isNotEmpty()) rows.add(LibraryRow.CONTINUE)
         if (seriesList.isNotEmpty()) rows.add(LibraryRow.SERIES)
         if (movieList.isNotEmpty()) rows.add(LibraryRow.MOVIES)
@@ -1002,7 +1162,6 @@ class LibraryActivity : ComponentActivity() {
         val rows = availableRows()
         val curIdx = rows.indexOf(currentRow.value)
         if (curIdx > 0) currentRow.value = rows[curIdx - 1]
-        else openSettings()
     }
 
     private fun rowMoveDown() {
@@ -1012,19 +1171,30 @@ class LibraryActivity : ComponentActivity() {
     }
 
     private fun openSettings() {
-        settingsEditUrl.value = serverUrl.value
-        screen.value = Screen.SETTINGS
+        AppNavigator.navigate(this, AppNavigator.Action.OPEN_SETTINGS)
+        startActivity(Intent(this, SettingsActivity::class.java))
     }
 
     private fun openItemDetail(item: JanusApi.Series) {
         selectedItem.value = item
         episodeFocus.intValue = 0
-        detailVisitCount.intValue++
+        AppNavigator.navigate(this, AppNavigator.Action.OPEN_ITEM)
         screen.value = Screen.ITEM_DETAIL
+        refreshItemDetail()
+    }
+
+    private fun refreshItemDetail() {
+        releasePreviewPlayer()
+        previewRequested.value = true
+    }
+
+    private fun closeItemDetail() {
+        releasePreviewPlayer()
+        AppNavigator.navigate(this, AppNavigator.Action.CLOSE_ITEM)
+        screen.value = Screen.MAIN
     }
 
     private fun playItem(item: JanusApi.Series) {
-        releasePreviewPlayer()
         val lastWatched = getLastWatched(item.id)
         if (lastWatched != null) {
             val ep = item.episodes.firstOrNull { it.episode == lastWatched.first }
@@ -1042,36 +1212,61 @@ class LibraryActivity : ComponentActivity() {
         else playEpisode(item.series, item.episode)
     }
 
+    private fun startDownload(item: JanusApi.Series) {
+        if (item.type == "MOVIE") {
+            val ep = item.episodes.firstOrNull() ?: return
+            val srtFiles = mutableListOf<Pair<String, String>>()
+            if (ep.hasJaSubs && ep.jaSrtFile != null) srtFiles.add(ep.jaSrtFile to api.subsUrl(item.id, ep.jaSrtFile))
+            DownloadManager.enqueueEpisode(
+                item.id, ep.episode, ep.filename,
+                api.videoUrl(item.id, ep.filename), srtFiles,
+                titleEn = item.titleEn, seriesTitleEn = ""
+            )
+        } else {
+            DownloadManager.enqueueSeries(item, api)
+        }
+        startService(Intent(this, DownloadService::class.java))
+    }
+
+    private fun resolveVideoUrl(seriesId: String, filename: String): String {
+        val local = DownloadManager.getLocalVideoPath(seriesId, filename)
+        return if (local != null) "file://$local" else api.videoUrl(seriesId, filename)
+    }
+
+    private fun resolveSubsUrl(seriesId: String, srtFile: String?): String? {
+        if (srtFile == null) return null
+        val local = DownloadManager.getLocalSubsPath(seriesId, srtFile)
+        return if (local != null) "file://$local" else api.subsUrl(seriesId, srtFile)
+    }
+
     private fun playEpisode(series: JanusApi.Series, episode: JanusApi.Episode) {
-        val videoUrl = api.videoUrl(series.id, episode.filename)
-        val subsUrl = if (episode.hasJaSubs && episode.jaSrtFile != null)
-            api.subsUrl(series.id, episode.jaSrtFile) else null
+        val videoUrl = resolveVideoUrl(series.id, episode.filename)
+        val subsUrl = if (episode.hasJaSubs) resolveSubsUrl(series.id, episode.jaSrtFile) else null
         val savedPos = getWatchProgress(series.id, episode.episode)
 
-        startActivity(Intent(this, ExoPlayerActivity::class.java).apply {
-            putExtra(ExoPlayerActivity.EXTRA_VIDEO_URL, videoUrl)
-            putExtra(ExoPlayerActivity.EXTRA_SUBS_URL, subsUrl)
-            putExtra(ExoPlayerActivity.EXTRA_TITLE, "${series.titleEn} - Episode ${episode.episode}")
-            putExtra(ExoPlayerActivity.EXTRA_START_POSITION, savedPos)
-            putExtra(ExoPlayerActivity.EXTRA_SERIES_ID, series.id)
-            putExtra(ExoPlayerActivity.EXTRA_EPISODE_NUM, episode.episode)
-        })
+        AppNavigator.navigate(this, AppNavigator.Action.PLAY_VIDEO) { intent ->
+            intent.putExtra(ExoPlayerActivity.EXTRA_VIDEO_URL, videoUrl)
+            intent.putExtra(ExoPlayerActivity.EXTRA_SUBS_URL, subsUrl)
+            intent.putExtra(ExoPlayerActivity.EXTRA_TITLE, "${series.titleEn} - Episode ${episode.episode}")
+            intent.putExtra(ExoPlayerActivity.EXTRA_START_POSITION, savedPos)
+            intent.putExtra(ExoPlayerActivity.EXTRA_SERIES_ID, series.id)
+            intent.putExtra(ExoPlayerActivity.EXTRA_EPISODE_NUM, episode.episode)
+        }
     }
 
     private fun playMovie(movie: JanusApi.Series, episode: JanusApi.Episode) {
-        val videoUrl = api.videoUrl(movie.id, episode.filename)
-        val subsUrl = if (episode.hasJaSubs && episode.jaSrtFile != null)
-            api.subsUrl(movie.id, episode.jaSrtFile) else null
+        val videoUrl = resolveVideoUrl(movie.id, episode.filename)
+        val subsUrl = if (episode.hasJaSubs) resolveSubsUrl(movie.id, episode.jaSrtFile) else null
         val savedPos = getWatchProgress(movie.id, episode.episode)
 
-        startActivity(Intent(this, ExoPlayerActivity::class.java).apply {
-            putExtra(ExoPlayerActivity.EXTRA_VIDEO_URL, videoUrl)
-            putExtra(ExoPlayerActivity.EXTRA_SUBS_URL, subsUrl)
-            putExtra(ExoPlayerActivity.EXTRA_TITLE, movie.titleEn)
-            putExtra(ExoPlayerActivity.EXTRA_START_POSITION, savedPos)
-            putExtra(ExoPlayerActivity.EXTRA_SERIES_ID, movie.id)
-            putExtra(ExoPlayerActivity.EXTRA_EPISODE_NUM, episode.episode)
-        })
+        AppNavigator.navigate(this, AppNavigator.Action.PLAY_VIDEO) { intent ->
+            intent.putExtra(ExoPlayerActivity.EXTRA_VIDEO_URL, videoUrl)
+            intent.putExtra(ExoPlayerActivity.EXTRA_SUBS_URL, subsUrl)
+            intent.putExtra(ExoPlayerActivity.EXTRA_TITLE, movie.titleEn)
+            intent.putExtra(ExoPlayerActivity.EXTRA_START_POSITION, savedPos)
+            intent.putExtra(ExoPlayerActivity.EXTRA_SERIES_ID, movie.id)
+            intent.putExtra(ExoPlayerActivity.EXTRA_EPISODE_NUM, episode.episode)
+        }
     }
 
     override fun onPause() {

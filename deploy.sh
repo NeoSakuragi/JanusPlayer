@@ -27,20 +27,17 @@ fi
 # Read version from build.gradle.kts
 VERSION_CODE=$(grep 'versionCode' app/build.gradle.kts | head -1 | grep -o '[0-9]*')
 VERSION_NAME=$(grep 'versionName' app/build.gradle.kts | head -1 | grep -o '"[^"]*"' | tr -d '"')
-APK_NAME="janus-v${VERSION_NAME}.apk"
-
 echo "Deploying v${VERSION_NAME} (code ${VERSION_CODE}) to ${HETZNER_HOST}"
 
-# Upload APK and version.json to Hetzner
 cat > /tmp/janus-version.json << EOF
-{"version_code": ${VERSION_CODE}, "version_name": "${VERSION_NAME}", "apk": "${APK_NAME}"}
+{"version_code": ${VERSION_CODE}, "version_name": "${VERSION_NAME}", "apk": "janus.apk"}
 EOF
 
 $SSH "mkdir -p ${HETZNER_PATH}"
-$SCP "$APK" "${HETZNER_HOST}:${HETZNER_PATH}/${APK_NAME}"
+$SCP "$APK" "${HETZNER_HOST}:${HETZNER_PATH}/janus.apk"
 $SCP /tmp/janus-version.json "${HETZNER_HOST}:${HETZNER_PATH}/version.json"
 
 echo "Deployed:"
-echo "  APK:     https://canneji.duckdns.org/janus/${APK_NAME}"
+echo "  APK:     https://canneji.duckdns.org/janus/janus.apk"
 echo "  Version: https://canneji.duckdns.org/janus/version.json"
 $SSH "cat ${HETZNER_PATH}/version.json"

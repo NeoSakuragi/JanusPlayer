@@ -1,0 +1,23 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(./gradlew *)",
+      "Bash(adb *)",
+      "Bash(~/Android/Sdk/platform-tools/adb *)",
+      "Bash(~/Android/Sdk/emulator/emulator *)",
+      "Bash(curl -s *)",
+      "Bash(curl -sI *)",
+      "Bash(curl -sL *)",
+      "Bash(ffprobe *)",
+      "Bash(vainfo *)",
+      "Bash(sensors *)",
+      "Bash(./deploy.sh)",
+      "Bash(chmod +x *)",
+      "Bash(hostname *)",
+      "Bash(ssh-keyscan *)",
+      "Bash(pip3 *)",
+      "Bash(dpkg -l *)",
+      "Bash(rocminfo *)"
+    ]
+  }
+}

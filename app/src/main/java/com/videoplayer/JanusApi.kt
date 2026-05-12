@@ -42,7 +42,10 @@ class JanusApi(private val baseUrl: String) {
         val enSrtFile: String?,
         val jaSubLines: Int,
         val watchProgressSec: Double,
-        val completed: Boolean
+        val completed: Boolean,
+        val titleEn: String,
+        val synopsisEn: String,
+        val thumb: String?,
     )
 
     fun fetchLibrary(): List<Series> {
@@ -106,6 +109,9 @@ class JanusApi(private val baseUrl: String) {
         enSrtFile = obj.optString("en_srt_file", null),
         jaSubLines = obj.optInt("ja_sub_lines", 0),
         watchProgressSec = obj.optDouble("watch_progress_sec", 0.0),
-        completed = obj.optBoolean("completed", false)
+        completed = obj.optBoolean("completed", false),
+        titleEn = obj.optString("title_en", ""),
+        synopsisEn = obj.optString("synopsis_en", ""),
+        thumb = obj.optString("thumb", null),
     )
 }
