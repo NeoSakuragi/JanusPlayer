@@ -12,10 +12,15 @@ import androidx.compose.animation.*
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.ClickableText
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -260,12 +265,25 @@ class ExoPlayerActivity : ComponentActivity() {
         }
 
         Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
-            // ExoPlayer surface
+            // ExoPlayer surface — tap here to toggle controls
             AndroidView(
                 factory = { ctx ->
+                    val exo = this@ExoPlayerActivity.player
                     PlayerView(ctx).apply {
-                        this.player = this@ExoPlayerActivity.player
+                        this.player = exo
                         useController = false
+                        setOnClickListener {
+                            when (screen.value) {
+                                Screen.PLAYING -> {
+                                    exo.pause()
+                                    if (!enterWordNav()) goto(Screen.CONTROLS, CTRL_SEEK)
+                                }
+                                Screen.CONTROLS, Screen.WORD_NAV -> {
+                                    clearDict(); exo.play(); goto(Screen.PLAYING)
+                                }
+                                else -> {}
+                            }
+                        }
                     }
                 },
                 modifier = Modifier.fillMaxSize()
@@ -273,7 +291,7 @@ class ExoPlayerActivity : ComponentActivity() {
 
             // Top: buttons row
             AnimatedVisibility(
-                visible = scr == Screen.CONTROLS || scr == Screen.LIST_SELECT,
+                visible = scr == Screen.CONTROLS || scr == Screen.LIST_SELECT || scr == Screen.WORD_NAV,
                 enter = fadeIn(tween(200)),
                 exit = fadeOut(tween(200)),
                 modifier = Modifier.align(Alignment.TopEnd)
@@ -282,22 +300,22 @@ class ExoPlayerActivity : ComponentActivity() {
                     verticalAlignment = Alignment.CenterVertically,
                     modifier = Modifier.padding(top = 16.dp, end = 24.dp)
                 ) {
-                    CtrlBtn("♪", "Audio", CTRL_AUDIO, cFocus)
+                    CtrlBtn("♪", "Audio", CTRL_AUDIO, cFocus) { showAudioList() }
                     Spacer(Modifier.width(8.dp))
-                    CtrlBtn("CC", "Subs", CTRL_SUBS, cFocus)
+                    CtrlBtn("CC", "Subs", CTRL_SUBS, cFocus) { showSubsList() }
                     Spacer(Modifier.width(8.dp))
-                    CtrlBtn("Aa", "${FONT_SIZES[fSizeIdx]}sp", CTRL_FONTSIZE, cFocus)
+                    CtrlBtn("Aa", "${FONT_SIZES[fSizeIdx]}sp", CTRL_FONTSIZE, cFocus) { cycleFontSize() }
                     Spacer(Modifier.width(8.dp))
-                    CtrlBtn("F", FONT_NAMES[fIdx].take(8), CTRL_FONT, cFocus)
+                    CtrlBtn("F", FONT_NAMES[fIdx].take(8), CTRL_FONT, cFocus) { cycleFont() }
                     Spacer(Modifier.width(8.dp))
                     val condOn by condensedMode
-                    CtrlBtn("⏩", if (condOn) "COND ON" else "COND OFF", CTRL_CONDENSED, cFocus)
+                    CtrlBtn("⏩", if (condOn) "COND ON" else "COND OFF", CTRL_CONDENSED, cFocus) { condensedMode.value = !condensedMode.value }
                 }
             }
 
             // Title
             AnimatedVisibility(
-                visible = scr == Screen.CONTROLS || scr == Screen.LIST_SELECT,
+                visible = scr == Screen.CONTROLS || scr == Screen.LIST_SELECT || scr == Screen.WORD_NAV,
                 enter = fadeIn(tween(200)),
                 exit = fadeOut(tween(200)),
                 modifier = Modifier.align(Alignment.TopStart)
@@ -351,21 +369,19 @@ class ExoPlayerActivity : ComponentActivity() {
             if (sub != null && sub!!.isNotBlank()) {
                 val hS by hlStart
                 val hE by hlEnd
-                val annotated = if (scr == Screen.WORD_NAV && hS >= 0 && hE > hS) {
-                    val subText = sub!!
-                    buildAnnotatedString {
-                        if (hS <= subText.length && hE <= subText.length) {
-                            if (hS > 0) append(subText.substring(0, hS))
+                val subText = sub!!
+                val annotated = buildAnnotatedString {
+                    for (i in subText.indices) {
+                        pushStringAnnotation("idx", i.toString())
+                        if (scr == Screen.WORD_NAV && hS >= 0 && hE > hS && i in hS until hE) {
                             pushStyle(SpanStyle(background = Color(0xFF7986CB)))
-                            append(subText.substring(hS, hE))
+                            append(subText[i])
                             pop()
-                            if (hE < subText.length) append(subText.substring(hE))
                         } else {
-                            append(subText)
+                            append(subText[i])
                         }
+                        pop()
                     }
-                } else {
-                    buildAnnotatedString { append(sub!!) }
                 }
 
                 Box(
@@ -379,8 +395,13 @@ class ExoPlayerActivity : ComponentActivity() {
                         text = annotated, color = Color.Black, fontSize = subFontSize, fontFamily = subFontFamily,
                         style = androidx.compose.ui.text.TextStyle(drawStyle = androidx.compose.ui.graphics.drawscope.Stroke(width = 6f))
                     )
-                    androidx.compose.material3.Text(
-                        text = annotated, color = Color.White, fontSize = subFontSize, fontFamily = subFontFamily
+                    ClickableText(
+                        text = annotated,
+                        style = androidx.compose.ui.text.TextStyle(color = Color.White, fontSize = subFontSize, fontFamily = subFontFamily),
+                        onClick = { offset ->
+                            annotated.getStringAnnotations("idx", offset, offset)
+                                .firstOrNull()?.let { onSubtitleTap(it.item.toInt()) }
+                        }
                     )
                 }
             }
@@ -403,18 +424,47 @@ class ExoPlayerActivity : ComponentActivity() {
                         androidx.compose.material3.Text(fmtTime(pos), color = Color.White, fontSize = 13.sp)
                         androidx.compose.material3.Text(fmtTime(dur), color = Color(0xFFAAAAAA), fontSize = 13.sp)
                     }
-                    Spacer(Modifier.height(6.dp))
                     Box(
                         Modifier.fillMaxWidth()
-                            .height(if (seekFocused) 8.dp else 4.dp)
-                            .clip(RoundedCornerShape(4.dp))
-                            .background(Color(0xFF444444))
-                            .then(if (seekFocused) Modifier.border(1.dp, Color(0xFFBB86FC), RoundedCornerShape(4.dp)) else Modifier)
+                            .pointerInput(Unit) {
+                                awaitPointerEventScope {
+                                    while (true) {
+                                        val down = awaitPointerEvent().changes.firstOrNull() ?: continue
+                                        if (!down.pressed) continue
+                                        val wasPlaying = player.isPlaying
+                                        player.pause()
+                                        controlFocus.intValue = CTRL_SEEK
+                                        if (screen.value == Screen.PLAYING) goto(Screen.CONTROLS, CTRL_SEEK)
+                                        fun seekToX(x: Float) {
+                                            val fraction = (x / size.width).coerceIn(0f, 1f)
+                                            player.seekTo((fraction * durationMs.longValue).toLong())
+                                        }
+                                        seekToX(down.position.x)
+                                        down.consume()
+                                        while (true) {
+                                            val event = awaitPointerEvent()
+                                            val change = event.changes.firstOrNull() ?: break
+                                            if (!change.pressed) { change.consume(); break }
+                                            seekToX(change.position.x)
+                                            change.consume()
+                                        }
+                                        if (wasPlaying) { player.play(); goto(Screen.PLAYING) }
+                                    }
+                                }
+                            }
+                            .padding(vertical = 12.dp)
                     ) {
                         Box(
-                            Modifier.fillMaxHeight().fillMaxWidth(progress)
-                                .background(if (seekFocused) Color(0xFFBB86FC) else Color(0xFF90CAF9), RoundedCornerShape(4.dp))
-                        )
+                            Modifier.fillMaxWidth()
+                                .height(8.dp)
+                                .clip(RoundedCornerShape(4.dp))
+                                .background(Color(0xFF444444))
+                        ) {
+                            Box(
+                                Modifier.fillMaxHeight().fillMaxWidth(progress)
+                                    .background(Color(0xFFBB86FC), RoundedCornerShape(4.dp))
+                            )
+                        }
                     }
                 }
             }
@@ -425,7 +475,7 @@ class ExoPlayerActivity : ComponentActivity() {
                 enter = slideInHorizontally(initialOffsetX = { it }, animationSpec = tween(200)) + fadeIn(tween(200)),
                 exit = slideOutHorizontally(targetOffsetX = { it }, animationSpec = tween(150)) + fadeOut(tween(150)),
             ) {
-                Box(Modifier.fillMaxSize().background(Color(0xAA000000))) {
+                Box(Modifier.fillMaxSize().background(Color(0xAA000000)).clickable { goto(Screen.CONTROLS, listReturnFocus) }) {
                     Column(
                         Modifier.align(Alignment.CenterEnd).width(340.dp).fillMaxHeight()
                             .background(Color(0xFF1A1A2E)).padding(vertical = 12.dp)
@@ -442,6 +492,11 @@ class ExoPlayerActivity : ComponentActivity() {
                                 Row(
                                     verticalAlignment = Alignment.CenterVertically,
                                     modifier = Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 1.dp)
+                                        .clickable {
+                                            listFocus.intValue = idx
+                                            listCallback?.invoke(idx)
+                                            player.play(); goto(Screen.PLAYING)
+                                        }
                                         .background(
                                             when { focused -> Color(0xFFBB86FC); item.selected -> Color(0xFF2A2A4A); else -> Color.Transparent },
                                             RoundedCornerShape(6.dp)
@@ -465,12 +520,13 @@ class ExoPlayerActivity : ComponentActivity() {
     }
 
     @Composable
-    private fun CtrlBtn(icon: String, label: String, index: Int, focusIdx: Int) {
+    private fun CtrlBtn(icon: String, label: String, index: Int, focusIdx: Int, onTap: () -> Unit) {
         val focused = focusIdx == index && screen.value == Screen.CONTROLS
         Column(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center,
             modifier = Modifier.size(width = 72.dp, height = 56.dp)
+                .clickable { controlFocus.intValue = index; onTap() }
                 .background(if (focused) Color(0xFFBB86FC) else Color(0xFF2A2A3A), RoundedCornerShape(12.dp))
                 .then(if (focused) Modifier.border(1.dp, Color.White, RoundedCornerShape(12.dp)) else Modifier)
         ) {
@@ -562,7 +618,7 @@ class ExoPlayerActivity : ComponentActivity() {
                 KeyEvent.KEYCODE_DPAD_DOWN -> { listFocus.intValue = (listFocus.intValue + 1).coerceAtMost(listItems.size - 1) }
                 KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> {
                     listCallback?.invoke(listFocus.intValue)
-                    goto(Screen.CONTROLS, listReturnFocus)
+                    player.play(); goto(Screen.PLAYING)
                 }
                 else -> return false
             }
@@ -576,6 +632,19 @@ class ExoPlayerActivity : ComponentActivity() {
     }
 
     // ── Word Navigation ──────────────────────────────────────────────
+
+    private fun onSubtitleTap(charOffset: Int) {
+        val text = currentSubText.value ?: return
+        val positions = WordScanner.findJapanesePositions(text)
+        if (positions.isEmpty()) return
+        val targetIdx = positions.indices.minByOrNull { kotlin.math.abs(positions[it] - charOffset) } ?: 0
+        player.pause()
+        japanesePositions = positions
+        wordNavSubText = text
+        cursorIdx.intValue = targetIdx
+        updateWordAtCursor()
+        screen.value = Screen.WORD_NAV
+    }
 
     private fun enterWordNav(): Boolean {
         val text = currentSubText.value ?: return false

@@ -8,6 +8,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -35,15 +36,23 @@ class LibraryActivity : ComponentActivity() {
     }
 
     enum class Screen { SERIES_LIST, EPISODE_LIST, SETTINGS }
+    enum class LibraryRow { CONTINUE, SERIES, MOVIES }
 
     private val screen = mutableStateOf(Screen.SERIES_LIST)
+    private val currentRow = mutableStateOf(LibraryRow.SERIES)
     private val seriesFocus = mutableIntStateOf(0)
+    private val movieFocus = mutableIntStateOf(0)
     private val episodeFocus = mutableIntStateOf(0)
     private val library = mutableStateListOf<JanusApi.Series>()
+    private val seriesList = mutableStateListOf<JanusApi.Series>()
+    private val movieList = mutableStateListOf<JanusApi.Series>()
     private val loading = mutableStateOf(true)
     private val serverUrl = mutableStateOf(DEFAULT_SERVER_URL)
     private val settingsEditUrl = mutableStateOf("")
     private val settingsCursorPos = mutableIntStateOf(0)
+    private val updateAvailable = mutableStateOf<AppUpdater.UpdateInfo?>(null)
+    private val updateDownloading = mutableStateOf(false)
+    private var appUpdater: AppUpdater? = null
 
     private lateinit var api: JanusApi
 
@@ -60,8 +69,12 @@ class LibraryActivity : ComponentActivity() {
                 val items = api.fetchLibrary()
                 runOnUiThread {
                     library.addAll(items)
+                    seriesList.addAll(items.filter { it.type == "TV_SERIES" })
+                    movieList.addAll(items.filter { it.type == "MOVIE" })
                     loading.value = false
-                    Log.d(TAG, "Library loaded: ${items.size} series")
+                    Log.d(TAG, "Library loaded: ${seriesList.size} series, ${movieList.size} movies")
+                    appUpdater = AppUpdater(this@LibraryActivity)
+                    appUpdater?.checkForUpdate { info -> updateAvailable.value = info }
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to load library: ${e.message}")
@@ -117,14 +130,47 @@ class LibraryActivity : ComponentActivity() {
                         androidx.compose.material3.Text(
                             "⚙",
                             color = if (currentScreen == Screen.SETTINGS) Color(0xFFBB86FC) else Color(0xFF666666),
-                            fontSize = 22.sp
+                            fontSize = 22.sp,
+                            modifier = Modifier.clickable { openSettings() }
                         )
+                    }
+
+                    // Update banner
+                    val update by updateAvailable
+                    val downloading by updateDownloading
+                    if (update != null) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.fillMaxWidth()
+                                .padding(horizontal = 32.dp, vertical = 4.dp)
+                                .background(Color(0xFF2A2A4A), RoundedCornerShape(8.dp))
+                                .clickable {
+                                    if (!downloading) {
+                                        updateDownloading.value = true
+                                        appUpdater?.downloadAndInstall(update!!.apkName)
+                                    }
+                                }
+                                .padding(horizontal = 16.dp, vertical = 10.dp)
+                        ) {
+                            androidx.compose.material3.Text(
+                                if (downloading) "Downloading update..."
+                                else "New version available (${update!!.versionName})",
+                                color = Color.White, fontSize = 14.sp
+                            )
+                            Spacer(Modifier.weight(1f))
+                            if (!downloading) {
+                                androidx.compose.material3.Text(
+                                    "Update",
+                                    color = Color(0xFFBB86FC), fontSize = 14.sp, fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
                     }
 
                     when (currentScreen) {
                         Screen.SERIES_LIST -> SeriesRow(sFocus)
                         Screen.EPISODE_LIST -> {
-                            val series = library.getOrNull(sFocus)
+                            val series = seriesList.getOrNull(sFocus)
                             if (series != null) EpisodeList(series, eFocus)
                         }
                         Screen.SETTINGS -> SettingsScreen()
@@ -153,13 +199,15 @@ class LibraryActivity : ComponentActivity() {
     @Composable
     private fun SeriesRow(focusIdx: Int) {
         val continueItems = remember { getContinueWatching() }
+        val activeRow by currentRow
+        val mFocus by movieFocus
 
         Column {
             // Continue Watching row
             if (continueItems.isNotEmpty()) {
                 androidx.compose.material3.Text(
                     "Continue Watching",
-                    color = Color(0xFFCCCCCC),
+                    color = if (activeRow == LibraryRow.CONTINUE) Color(0xFFBB86FC) else Color(0xFFCCCCCC),
                     fontSize = 16.sp,
                     modifier = Modifier.padding(horizontal = 32.dp, vertical = 8.dp)
                 )
@@ -172,6 +220,7 @@ class LibraryActivity : ComponentActivity() {
                         Column(
                             modifier = Modifier.width(220.dp)
                                 .background(Color(0xFF1A1A2E), RoundedCornerShape(8.dp))
+                                .clickable { playContinueItem(item) }
                                 .padding(12.dp)
                         ) {
                             androidx.compose.material3.Text(
@@ -179,7 +228,8 @@ class LibraryActivity : ComponentActivity() {
                                 color = Color(0xFFBB86FC), fontSize = 13.sp, fontWeight = FontWeight.SemiBold
                             )
                             androidx.compose.material3.Text(
-                                "Episode ${item.episode.episode}",
+                                if (item.series.type == "MOVIE") item.series.titleEn
+                                else "Episode ${item.episode.episode}",
                                 color = Color.White, fontSize = 15.sp
                             )
                             Spacer(Modifier.height(6.dp))
@@ -194,31 +244,60 @@ class LibraryActivity : ComponentActivity() {
                 Spacer(Modifier.height(16.dp))
             }
 
-            // Library row
-            androidx.compose.material3.Text(
-                "Library",
-                color = Color(0xFFCCCCCC),
-                fontSize = 16.sp,
-                modifier = Modifier.padding(horizontal = 32.dp, vertical = 8.dp)
-            )
+            // Series row
+            if (seriesList.isNotEmpty()) {
+                androidx.compose.material3.Text(
+                    "Series",
+                    color = if (activeRow == LibraryRow.SERIES) Color(0xFFBB86FC) else Color(0xFFCCCCCC),
+                    fontSize = 16.sp,
+                    modifier = Modifier.padding(horizontal = 32.dp, vertical = 8.dp)
+                )
+                LazyRow(
+                    contentPadding = PaddingValues(horizontal = 32.dp),
+                    horizontalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    itemsIndexed(seriesList) { idx, series ->
+                        SeriesCard(series, focused = activeRow == LibraryRow.SERIES && idx == focusIdx) {
+                            currentRow.value = LibraryRow.SERIES
+                            seriesFocus.intValue = idx
+                            selectSeries(idx)
+                        }
+                    }
+                }
+                Spacer(Modifier.height(16.dp))
+            }
 
-            LazyRow(
-                contentPadding = PaddingValues(horizontal = 32.dp),
-                horizontalArrangement = Arrangement.spacedBy(16.dp)
-            ) {
-                itemsIndexed(library) { idx, series ->
-                    SeriesCard(series, focused = idx == focusIdx)
+            // Movies row
+            if (movieList.isNotEmpty()) {
+                androidx.compose.material3.Text(
+                    "Movies",
+                    color = if (activeRow == LibraryRow.MOVIES) Color(0xFFBB86FC) else Color(0xFFCCCCCC),
+                    fontSize = 16.sp,
+                    modifier = Modifier.padding(horizontal = 32.dp, vertical = 8.dp)
+                )
+                LazyRow(
+                    contentPadding = PaddingValues(horizontal = 32.dp),
+                    horizontalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    itemsIndexed(movieList) { idx, movie ->
+                        SeriesCard(movie, focused = activeRow == LibraryRow.MOVIES && idx == mFocus) {
+                            currentRow.value = LibraryRow.MOVIES
+                            movieFocus.intValue = idx
+                            selectMovie(idx)
+                        }
+                    }
                 }
             }
         }
     }
 
     @Composable
-    private fun SeriesCard(series: JanusApi.Series, focused: Boolean) {
+    private fun SeriesCard(series: JanusApi.Series, focused: Boolean, onTap: () -> Unit) {
         Column(
             horizontalAlignment = Alignment.CenterHorizontally,
             modifier = Modifier
                 .width(200.dp)
+                .clickable { onTap() }
                 .then(
                     if (focused) Modifier.border(3.dp, Color(0xFFBB86FC), RoundedCornerShape(12.dp))
                     else Modifier
@@ -260,10 +339,17 @@ class LibraryActivity : ComponentActivity() {
 
             // Episode count + continue watching
             val lastWatched = remember(series.id) { getLastWatched(series.id) }
-            if (lastWatched != null) {
+            if (lastWatched != null && series.type != "MOVIE") {
                 androidx.compose.material3.Text(
                     "▶ Episode ${lastWatched.first}",
                     color = Color(0xFFBB86FC),
+                    fontSize = 12.sp
+                )
+            } else if (series.type == "MOVIE") {
+                val mins = series.episodes.firstOrNull()?.let { (it.durationSec / 60).toInt() } ?: 0
+                androidx.compose.material3.Text(
+                    "${mins} min",
+                    color = if (focused) Color.White else Color(0xFF888888),
                     fontSize = 12.sp
                 )
             } else {
@@ -279,8 +365,11 @@ class LibraryActivity : ComponentActivity() {
     @Composable
     private fun EpisodeList(series: JanusApi.Series, focusIdx: Int) {
         Column(modifier = Modifier.padding(horizontal = 32.dp)) {
-            // Series header
-            Row(verticalAlignment = Alignment.CenterVertically) {
+            // Series header (tap to go back)
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.clickable { screen.value = Screen.SERIES_LIST }
+            ) {
                 androidx.compose.material3.Text(
                     series.titleJa,
                     color = Color.White,
@@ -303,19 +392,23 @@ class LibraryActivity : ComponentActivity() {
                 horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 itemsIndexed(series.episodes) { idx, ep ->
-                    EpisodeCard(series, ep, focused = idx == focusIdx)
+                    EpisodeCard(series, ep, focused = idx == focusIdx) {
+                        episodeFocus.intValue = idx
+                        playEpisode(series, ep)
+                    }
                 }
             }
         }
     }
 
     @Composable
-    private fun EpisodeCard(series: JanusApi.Series, ep: JanusApi.Episode, focused: Boolean) {
+    private fun EpisodeCard(series: JanusApi.Series, ep: JanusApi.Episode, focused: Boolean, onTap: () -> Unit) {
         val savedPos = remember(series.id, ep.episode) { getWatchProgress(series.id, ep.episode) }
         val progressFraction = if (ep.durationSec > 0) (savedPos / 1000.0 / ep.durationSec).toFloat().coerceIn(0f, 1f) else 0f
         Column(
             modifier = Modifier
                 .width(180.dp)
+                .clickable { onTap() }
                 .then(
                     if (focused) Modifier.border(2.dp, Color(0xFFBB86FC), RoundedCornerShape(8.dp))
                     else Modifier
@@ -496,11 +589,15 @@ class LibraryActivity : ComponentActivity() {
     private fun reloadLibrary() {
         loading.value = true
         library.clear()
+        seriesList.clear()
+        movieList.clear()
         Thread {
             try {
                 val items = api.fetchLibrary()
                 runOnUiThread {
                     library.addAll(items)
+                    seriesList.addAll(items.filter { it.type == "TV_SERIES" })
+                    movieList.addAll(items.filter { it.type == "MOVIE" })
                     loading.value = false
                 }
             } catch (e: Exception) {
@@ -518,32 +615,60 @@ class LibraryActivity : ComponentActivity() {
             Screen.SERIES_LIST -> when (event.keyCode) {
                 KeyEvent.KEYCODE_BACK -> { finish(); return true }
                 KeyEvent.KEYCODE_DPAD_UP -> {
-                    settingsEditUrl.value = serverUrl.value
-                    screen.value = Screen.SETTINGS
+                    val continueItems = getContinueWatching()
+                    when (currentRow.value) {
+                        LibraryRow.MOVIES -> {
+                            if (seriesList.isNotEmpty()) currentRow.value = LibraryRow.SERIES
+                            else if (continueItems.isNotEmpty()) currentRow.value = LibraryRow.CONTINUE
+                            else openSettings()
+                        }
+                        LibraryRow.SERIES -> {
+                            if (continueItems.isNotEmpty()) currentRow.value = LibraryRow.CONTINUE
+                            else openSettings()
+                        }
+                        LibraryRow.CONTINUE -> openSettings()
+                    }
+                }
+                KeyEvent.KEYCODE_DPAD_DOWN -> {
+                    when (currentRow.value) {
+                        LibraryRow.CONTINUE -> {
+                            if (seriesList.isNotEmpty()) currentRow.value = LibraryRow.SERIES
+                            else if (movieList.isNotEmpty()) currentRow.value = LibraryRow.MOVIES
+                        }
+                        LibraryRow.SERIES -> {
+                            if (movieList.isNotEmpty()) currentRow.value = LibraryRow.MOVIES
+                        }
+                        LibraryRow.MOVIES -> {}
+                    }
                 }
                 KeyEvent.KEYCODE_DPAD_LEFT -> {
-                    if (seriesFocus.intValue > 0) seriesFocus.intValue--
+                    when (currentRow.value) {
+                        LibraryRow.SERIES -> { if (seriesFocus.intValue > 0) seriesFocus.intValue-- }
+                        LibraryRow.MOVIES -> { if (movieFocus.intValue > 0) movieFocus.intValue-- }
+                        LibraryRow.CONTINUE -> {}
+                    }
                 }
                 KeyEvent.KEYCODE_DPAD_RIGHT -> {
-                    if (seriesFocus.intValue < library.size - 1) seriesFocus.intValue++
+                    when (currentRow.value) {
+                        LibraryRow.SERIES -> { if (seriesFocus.intValue < seriesList.size - 1) seriesFocus.intValue++ }
+                        LibraryRow.MOVIES -> { if (movieFocus.intValue < movieList.size - 1) movieFocus.intValue++ }
+                        LibraryRow.CONTINUE -> {}
+                    }
                 }
                 KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> {
-                    val series = library.getOrNull(seriesFocus.intValue)
-                    if (series != null) {
-                        val lastWatched = getLastWatched(series.id)
-                        if (lastWatched != null) {
-                            // Continue watching — play last episode directly
-                            val ep = series.episodes.firstOrNull { it.episode == lastWatched.first }
-                            if (ep != null) { playEpisode(series, ep); return true }
+                    when (currentRow.value) {
+                        LibraryRow.SERIES -> selectSeries(seriesFocus.intValue)
+                        LibraryRow.MOVIES -> selectMovie(movieFocus.intValue)
+                        LibraryRow.CONTINUE -> {
+                            val items = getContinueWatching()
+                            if (items.isNotEmpty()) playContinueItem(items.first())
                         }
                     }
-                    episodeFocus.intValue = 0
-                    screen.value = Screen.EPISODE_LIST
                 }
                 else -> return false
             }
             Screen.EPISODE_LIST -> {
-                val series = library.getOrNull(seriesFocus.intValue) ?: return false
+                val series = seriesList.getOrNull(seriesFocus.intValue) ?: return false
                 when (event.keyCode) {
                     KeyEvent.KEYCODE_BACK -> { screen.value = Screen.SERIES_LIST; return true }
                     KeyEvent.KEYCODE_DPAD_LEFT -> {
@@ -560,6 +685,13 @@ class LibraryActivity : ComponentActivity() {
             }
             Screen.SETTINGS -> when (event.keyCode) {
                 KeyEvent.KEYCODE_BACK, KeyEvent.KEYCODE_DPAD_DOWN -> {
+                    val continueItems = getContinueWatching()
+                    currentRow.value = when {
+                        continueItems.isNotEmpty() -> LibraryRow.CONTINUE
+                        seriesList.isNotEmpty() -> LibraryRow.SERIES
+                        movieList.isNotEmpty() -> LibraryRow.MOVIES
+                        else -> LibraryRow.SERIES
+                    }
                     screen.value = Screen.SERIES_LIST
                 }
                 KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> {
@@ -593,6 +725,33 @@ class LibraryActivity : ComponentActivity() {
         return ep to pos
     }
 
+    private fun openSettings() {
+        settingsEditUrl.value = serverUrl.value
+        screen.value = Screen.SETTINGS
+    }
+
+    private fun selectSeries(idx: Int) {
+        val series = seriesList.getOrNull(idx) ?: return
+        val lastWatched = getLastWatched(series.id)
+        if (lastWatched != null) {
+            val ep = series.episodes.firstOrNull { it.episode == lastWatched.first }
+            if (ep != null) { playEpisode(series, ep); return }
+        }
+        episodeFocus.intValue = 0
+        screen.value = Screen.EPISODE_LIST
+    }
+
+    private fun selectMovie(idx: Int) {
+        val movie = movieList.getOrNull(idx) ?: return
+        val ep = movie.episodes.firstOrNull() ?: return
+        playMovie(movie, ep)
+    }
+
+    private fun playContinueItem(item: ContinueItem) {
+        if (item.series.type == "MOVIE") playMovie(item.series, item.episode)
+        else playEpisode(item.series, item.episode)
+    }
+
     private fun playEpisode(series: JanusApi.Series, episode: JanusApi.Episode) {
         val videoUrl = api.videoUrl(series.id, episode.filename)
         val subsUrl = if (episode.hasJaSubs && episode.jaSrtFile != null)
@@ -605,6 +764,22 @@ class LibraryActivity : ComponentActivity() {
             putExtra(ExoPlayerActivity.EXTRA_TITLE, "${series.titleEn} - Episode ${episode.episode}")
             putExtra(ExoPlayerActivity.EXTRA_START_POSITION, savedPos)
             putExtra(ExoPlayerActivity.EXTRA_SERIES_ID, series.id)
+            putExtra(ExoPlayerActivity.EXTRA_EPISODE_NUM, episode.episode)
+        })
+    }
+
+    private fun playMovie(movie: JanusApi.Series, episode: JanusApi.Episode) {
+        val videoUrl = api.videoUrl(movie.id, episode.filename)
+        val subsUrl = if (episode.hasJaSubs && episode.jaSrtFile != null)
+            api.subsUrl(movie.id, episode.jaSrtFile) else null
+        val savedPos = getWatchProgress(movie.id, episode.episode)
+
+        startActivity(Intent(this, ExoPlayerActivity::class.java).apply {
+            putExtra(ExoPlayerActivity.EXTRA_VIDEO_URL, videoUrl)
+            putExtra(ExoPlayerActivity.EXTRA_SUBS_URL, subsUrl)
+            putExtra(ExoPlayerActivity.EXTRA_TITLE, movie.titleEn)
+            putExtra(ExoPlayerActivity.EXTRA_START_POSITION, savedPos)
+            putExtra(ExoPlayerActivity.EXTRA_SERIES_ID, movie.id)
             putExtra(ExoPlayerActivity.EXTRA_EPISODE_NUM, episode.episode)
         })
     }

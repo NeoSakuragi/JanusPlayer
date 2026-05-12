@@ -35,6 +35,28 @@ SERIES = [
         "file_pattern": r"Maison Ikkoku - (\d+)",
         "ja_sub_stream": None,  # external SRT files
     },
+    {
+        "id": "dbz",
+        "title_en": "Dragon Ball Z",
+        "title_ja": "ドラゴンボールZ",
+        "type": "TV_SERIES",
+        "video_dir": os.path.join(VIDEOS_DIR, "dbz"),
+        "subs_dir": os.path.join(SUBS_DIR, "dbz"),
+        "file_pattern": r"Dragon Ball Z - (\d+)",
+        "ja_sub_stream": None,  # external SRT files
+    },
+]
+
+MOVIES = [
+    {
+        "id": "the-running-man",
+        "title_en": "The Running Man",
+        "title_ja": "バトルランナー",
+        "type": "MOVIE",
+        "video_dir": os.path.join(VIDEOS_DIR, "the-running-man"),
+        "subs_dir": os.path.join(SUBS_DIR, "the-running-man"),
+        "filename": "the-running-man.mkv",
+    },
 ]
 
 
@@ -97,8 +119,18 @@ def get_video_info(filepath):
     }
 
 
+def strip_srt_tags(filepath):
+    """Strip HTML and ASS override tags from an SRT file."""
+    with open(filepath, encoding="utf-8", errors="replace") as f:
+        content = f.read()
+    cleaned = re.sub(r"<[^>]+>", "", content)
+    cleaned = re.sub(r"\{[^}]+\}", "", cleaned)
+    with open(filepath, "w", encoding="utf-8") as f:
+        f.write(cleaned)
+
+
 def extract_srt(video_path, stream_index, output_path):
-    """Extract a subtitle stream as SRT."""
+    """Extract a subtitle stream as SRT, stripping markup tags."""
     if os.path.exists(output_path) and os.path.getsize(output_path) > 100:
         return True  # already extracted
     cmd = [
@@ -108,6 +140,8 @@ def extract_srt(video_path, stream_index, output_path):
         output_path
     ]
     result = subprocess.run(cmd, capture_output=True)
+    if result.returncode == 0 and os.path.exists(output_path):
+        strip_srt_tags(output_path)
     return result.returncode == 0
 
 
@@ -204,6 +238,72 @@ def build_series(config):
     return episodes
 
 
+def build_movie(config):
+    """Build a single-episode entry for a movie."""
+    video_dir = config["video_dir"]
+    subs_dir = config["subs_dir"]
+    os.makedirs(subs_dir, exist_ok=True)
+
+    filepath = os.path.join(video_dir, config["filename"])
+    if not os.path.exists(filepath):
+        print(f"  NOT FOUND: {filepath}")
+        return None
+
+    print(f"  Processing: {config['filename']}")
+    info = get_video_info(filepath)
+    if info is None:
+        print(f"    ERROR: ffprobe failed")
+        return None
+
+    # Find all Japanese sub tracks (movie_ja.srt, movie_ja1.srt, movie_ja2.srt, ...)
+    ja_srt_files = []
+    for f in sorted(os.listdir(subs_dir)):
+        if f.startswith("movie_ja") and f.endswith(".srt"):
+            ja_srt_files.append(f)
+            print(f"    Found JA subs: {f}")
+
+    # Also check for embedded subs
+    srt_ja = os.path.join(subs_dir, "movie_ja.srt")
+    if not ja_srt_files and info["ja_sub_index"] >= 0:
+        if extract_srt(filepath, info["ja_sub_index"], srt_ja):
+            ja_srt_files.append("movie_ja.srt")
+            print(f"    Extracted JA subs (stream {info['ja_sub_index']})")
+
+    has_ja_subs = len(ja_srt_files) > 0
+
+    srt_en = os.path.join(subs_dir, "movie_en.srt")
+    has_en_subs = False
+    if info["en_sub_index"] >= 0:
+        if extract_srt(filepath, info["en_sub_index"], srt_en):
+            has_en_subs = True
+            print(f"    Extracted EN subs (stream {info['en_sub_index']})")
+
+    sub_count = 0
+    if has_ja_subs:
+        first_ja = os.path.join(subs_dir, ja_srt_files[0])
+        with open(first_ja, encoding="utf-8", errors="replace") as f:
+            sub_count = sum(1 for line in f if "-->" in line)
+
+    return {
+        "season": 1,
+        "episode": 1,
+        "filename": config["filename"],
+        "duration_sec": round(info["duration"], 1),
+        "audio_tracks": info["audio_tracks"],
+        "sub_tracks": info["sub_tracks"],
+        "has_ja_subs": has_ja_subs,
+        "has_fr_subs": False,
+        "has_en_subs": has_en_subs,
+        "ja_srt_file": ja_srt_files[0] if has_ja_subs else None,
+        "ja_srt_files": ja_srt_files,
+        "fr_srt_file": None,
+        "en_srt_file": "movie_en.srt" if has_en_subs else None,
+        "ja_sub_lines": sub_count,
+        "watch_progress_sec": 0,
+        "completed": False,
+    }
+
+
 def main():
     library = {
         "version": 1,
@@ -228,14 +328,39 @@ def main():
         library["items"].append(item)
         print(f"  {len(episodes)} episodes processed")
 
+    for config in MOVIES:
+        print(f"\n=== {config['title_en']} (Movie) ===")
+        episode = build_movie(config)
+        if episode is None:
+            print(f"  Skipped (file not found or error)")
+            continue
+
+        item = {
+            "id": config["id"],
+            "type": "MOVIE",
+            "title_en": config["title_en"],
+            "title_ja": config["title_ja"],
+            "cover": f"covers/{config['id']}.jpg",
+            "episode_count": 1,
+            "episodes": [episode],
+            "last_watched_episode": None,
+            "overall_progress": 0.0,
+        }
+        library["items"].append(item)
+        print(f"  Movie processed ({round(episode['duration_sec']/60)}min)")
+
     with open(LIBRARY_FILE, "w", encoding="utf-8") as f:
         json.dump(library, f, indent=2, ensure_ascii=False)
 
     print(f"\nLibrary written to {LIBRARY_FILE}")
     print(f"Total items: {len(library['items'])}")
     for item in library["items"]:
-        ja_count = sum(1 for ep in item["episodes"] if ep["has_ja_subs"])
-        print(f"  {item['title_en']}: {item['episode_count']} episodes, {ja_count} with JA subs")
+        if item["type"] == "MOVIE":
+            dur = round(item["episodes"][0]["duration_sec"] / 60)
+            print(f"  {item['title_en']} (Movie): {dur}min, JA subs: {item['episodes'][0]['has_ja_subs']}")
+        else:
+            ja_count = sum(1 for ep in item["episodes"] if ep["has_ja_subs"])
+            print(f"  {item['title_en']}: {item['episode_count']} episodes, {ja_count} with JA subs")
 
 
 if __name__ == "__main__":
