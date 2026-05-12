@@ -125,3 +125,20 @@ cd /home/bruno/VideoPlayer/server-go
 | Maison Ikkoku | TV (1 season) | 48 (1-48) | JA + EN |
 | Dragon Ball Z | TV (1 season) | 20 (200-219) | JA + EN |
 | The Running Man | Movie | 1 | JA (4 dubs, Whisper-generated) |
+
+## Ecosystem
+
+Janus is part of a Japanese immersion ecosystem:
+
+- **Janus** (this app) — watch content, tap words for dictionary, mine vocabulary
+- **Koe** (`~/CLProjects/Koe/`) — real-time conversation tutor, discusses episodes after watching
+- **Anki** — spaced repetition review of mined vocabulary
+
+The loop: **watch** (Janus) → **mine words** (Anki queue) → **discuss** (Koe) → **review** (Anki) → **watch more**
+
+## Auth
+
+- Users managed via CLI: `janus-server add-user --name=X --password=Y --role=admin`
+- JWT tokens (30-day expiry), sent as Bearer header
+- Login screen on first launch, auto-login with saved token
+- Current user: `bruno / janus2026 / admin`
