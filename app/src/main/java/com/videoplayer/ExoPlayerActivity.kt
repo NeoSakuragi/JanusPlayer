@@ -795,9 +795,14 @@ class ExoPlayerActivity : ComponentActivity() {
             else -> {
                 val filename = videoUrl.substringAfterLast("/")
                 val srtFiles = mutableListOf<Pair<String, String>>()
-                if (subsUrl != null) {
-                    val srtName = subsUrl.substringAfterLast("/")
-                    srtFiles.add(srtName to subsUrl)
+                val allSubs = intent.getStringArrayListExtra("all_subs")
+                if (allSubs != null) {
+                    for (entry in allSubs) {
+                        val parts = entry.split("|", limit = 2)
+                        if (parts.size == 2) srtFiles.add(parts[0] to parts[1])
+                    }
+                } else if (subsUrl != null) {
+                    srtFiles.add(subsUrl.substringAfterLast("/") to subsUrl)
                 }
                 DownloadManager.enqueueEpisode(
                     seriesId, epNum, filename, videoUrl, srtFiles,

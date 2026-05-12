@@ -268,8 +268,9 @@ class LibraryActivity : ComponentActivity() {
 
     data class ContinueItem(
         val libItem: JanusApi.LibraryItem,
-        val episode: JanusApi.Episode,
-        val positionMs: Long
+        val episodeNum: Int,
+        val positionMs: Long,
+        val durationMs: Long,
     )
 
     private fun getContinueWatching(): List<ContinueItem> {
@@ -281,14 +282,7 @@ class LibraryActivity : ComponentActivity() {
             if (pos < 5000) return@mapNotNull null
             val dur = prefs.getLong("${item.id}_ep${lastEp}_dur", 0L)
             if (dur > 0 && pos.toFloat() / dur > 0.95f) return@mapNotNull null
-            val filename = prefs.getString("${item.id}_ep${lastEp}_filename", null) ?: return@mapNotNull null
-            val ep = JanusApi.Episode(
-                season = 1, episode = lastEp, filename = filename,
-                durationSec = dur / 1000.0, hasJaSubs = false, hasFrSubs = false, hasEnSubs = false,
-                jaSrtFile = null, frSrtFile = null, enSrtFile = null, jaSubLines = 0,
-                watchProgressSec = pos / 1000.0, completed = false, titleEn = "", synopsisEn = "", thumb = null
-            )
-            ContinueItem(item, ep, pos)
+            ContinueItem(item, lastEp, pos, dur)
         }
     }
 
@@ -355,7 +349,7 @@ class LibraryActivity : ComponentActivity() {
                 ) {
                     itemsIndexed(continueItems) { idx, item ->
                         val focused = showCursor && activeRow == LibraryRow.CONTINUE && idx == cFocus
-                        val progress = (item.positionMs / 1000.0 / item.episode.durationSec).toFloat().coerceIn(0f, 1f)
+                        val progress = if (item.durationMs > 0) (item.positionMs.toFloat() / item.durationMs).coerceIn(0f, 1f) else 0f
                         Column(
                             modifier = Modifier.width(220.dp)
                                 .then(if (focused) Modifier.border(2.dp, Color(0xFFBB86FC), RoundedCornerShape(8.dp)) else Modifier)
@@ -373,7 +367,7 @@ class LibraryActivity : ComponentActivity() {
                             )
                             androidx.compose.material3.Text(
                                 if (item.libItem.type == "MOVIE") item.libItem.titleEn
-                                else "Episode ${item.episode.episode}",
+                                else "Episode ${item.episodeNum}",
                                 color = Color.White, fontSize = 15.sp
                             )
                             Spacer(Modifier.height(6.dp))
@@ -814,18 +808,24 @@ class LibraryActivity : ComponentActivity() {
                                     if (item.state == DownloadManager.State.COMPLETED) {
                                         val localPath = DownloadManager.getLocalVideoPath(item.seriesId, item.videoFilename)
                                         if (localPath != null) {
-                                            val libItem = JanusApi.LibraryItem(
+                                            val matchingLib = library.firstOrNull { it.id == item.seriesId }
+                                            val libItem = matchingLib ?: JanusApi.LibraryItem(
                                                 id = item.seriesId, type = "TV_SERIES",
                                                 titleEn = item.seriesTitleEn.ifEmpty { item.seriesId },
                                                 titleJa = "", cover = "", episodeCount = 0,
                                                 seasonCount = 0, durationMin = 0
                                             )
+                                            val localJaSrt = item.srtFiles.firstOrNull { it.first.contains("_ja") }?.first
+                                            val localEnSrt = item.srtFiles.firstOrNull { it.first.contains("_en") }?.first
+                                            val localFrSrt = item.srtFiles.firstOrNull { it.first.contains("_fr") }?.first
                                             val ep = JanusApi.Episode(
                                                 season = 1, episode = item.episodeNum,
                                                 filename = item.videoFilename,
-                                                durationSec = 0.0, hasJaSubs = false, hasFrSubs = false,
-                                                hasEnSubs = false, jaSrtFile = null, frSrtFile = null,
-                                                enSrtFile = null, jaSubLines = 0, watchProgressSec = 0.0,
+                                                durationSec = item.totalBytes / 1000.0,
+                                                hasJaSubs = localJaSrt != null, hasFrSubs = localFrSrt != null,
+                                                hasEnSubs = localEnSrt != null,
+                                                jaSrtFile = localJaSrt, frSrtFile = localFrSrt,
+                                                enSrtFile = localEnSrt, jaSubLines = 0, watchProgressSec = 0.0,
                                                 completed = false, titleEn = item.titleEn,
                                                 synopsisEn = "", thumb = null
                                             )
@@ -1212,9 +1212,18 @@ class LibraryActivity : ComponentActivity() {
     private fun launchPlayer(item: JanusApi.LibraryItem, episode: JanusApi.Episode) {
         releasePreviewPlayer()
         val videoUrl = resolveVideoUrl(item.id, episode.filename)
-        val subsUrl = if (episode.hasJaSubs) resolveSubsUrl(item.id, episode.jaSrtFile) else null
+        // Try JA subs from episode data, or guess the filename pattern
+        val srtFile = episode.jaSrtFile ?: "ep%03d_ja.srt".format(episode.episode)
+        val subsUrl = resolveSubsUrl(item.id, srtFile)
         val savedPos = getWatchProgress(item.id, episode.episode)
         val title = if (item.type == "MOVIE") item.titleEn else "${item.titleEn} - Episode ${episode.episode}"
+
+        // Collect all available sub files for offline download
+        val allSubs = mutableListOf<String>()
+        if (episode.hasJaSubs && episode.jaSrtFile != null) allSubs.add(episode.jaSrtFile + "|" + api.subsUrl(item.id, episode.jaSrtFile))
+        if (episode.hasEnSubs && episode.enSrtFile != null) allSubs.add(episode.enSrtFile + "|" + api.subsUrl(item.id, episode.enSrtFile))
+        if (episode.hasFrSubs && episode.frSrtFile != null) allSubs.add(episode.frSrtFile + "|" + api.subsUrl(item.id, episode.frSrtFile))
+
         AppNavigator.navigate(this, AppNavigator.Action.PLAY_VIDEO) { intent ->
             intent.putExtra(ExoPlayerActivity.EXTRA_VIDEO_URL, videoUrl)
             intent.putExtra(ExoPlayerActivity.EXTRA_SUBS_URL, subsUrl)
@@ -1222,11 +1231,36 @@ class LibraryActivity : ComponentActivity() {
             intent.putExtra(ExoPlayerActivity.EXTRA_START_POSITION, savedPos)
             intent.putExtra(ExoPlayerActivity.EXTRA_SERIES_ID, item.id)
             intent.putExtra(ExoPlayerActivity.EXTRA_EPISODE_NUM, episode.episode)
+            intent.putStringArrayListExtra("all_subs", ArrayList(allSubs))
         }
     }
 
     private fun playContinueItem(item: ContinueItem) {
-        launchPlayer(item.libItem, item.episode)
+        Thread {
+            try {
+                val realEp = if (item.libItem.type == "MOVIE") {
+                    api.fetchMovieDetail(item.libItem.id)?.episode
+                } else {
+                    var found: JanusApi.Episode? = null
+                    val info = api.fetchSeriesDetail(item.libItem.id)
+                    if (info != null) {
+                        for (s in info.seasons) {
+                            val season = api.fetchSeason(item.libItem.id, s.season)
+                            found = season?.episodes?.firstOrNull { it.episode == item.episodeNum }
+                            if (found != null) break
+                        }
+                    }
+                    found
+                }
+                if (realEp != null) {
+                    runOnUiThread { launchPlayer(item.libItem, realEp) }
+                } else {
+                    Log.e(TAG, "Could not find episode ${item.episodeNum} for ${item.libItem.id}")
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Continue item failed: ${e.message}")
+            }
+        }.start()
     }
 
     private fun startDownload() {
