@@ -61,16 +61,20 @@ class LibraryActivity : ComponentActivity() {
     private val seriesFocus = mutableIntStateOf(0)
     private val movieFocus = mutableIntStateOf(0)
     private val episodeFocus = mutableIntStateOf(0)
-    private val library = mutableStateListOf<JanusApi.Series>()
-    private val seriesList = mutableStateListOf<JanusApi.Series>()
-    private val movieList = mutableStateListOf<JanusApi.Series>()
+    private val library = mutableStateListOf<JanusApi.LibraryItem>()
+    private val seriesList = mutableStateListOf<JanusApi.LibraryItem>()
+    private val movieList = mutableStateListOf<JanusApi.LibraryItem>()
     private val loading = mutableStateOf(true)
     private val serverUrl = mutableStateOf(DEFAULT_SERVER_URL)
     private val updateAvailable = mutableStateOf<AppUpdater.UpdateInfo?>(null)
     private val updateDownloading = mutableStateOf(false)
     private var appUpdater: AppUpdater? = null
     private val showCursorState = mutableStateOf(true)
-    private val selectedItem = mutableStateOf<JanusApi.Series?>(null)
+    private val selectedLibItem = mutableStateOf<JanusApi.LibraryItem?>(null)
+    private val detailEpisodes = mutableStateListOf<JanusApi.Episode>()
+    private val detailSeasons = mutableStateListOf<JanusApi.SeasonInfo>()
+    private val selectedSeason = mutableIntStateOf(0)
+    private val detailLoading = mutableStateOf(false)
     private val previewRequested = mutableStateOf(false)
 
     private lateinit var api: JanusApi
@@ -83,24 +87,7 @@ class LibraryActivity : ComponentActivity() {
         api = JanusApi(serverUrl.value)
         DownloadManager.init(this)
 
-        // Load library
-        Thread {
-            try {
-                val items = api.fetchLibrary()
-                runOnUiThread {
-                    library.addAll(items)
-                    seriesList.addAll(items.filter { it.type == "TV_SERIES" })
-                    movieList.addAll(items.filter { it.type == "MOVIE" })
-                    loading.value = false
-                    Log.d(TAG, "Library loaded: ${seriesList.size} series, ${movieList.size} movies")
-                    appUpdater = AppUpdater(this@LibraryActivity)
-                    appUpdater?.checkForUpdate { info -> updateAvailable.value = info }
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to load library: ${e.message}")
-                runOnUiThread { loading.value = false }
-            }
-        }.start()
+        loadLibrary()
 
         AppNavigator.registerOnExit(AppNavigator.Screen.ITEM_DETAIL) { releasePreviewPlayer() }
 
@@ -262,8 +249,9 @@ class LibraryActivity : ComponentActivity() {
                             modifier = Modifier
                                 .background(Color(0xFFBB86FC), RoundedCornerShape(8.dp))
                                 .clickable {
-                                    val newUrl = editUrl.trim()
+                                    var newUrl = editUrl.trim()
                                     if (newUrl.isNotEmpty()) {
+                                        if (!newUrl.startsWith("http")) newUrl = "http://$newUrl"
                                         serverUrl.value = newUrl
                                         getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
                                             .putString("server_url", newUrl).apply()
@@ -282,7 +270,7 @@ class LibraryActivity : ComponentActivity() {
                     when (currentScreen) {
                         Screen.MAIN -> LibraryRows(sFocus, showCursor)
                         Screen.ITEM_DETAIL -> {
-                            val item = selectedItem.value
+                            val item = selectedLibItem.value
                             if (item != null) ItemDetailPage(item, eFocus, showCursor)
                             else screen.value = Screen.MAIN
                         }
@@ -293,19 +281,29 @@ class LibraryActivity : ComponentActivity() {
         }
     }
 
-    data class ContinueItem(val series: JanusApi.Series, val episode: JanusApi.Episode, val positionMs: Long)
+    data class ContinueItem(
+        val libItem: JanusApi.LibraryItem,
+        val episode: JanusApi.Episode,
+        val positionMs: Long
+    )
 
     private fun getContinueWatching(): List<ContinueItem> {
         val prefs = getSharedPreferences("watch_progress", MODE_PRIVATE)
-        return library.mapNotNull { series ->
-            val lastEpStr = prefs.getString("${series.id}_last_ep", null) ?: return@mapNotNull null
+        return library.mapNotNull { item ->
+            val lastEpStr = prefs.getString("${item.id}_last_ep", null) ?: return@mapNotNull null
             val lastEp = lastEpStr.toIntOrNull() ?: return@mapNotNull null
-            val pos = prefs.getLong("${series.id}_last_pos", 0L)
-            if (pos < 5000) return@mapNotNull null // less than 5s, ignore
-            val ep = series.episodes.firstOrNull { it.episode == lastEp } ?: return@mapNotNull null
-            val dur = (ep.durationSec * 1000).toLong()
-            if (dur > 0 && pos.toFloat() / dur > 0.95f) return@mapNotNull null // finished
-            ContinueItem(series, ep, pos)
+            val pos = prefs.getLong("${item.id}_last_pos", 0L)
+            if (pos < 5000) return@mapNotNull null
+            val dur = prefs.getLong("${item.id}_ep${lastEp}_dur", 0L)
+            if (dur > 0 && pos.toFloat() / dur > 0.95f) return@mapNotNull null
+            val filename = prefs.getString("${item.id}_ep${lastEp}_filename", null) ?: return@mapNotNull null
+            val ep = JanusApi.Episode(
+                season = 1, episode = lastEp, filename = filename,
+                durationSec = dur / 1000.0, hasJaSubs = false, hasFrSubs = false, hasEnSubs = false,
+                jaSrtFile = null, frSrtFile = null, enSrtFile = null, jaSubLines = 0,
+                watchProgressSec = pos / 1000.0, completed = false, titleEn = "", synopsisEn = "", thumb = null
+            )
+            ContinueItem(item, ep, pos)
         }
     }
 
@@ -385,11 +383,11 @@ class LibraryActivity : ComponentActivity() {
                                 .padding(12.dp)
                         ) {
                             androidx.compose.material3.Text(
-                                item.series.titleEn,
+                                item.libItem.titleEn,
                                 color = Color(0xFFBB86FC), fontSize = 13.sp, fontWeight = FontWeight.SemiBold
                             )
                             androidx.compose.material3.Text(
-                                if (item.series.type == "MOVIE") item.series.titleEn
+                                if (item.libItem.type == "MOVIE") item.libItem.titleEn
                                 else "Episode ${item.episode.episode}",
                                 color = Color.White, fontSize = 15.sp
                             )
@@ -467,7 +465,7 @@ class LibraryActivity : ComponentActivity() {
     }
 
     @Composable
-    private fun SeriesCard(series: JanusApi.Series, focused: Boolean, onTap: () -> Unit) {
+    private fun SeriesCard(series: JanusApi.LibraryItem, focused: Boolean, onTap: () -> Unit) {
         Column(
             horizontalAlignment = Alignment.CenterHorizontally,
             modifier = Modifier
@@ -521,9 +519,8 @@ class LibraryActivity : ComponentActivity() {
                     fontSize = 12.sp
                 )
             } else if (series.type == "MOVIE") {
-                val mins = series.episodes.firstOrNull()?.let { (it.durationSec / 60).toInt() } ?: 0
                 androidx.compose.material3.Text(
-                    "${mins} min",
+                    "${series.durationMin} min",
                     color = if (focused) Color.White else Color(0xFF888888),
                     fontSize = 12.sp
                 )
@@ -546,14 +543,14 @@ class LibraryActivity : ComponentActivity() {
 
     @OptIn(androidx.media3.common.util.UnstableApi::class)
     @Composable
-    private fun ItemDetailPage(item: JanusApi.Series, focusIdx: Int, showCursor: Boolean) {
+    private fun ItemDetailPage(item: JanusApi.LibraryItem, focusIdx: Int, showCursor: Boolean) {
         val scrollState = rememberScrollState()
         var showPreview by remember { mutableStateOf(false) }
 
         val epCardPositions = remember { mutableStateMapOf<Int, Pair<Int, Int>>() }
         var detailViewportHeight by remember { mutableIntStateOf(1080) }
         LaunchedEffect(focusIdx) {
-            if (item.type != "MOVIE" && item.episodes.isNotEmpty()) {
+            if (item.type != "MOVIE" && detailEpisodes.isNotEmpty()) {
                 val bounds = epCardPositions[focusIdx] ?: return@LaunchedEffect
                 val visibleTop = scrollState.value
                 val visibleBottom = visibleTop + detailViewportHeight
@@ -578,6 +575,14 @@ class LibraryActivity : ComponentActivity() {
             }
         }
 
+        val isDetailLoading by detailLoading
+        if (isDetailLoading) {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                androidx.compose.material3.Text("Loading...", color = Color(0xFF888888), fontSize = 16.sp)
+            }
+            return
+        }
+
         Box(modifier = Modifier.fillMaxSize().onGloballyPositioned { detailViewportHeight = it.size.height }) {
         Column(
             modifier = Modifier.fillMaxSize().verticalScroll(scrollState)
@@ -600,7 +605,7 @@ class LibraryActivity : ComponentActivity() {
                     enter = fadeIn(tween(1500)),
                     modifier = Modifier.fillMaxSize()
                 ) {
-                    val firstEp = item.episodes.firstOrNull()
+                    val firstEp = detailEpisodes.firstOrNull()
                     if (firstEp != null) {
                         AndroidView(
                             factory = { ctx ->
@@ -677,7 +682,7 @@ class LibraryActivity : ComponentActivity() {
                         Box(
                             modifier = Modifier.weight(1f)
                                 .background(Color(0xFFBB86FC), RoundedCornerShape(8.dp))
-                                .clickable { releasePreviewPlayer(); playItem(item) }
+                                .clickable { releasePreviewPlayer(); playItem() }
                                 .padding(horizontal = 20.dp, vertical = 14.dp),
                             contentAlignment = Alignment.Center
                         ) {
@@ -685,14 +690,14 @@ class LibraryActivity : ComponentActivity() {
                                 resumeLabel, color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Bold
                             )
                         }
-                        val allDownloaded = item.episodes.all { ep ->
+                        val allDownloaded = detailEpisodes.all { ep ->
                             DownloadManager.getItemState(item.id, ep.episode)?.state == DownloadManager.State.COMPLETED
                         }
                         if (!allDownloaded) {
                             Box(
                                 modifier = Modifier
                                     .background(Color(0xFF2A2A3A), RoundedCornerShape(8.dp))
-                                    .clickable { startDownload(item) }
+                                    .clickable { startDownload() }
                                     .padding(horizontal = 20.dp, vertical = 14.dp),
                                 contentAlignment = Alignment.Center
                             ) {
@@ -709,22 +714,32 @@ class LibraryActivity : ComponentActivity() {
                     // Metadata line
                     val metaParts = mutableListOf<String>()
                     if (item.type == "MOVIE") {
-                        val mins = item.episodes.firstOrNull()?.let { (it.durationSec / 60).toInt() } ?: 0
+                        val mins = detailEpisodes.firstOrNull()?.let { (it.durationSec / 60).toInt() } ?: 0
                         metaParts.add("${mins} min")
                     } else {
                         metaParts.add("${item.episodeCount} episodes")
                     }
-                    val jaCount = item.episodes.count { it.hasJaSubs }
+                    val jaCount = detailEpisodes.count { it.hasJaSubs }
                     if (jaCount > 0) metaParts.add("JP subs")
                     androidx.compose.material3.Text(
                         metaParts.joinToString("  ·  "),
                         color = Color(0xFF888888), fontSize = 13.sp
                     )
+
+                    // Synopsis
+                    val synopsis = detailEpisodes.firstOrNull()?.synopsisEn ?: ""
+                    if (synopsis.isNotEmpty()) {
+                        Spacer(Modifier.height(10.dp))
+                        androidx.compose.material3.Text(
+                            synopsis, color = Color(0xFFBBBBBB), fontSize = 13.sp,
+                            lineHeight = 18.sp, maxLines = 4, overflow = TextOverflow.Ellipsis
+                        )
+                    }
                 }
             }
 
             // Episode grid (for series)
-            if (item.type != "MOVIE" && item.episodes.isNotEmpty()) {
+            if (item.type != "MOVIE" && detailEpisodes.isNotEmpty()) {
                 Spacer(Modifier.height(8.dp))
                 androidx.compose.material3.Text(
                     "${item.episodeCount} episodes",
@@ -732,7 +747,7 @@ class LibraryActivity : ComponentActivity() {
                     modifier = Modifier.padding(horizontal = 32.dp, vertical = 8.dp)
                 )
                 // Use a fixed-height grid since we're inside a scrollable Column
-                val rows = (item.episodes.size + 3) / 4
+                val rows = (detailEpisodes.size + 3) / 4
                 val gridHeight = (rows * 280).dp
                 LazyVerticalGrid(
                     columns = GridCells.Fixed(4),
@@ -741,15 +756,15 @@ class LibraryActivity : ComponentActivity() {
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                     userScrollEnabled = false
                 ) {
-                    itemsIndexed(item.episodes) { idx, ep ->
+                    itemsIndexed(detailEpisodes) { idx, ep ->
                         Box(modifier = Modifier.onGloballyPositioned { coords ->
                             val y = coords.positionInParent().y.toInt()
                             epCardPositions[idx] = y to (y + coords.size.height)
                         }) {
-                            EpisodeGridCard(item, ep, focused = showCursor && idx == focusIdx) {
+                            EpisodeGridCard(item.id, ep, focused = showCursor && idx == focusIdx) {
                                 episodeFocus.intValue = idx
                                 releasePreviewPlayer()
-                                playEpisode(item, ep)
+                                launchPlayer(item, ep)
                             }
                         }
                     }
@@ -866,8 +881,8 @@ class LibraryActivity : ComponentActivity() {
     }
 
     @Composable
-    private fun EpisodeGridCard(series: JanusApi.Series, ep: JanusApi.Episode, focused: Boolean, onTap: () -> Unit) {
-        val savedPos = remember(series.id, ep.episode) { getWatchProgress(series.id, ep.episode) }
+    private fun EpisodeGridCard(seriesId: String, ep: JanusApi.Episode, focused: Boolean, onTap: () -> Unit) {
+        val savedPos = remember(seriesId, ep.episode) { getWatchProgress(seriesId, ep.episode) }
         val progressFraction = if (ep.durationSec > 0) (savedPos / 1000.0 / ep.durationSec).toFloat().coerceIn(0f, 1f) else 0f
         val mins = (ep.durationSec / 60).toInt()
 
@@ -918,7 +933,7 @@ class LibraryActivity : ComponentActivity() {
                         color = Color(0xFF888888), fontSize = 10.sp
                     )
                     Spacer(Modifier.weight(1f))
-                    val dlItem = DownloadManager.getItemState(series.id, ep.episode)
+                    val dlItem = DownloadManager.getItemState(seriesId, ep.episode)
                     when (dlItem?.state) {
                         DownloadManager.State.COMPLETED -> androidx.compose.material3.Text("✓", color = Color(0xFF81C784), fontSize = 12.sp)
                         DownloadManager.State.DOWNLOADING -> androidx.compose.material3.Text("↓${dlItem.progress}%", color = Color(0xFFBB86FC), fontSize = 10.sp)
@@ -943,78 +958,7 @@ class LibraryActivity : ComponentActivity() {
         }
     }
 
-    @Composable
-    private fun EpisodeCard(series: JanusApi.Series, ep: JanusApi.Episode, focused: Boolean, onTap: () -> Unit) {
-        val savedPos = remember(series.id, ep.episode) { getWatchProgress(series.id, ep.episode) }
-        val progressFraction = if (ep.durationSec > 0) (savedPos / 1000.0 / ep.durationSec).toFloat().coerceIn(0f, 1f) else 0f
-        Column(
-            modifier = Modifier
-                .width(180.dp)
-                .clickable { onTap() }
-                .then(
-                    if (focused) Modifier.border(2.dp, Color(0xFFBB86FC), RoundedCornerShape(8.dp))
-                    else Modifier
-                )
-                .background(
-                    if (focused) Color(0xFF2A2A4A) else Color(0xFF1A1A2E),
-                    RoundedCornerShape(8.dp)
-                )
-                .padding(12.dp)
-        ) {
-            // Episode number
-            androidx.compose.material3.Text(
-                "Episode ${ep.episode}",
-                color = Color.White,
-                fontSize = 15.sp,
-                fontWeight = FontWeight.SemiBold
-            )
-
-            // Duration
-            val mins = (ep.durationSec / 60).toInt()
-            androidx.compose.material3.Text(
-                "${mins} min",
-                color = Color(0xFF888888),
-                fontSize = 12.sp
-            )
-
-            // Sub availability
-            val subs = mutableListOf<String>()
-            if (ep.hasJaSubs) subs.add("🇯🇵")
-            if (ep.hasFrSubs) subs.add("🇫🇷")
-            if (ep.hasEnSubs) subs.add("🇬🇧")
-            if (subs.isNotEmpty()) {
-                Spacer(Modifier.height(4.dp))
-                androidx.compose.material3.Text(
-                    subs.joinToString(" "),
-                    fontSize = 14.sp
-                )
-            }
-
-            // Watch progress from saved data
-            if (progressFraction > 0.01f && progressFraction < 0.95f) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(3.dp)
-                        .clip(RoundedCornerShape(2.dp))
-                        .background(Color(0xFF444444))
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxHeight()
-                            .fillMaxWidth(progressFraction)
-                            .background(Color(0xFFBB86FC), RoundedCornerShape(2.dp))
-                    )
-                }
-            }
-            if (progressFraction >= 0.95f) {
-                Spacer(Modifier.height(4.dp))
-                androidx.compose.material3.Text("✓ Watched", color = Color(0xFF81C784), fontSize = 11.sp)
-            }
-        }
-    }
-
-    private fun reloadLibrary() {
+    private fun loadLibrary() {
         loading.value = true
         library.clear()
         seriesList.clear()
@@ -1027,13 +971,18 @@ class LibraryActivity : ComponentActivity() {
                     seriesList.addAll(items.filter { it.type == "TV_SERIES" })
                     movieList.addAll(items.filter { it.type == "MOVIE" })
                     loading.value = false
+                    Log.d(TAG, "Library loaded: ${seriesList.size} series, ${movieList.size} movies")
+                    appUpdater = AppUpdater(this@LibraryActivity)
+                    appUpdater?.checkForUpdate { info -> updateAvailable.value = info }
                 }
             } catch (e: Exception) {
-                Log.e(TAG, "Reload failed: ${e.message}")
+                Log.e(TAG, "Failed to load library: ${e.message}")
                 runOnUiThread { loading.value = false }
             }
         }.start()
     }
+
+    private fun reloadLibrary() = loadLibrary()
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         if (event.action != KeyEvent.ACTION_DOWN) return super.dispatchKeyEvent(event)
@@ -1057,9 +1006,9 @@ class LibraryActivity : ComponentActivity() {
             }
 
             Screen.ITEM_DETAIL -> {
-                val item = selectedItem.value ?: return false
+                val item = selectedLibItem.value ?: return false
                 val cols = 4
-                val maxIdx = item.episodes.size - 1
+                val maxIdx = detailEpisodes.size - 1
                 when (event.keyCode) {
                     KeyEvent.KEYCODE_BACK -> { closeItemDetail(); return true }
                     KeyEvent.KEYCODE_DPAD_LEFT -> {
@@ -1082,10 +1031,10 @@ class LibraryActivity : ComponentActivity() {
                     }
                     KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> {
                         if (item.type == "MOVIE") {
-                            playItem(item)
+                            playItem()
                         } else {
-                            val ep = item.episodes.getOrNull(episodeFocus.intValue)
-                            if (ep != null) { releasePreviewPlayer(); playEpisode(item, ep) }
+                            val ep = detailEpisodes.getOrNull(episodeFocus.intValue)
+                            if (ep != null) { releasePreviewPlayer(); launchPlayer(item, ep) }
                         }
                     }
                     else -> return false
@@ -1175,12 +1124,63 @@ class LibraryActivity : ComponentActivity() {
         startActivity(Intent(this, SettingsActivity::class.java))
     }
 
-    private fun openItemDetail(item: JanusApi.Series) {
-        selectedItem.value = item
+    private fun openItemDetail(item: JanusApi.LibraryItem) {
+        selectedLibItem.value = item
         episodeFocus.intValue = 0
+        detailEpisodes.clear()
+        detailSeasons.clear()
+        detailLoading.value = true
         AppNavigator.navigate(this, AppNavigator.Action.OPEN_ITEM)
         screen.value = Screen.ITEM_DETAIL
-        refreshItemDetail()
+
+        Thread {
+            try {
+                if (item.type == "MOVIE") {
+                    val movie = api.fetchMovieDetail(item.id)
+                    runOnUiThread {
+                        if (movie != null) detailEpisodes.add(movie.episode)
+                        detailLoading.value = false
+                        refreshItemDetail()
+                    }
+                } else {
+                    val info = api.fetchSeriesDetail(item.id)
+                    if (info != null) {
+                        runOnUiThread { detailSeasons.addAll(info.seasons) }
+                        val firstSeason = info.seasons.firstOrNull()?.season ?: 1
+                        selectedSeason.intValue = firstSeason
+                        val seasonData = api.fetchSeason(item.id, firstSeason)
+                        runOnUiThread {
+                            if (seasonData != null) detailEpisodes.addAll(seasonData.episodes)
+                            detailLoading.value = false
+                            refreshItemDetail()
+                        }
+                    } else {
+                        runOnUiThread { detailLoading.value = false }
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Detail fetch failed: ${e.message}")
+                runOnUiThread { detailLoading.value = false }
+            }
+        }.start()
+    }
+
+    private fun loadSeason(seriesId: String, seasonNum: Int) {
+        detailLoading.value = true
+        detailEpisodes.clear()
+        episodeFocus.intValue = 0
+        selectedSeason.intValue = seasonNum
+        Thread {
+            try {
+                val data = api.fetchSeason(seriesId, seasonNum)
+                runOnUiThread {
+                    if (data != null) detailEpisodes.addAll(data.episodes)
+                    detailLoading.value = false
+                }
+            } catch (e: Exception) {
+                runOnUiThread { detailLoading.value = false }
+            }
+        }.start()
     }
 
     private fun refreshItemDetail() {
@@ -1194,36 +1194,49 @@ class LibraryActivity : ComponentActivity() {
         screen.value = Screen.MAIN
     }
 
-    private fun playItem(item: JanusApi.Series) {
+    private fun playItem() {
+        releasePreviewPlayer()
+        val item = selectedLibItem.value ?: return
         val lastWatched = getLastWatched(item.id)
         if (lastWatched != null) {
-            val ep = item.episodes.firstOrNull { it.episode == lastWatched.first }
-            if (ep != null) {
-                if (item.type == "MOVIE") playMovie(item, ep) else playEpisode(item, ep)
-                return
-            }
+            val ep = detailEpisodes.firstOrNull { it.episode == lastWatched.first }
+            if (ep != null) { launchPlayer(item, ep); return }
         }
-        val ep = item.episodes.firstOrNull() ?: return
-        if (item.type == "MOVIE") playMovie(item, ep) else playEpisode(item, ep)
+        val ep = detailEpisodes.firstOrNull() ?: return
+        launchPlayer(item, ep)
+    }
+
+    private fun launchPlayer(item: JanusApi.LibraryItem, episode: JanusApi.Episode) {
+        val videoUrl = resolveVideoUrl(item.id, episode.filename)
+        val subsUrl = if (episode.hasJaSubs) resolveSubsUrl(item.id, episode.jaSrtFile) else null
+        val savedPos = getWatchProgress(item.id, episode.episode)
+        val title = if (item.type == "MOVIE") item.titleEn else "${item.titleEn} - Episode ${episode.episode}"
+        AppNavigator.navigate(this, AppNavigator.Action.PLAY_VIDEO) { intent ->
+            intent.putExtra(ExoPlayerActivity.EXTRA_VIDEO_URL, videoUrl)
+            intent.putExtra(ExoPlayerActivity.EXTRA_SUBS_URL, subsUrl)
+            intent.putExtra(ExoPlayerActivity.EXTRA_TITLE, title)
+            intent.putExtra(ExoPlayerActivity.EXTRA_START_POSITION, savedPos)
+            intent.putExtra(ExoPlayerActivity.EXTRA_SERIES_ID, item.id)
+            intent.putExtra(ExoPlayerActivity.EXTRA_EPISODE_NUM, episode.episode)
+        }
     }
 
     private fun playContinueItem(item: ContinueItem) {
-        if (item.series.type == "MOVIE") playMovie(item.series, item.episode)
-        else playEpisode(item.series, item.episode)
+        launchPlayer(item.libItem, item.episode)
     }
 
-    private fun startDownload(item: JanusApi.Series) {
-        if (item.type == "MOVIE") {
-            val ep = item.episodes.firstOrNull() ?: return
+    private fun startDownload() {
+        val item = selectedLibItem.value ?: return
+        for (ep in detailEpisodes) {
             val srtFiles = mutableListOf<Pair<String, String>>()
             if (ep.hasJaSubs && ep.jaSrtFile != null) srtFiles.add(ep.jaSrtFile to api.subsUrl(item.id, ep.jaSrtFile))
+            if (ep.hasEnSubs && ep.enSrtFile != null) srtFiles.add(ep.enSrtFile to api.subsUrl(item.id, ep.enSrtFile))
             DownloadManager.enqueueEpisode(
                 item.id, ep.episode, ep.filename,
                 api.videoUrl(item.id, ep.filename), srtFiles,
-                titleEn = item.titleEn, seriesTitleEn = ""
+                titleEn = ep.titleEn.ifEmpty { "Episode ${ep.episode}" },
+                seriesTitleEn = item.titleEn
             )
-        } else {
-            DownloadManager.enqueueSeries(item, api)
         }
         startService(Intent(this, DownloadService::class.java))
     }
@@ -1237,36 +1250,6 @@ class LibraryActivity : ComponentActivity() {
         if (srtFile == null) return null
         val local = DownloadManager.getLocalSubsPath(seriesId, srtFile)
         return if (local != null) "file://$local" else api.subsUrl(seriesId, srtFile)
-    }
-
-    private fun playEpisode(series: JanusApi.Series, episode: JanusApi.Episode) {
-        val videoUrl = resolveVideoUrl(series.id, episode.filename)
-        val subsUrl = if (episode.hasJaSubs) resolveSubsUrl(series.id, episode.jaSrtFile) else null
-        val savedPos = getWatchProgress(series.id, episode.episode)
-
-        AppNavigator.navigate(this, AppNavigator.Action.PLAY_VIDEO) { intent ->
-            intent.putExtra(ExoPlayerActivity.EXTRA_VIDEO_URL, videoUrl)
-            intent.putExtra(ExoPlayerActivity.EXTRA_SUBS_URL, subsUrl)
-            intent.putExtra(ExoPlayerActivity.EXTRA_TITLE, "${series.titleEn} - Episode ${episode.episode}")
-            intent.putExtra(ExoPlayerActivity.EXTRA_START_POSITION, savedPos)
-            intent.putExtra(ExoPlayerActivity.EXTRA_SERIES_ID, series.id)
-            intent.putExtra(ExoPlayerActivity.EXTRA_EPISODE_NUM, episode.episode)
-        }
-    }
-
-    private fun playMovie(movie: JanusApi.Series, episode: JanusApi.Episode) {
-        val videoUrl = resolveVideoUrl(movie.id, episode.filename)
-        val subsUrl = if (episode.hasJaSubs) resolveSubsUrl(movie.id, episode.jaSrtFile) else null
-        val savedPos = getWatchProgress(movie.id, episode.episode)
-
-        AppNavigator.navigate(this, AppNavigator.Action.PLAY_VIDEO) { intent ->
-            intent.putExtra(ExoPlayerActivity.EXTRA_VIDEO_URL, videoUrl)
-            intent.putExtra(ExoPlayerActivity.EXTRA_SUBS_URL, subsUrl)
-            intent.putExtra(ExoPlayerActivity.EXTRA_TITLE, movie.titleEn)
-            intent.putExtra(ExoPlayerActivity.EXTRA_START_POSITION, savedPos)
-            intent.putExtra(ExoPlayerActivity.EXTRA_SERIES_ID, movie.id)
-            intent.putExtra(ExoPlayerActivity.EXTRA_EPISODE_NUM, episode.episode)
-        }
     }
 
     override fun onPause() {

@@ -55,6 +55,7 @@ SERIES = [
         "ja_sub_stream": None,
         "tmdb_id": 12971,
         "tmdb_season": 7,
+        "tmdb_ep_offset": -194,
     },
 ]
 
@@ -157,16 +158,38 @@ def extract_srt(video_path, stream_index, output_path):
     return result.returncode == 0
 
 
+TMDB_CACHE_FILE = os.path.join(DATA_DIR, "tmdb_cache.json")
+_tmdb_cache = None
+
+def _load_tmdb_cache():
+    global _tmdb_cache
+    if _tmdb_cache is None:
+        if os.path.exists(TMDB_CACHE_FILE):
+            with open(TMDB_CACHE_FILE) as f:
+                _tmdb_cache = json.load(f)
+        else:
+            _tmdb_cache = {}
+    return _tmdb_cache
+
+def _save_tmdb_cache():
+    if _tmdb_cache is not None:
+        with open(TMDB_CACHE_FILE, "w") as f:
+            json.dump(_tmdb_cache, f, ensure_ascii=False)
+
 def fetch_tmdb_episode(tmdb_id, season, ep_num):
-    """Fetch episode synopsis in EN/FR/JA and thumbnail from TMDB."""
+    """Fetch episode synopsis in EN/FR/JA and thumbnail from TMDB. Cached."""
+    cache = _load_tmdb_cache()
+    key = f"tv_{tmdb_id}_s{season}_e{ep_num}"
+    if key in cache:
+        return cache[key]
     result = {"synopsis_en": "", "synopsis_fr": "", "synopsis_ja": "", "tmdb_thumb": None, "tmdb_title_en": ""}
     try:
-        for lang, key in [("en", "synopsis_en"), ("fr", "synopsis_fr"), ("ja", "synopsis_ja")]:
+        for lang, lkey in [("en", "synopsis_en"), ("fr", "synopsis_fr"), ("ja", "synopsis_ja")]:
             url = f"https://api.themoviedb.org/3/tv/{tmdb_id}/season/{season}/episode/{ep_num}?api_key={TMDB_API_KEY}&language={lang}"
             resp = requests.get(url, timeout=10)
             if resp.status_code == 200:
                 data = resp.json()
-                result[key] = data.get("overview", "")
+                result[lkey] = data.get("overview", "")
                 if lang == "en":
                     result["tmdb_title_en"] = data.get("name", "")
                     still = data.get("still_path")
@@ -175,24 +198,34 @@ def fetch_tmdb_episode(tmdb_id, season, ep_num):
             time.sleep(0.03)
     except Exception as e:
         print(f"    TMDB error: {e}")
+    if result["synopsis_en"]:
+        cache[key] = result
+        _save_tmdb_cache()
     return result
 
 
 def fetch_tmdb_movie(tmdb_id):
-    """Fetch movie synopsis in EN/FR/JA from TMDB."""
+    """Fetch movie synopsis in EN/FR/JA from TMDB. Cached."""
+    cache = _load_tmdb_cache()
+    key = f"movie_{tmdb_id}"
+    if key in cache:
+        return cache[key]
     result = {"synopsis_en": "", "synopsis_fr": "", "synopsis_ja": "", "tmdb_backdrop": None}
     try:
-        for lang, key in [("en", "synopsis_en"), ("fr", "synopsis_fr"), ("ja", "synopsis_ja")]:
+        for lang, lkey in [("en", "synopsis_en"), ("fr", "synopsis_fr"), ("ja", "synopsis_ja")]:
             url = f"https://api.themoviedb.org/3/movie/{tmdb_id}?api_key={TMDB_API_KEY}&language={lang}"
             resp = requests.get(url, timeout=10)
             if resp.status_code == 200:
                 data = resp.json()
-                result[key] = data.get("overview", "")
+                result[lkey] = data.get("overview", "")
                 if lang == "en":
                     result["tmdb_backdrop"] = data.get("backdrop_path")
             time.sleep(0.03)
     except Exception as e:
         print(f"    TMDB error: {e}")
+    if result["synopsis_en"]:
+        cache[key] = result
+        _save_tmdb_cache()
     return result
 
 
@@ -302,7 +335,8 @@ def build_series(config):
         tmdb_id = config.get("tmdb_id")
         if tmdb_id:
             tmdb_season = config.get("tmdb_season", 1)
-            tmdb_data = fetch_tmdb_episode(tmdb_id, tmdb_season, ep_num)
+            tmdb_ep = ep_num + config.get("tmdb_ep_offset", 0)
+            tmdb_data = fetch_tmdb_episode(tmdb_id, tmdb_season, tmdb_ep)
             if tmdb_data.get("tmdb_title_en"):
                 print(f"    TMDB: {tmdb_data['tmdb_title_en']}")
 
@@ -421,8 +455,11 @@ def build_movie(config):
 
 
 def main():
+    items_dir = os.path.join(DATA_DIR, "items")
+    os.makedirs(items_dir, exist_ok=True)
+
     library = {
-        "version": 1,
+        "version": 2,
         "items": []
     }
 
@@ -430,19 +467,57 @@ def main():
         print(f"\n=== {config['title_en']} ===")
         episodes = build_series(config)
 
-        item = {
+        # Group episodes by season
+        seasons = {}
+        for ep in episodes:
+            s = ep["season"]
+            if s not in seasons:
+                seasons[s] = []
+            seasons[s].append(ep)
+
+        # Write per-season JSON
+        series_dir = os.path.join(items_dir, config["id"])
+        os.makedirs(series_dir, exist_ok=True)
+
+        season_list = []
+        for s_num in sorted(seasons.keys()):
+            s_eps = seasons[s_num]
+            season_file = f"season-{s_num}.json"
+            season_data = {
+                "season": s_num,
+                "episode_count": len(s_eps),
+                "episodes": s_eps,
+            }
+            with open(os.path.join(series_dir, season_file), "w", encoding="utf-8") as f:
+                json.dump(season_data, f, indent=2, ensure_ascii=False)
+            season_list.append({"season": s_num, "episode_count": len(s_eps)})
+            print(f"  Season {s_num}: {len(s_eps)} episodes")
+
+        # Write series info.json
+        ja_count = sum(1 for ep in episodes if ep["has_ja_subs"])
+        info = {
             "id": config["id"],
             "type": config["type"],
             "title_en": config["title_en"],
             "title_ja": config["title_ja"],
             "cover": f"covers/{config['id']}.jpg",
             "episode_count": len(episodes),
-            "episodes": episodes,
-            "last_watched_episode": None,
-            "overall_progress": 0.0,
+            "seasons": season_list,
         }
-        library["items"].append(item)
-        print(f"  {len(episodes)} episodes processed")
+        with open(os.path.join(series_dir, "info.json"), "w", encoding="utf-8") as f:
+            json.dump(info, f, indent=2, ensure_ascii=False)
+
+        # Add to library index (lightweight)
+        library["items"].append({
+            "id": config["id"],
+            "type": config["type"],
+            "title_en": config["title_en"],
+            "title_ja": config["title_ja"],
+            "cover": f"covers/{config['id']}.jpg",
+            "episode_count": len(episodes),
+            "season_count": len(season_list),
+        })
+        print(f"  {len(episodes)} episodes, {ja_count} with JA subs")
 
     for config in MOVIES:
         print(f"\n=== {config['title_en']} (Movie) ===")
@@ -451,18 +526,26 @@ def main():
             print(f"  Skipped (file not found or error)")
             continue
 
-        item = {
+        # Write movie JSON
+        movie_data = {
             "id": config["id"],
             "type": "MOVIE",
             "title_en": config["title_en"],
             "title_ja": config["title_ja"],
             "cover": f"covers/{config['id']}.jpg",
-            "episode_count": 1,
-            "episodes": [episode],
-            "last_watched_episode": None,
-            "overall_progress": 0.0,
+            "episode": episode,
         }
-        library["items"].append(item)
+        with open(os.path.join(items_dir, f"{config['id']}.json"), "w", encoding="utf-8") as f:
+            json.dump(movie_data, f, indent=2, ensure_ascii=False)
+
+        library["items"].append({
+            "id": config["id"],
+            "type": "MOVIE",
+            "title_en": config["title_en"],
+            "title_ja": config["title_ja"],
+            "cover": f"covers/{config['id']}.jpg",
+            "duration_min": round(episode["duration_sec"] / 60),
+        })
         print(f"  Movie processed ({round(episode['duration_sec']/60)}min)")
 
     with open(LIBRARY_FILE, "w", encoding="utf-8") as f:
@@ -470,13 +553,6 @@ def main():
 
     print(f"\nLibrary written to {LIBRARY_FILE}")
     print(f"Total items: {len(library['items'])}")
-    for item in library["items"]:
-        if item["type"] == "MOVIE":
-            dur = round(item["episodes"][0]["duration_sec"] / 60)
-            print(f"  {item['title_en']} (Movie): {dur}min, JA subs: {item['episodes'][0]['has_ja_subs']}")
-        else:
-            ja_count = sum(1 for ep in item["episodes"] if ep["has_ja_subs"])
-            print(f"  {item['title_en']}: {item['episode_count']} episodes, {ja_count} with JA subs")
 
 
 if __name__ == "__main__":

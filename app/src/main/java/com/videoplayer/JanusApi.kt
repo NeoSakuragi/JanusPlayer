@@ -4,12 +4,8 @@ import android.util.Log
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONObject
-import org.json.JSONArray
 import java.util.concurrent.TimeUnit
 
-/**
- * Client for the Janus media server API.
- */
 class JanusApi(private val baseUrl: String) {
 
     private val client = OkHttpClient.Builder()
@@ -17,16 +13,41 @@ class JanusApi(private val baseUrl: String) {
         .readTimeout(30, TimeUnit.SECONDS)
         .build()
 
-    data class Series(
+    data class LibraryItem(
         val id: String,
         val type: String,
         val titleEn: String,
         val titleJa: String,
         val cover: String,
         val episodeCount: Int,
+        val seasonCount: Int,
+        val durationMin: Int,
+    )
+
+    data class SeasonInfo(val season: Int, val episodeCount: Int)
+
+    data class SeriesDetail(
+        val id: String,
+        val type: String,
+        val titleEn: String,
+        val titleJa: String,
+        val cover: String,
+        val episodeCount: Int,
+        val seasons: List<SeasonInfo>,
+    )
+
+    data class MovieDetail(
+        val id: String,
+        val titleEn: String,
+        val titleJa: String,
+        val cover: String,
+        val episode: Episode,
+    )
+
+    data class SeasonData(
+        val season: Int,
+        val episodeCount: Int,
         val episodes: List<Episode>,
-        val lastWatchedEpisode: Int?,
-        val overallProgress: Double
     )
 
     data class Episode(
@@ -48,7 +69,7 @@ class JanusApi(private val baseUrl: String) {
         val thumb: String?,
     )
 
-    fun fetchLibrary(): List<Series> {
+    fun fetchLibrary(): List<LibraryItem> {
         val request = Request.Builder().url("$baseUrl/api/library").build()
         val response = client.newCall(request).execute()
         if (!response.isSuccessful) {
@@ -57,7 +78,66 @@ class JanusApi(private val baseUrl: String) {
         }
         val json = JSONObject(response.body?.string() ?: return emptyList())
         val items = json.getJSONArray("items")
-        return (0 until items.length()).map { parseItem(items.getJSONObject(it)) }
+        return (0 until items.length()).map { i ->
+            val obj = items.getJSONObject(i)
+            LibraryItem(
+                id = obj.getString("id"),
+                type = obj.getString("type"),
+                titleEn = obj.getString("title_en"),
+                titleJa = obj.getString("title_ja"),
+                cover = obj.optString("cover", ""),
+                episodeCount = obj.optInt("episode_count", 1),
+                seasonCount = obj.optInt("season_count", 1),
+                durationMin = obj.optInt("duration_min", 0),
+            )
+        }
+    }
+
+    fun fetchSeriesDetail(seriesId: String): SeriesDetail? {
+        val request = Request.Builder().url("$baseUrl/api/items/$seriesId/info.json").build()
+        val response = client.newCall(request).execute()
+        if (!response.isSuccessful) return null
+        val obj = JSONObject(response.body?.string() ?: return null)
+        val seasons = obj.getJSONArray("seasons")
+        return SeriesDetail(
+            id = obj.getString("id"),
+            type = obj.getString("type"),
+            titleEn = obj.getString("title_en"),
+            titleJa = obj.getString("title_ja"),
+            cover = obj.optString("cover", ""),
+            episodeCount = obj.getInt("episode_count"),
+            seasons = (0 until seasons.length()).map { i ->
+                val s = seasons.getJSONObject(i)
+                SeasonInfo(s.getInt("season"), s.getInt("episode_count"))
+            },
+        )
+    }
+
+    fun fetchSeason(seriesId: String, seasonNum: Int): SeasonData? {
+        val request = Request.Builder().url("$baseUrl/api/items/$seriesId/season-$seasonNum.json").build()
+        val response = client.newCall(request).execute()
+        if (!response.isSuccessful) return null
+        val obj = JSONObject(response.body?.string() ?: return null)
+        val episodes = obj.getJSONArray("episodes")
+        return SeasonData(
+            season = obj.getInt("season"),
+            episodeCount = obj.getInt("episode_count"),
+            episodes = (0 until episodes.length()).map { parseEpisode(episodes.getJSONObject(it)) },
+        )
+    }
+
+    fun fetchMovieDetail(movieId: String): MovieDetail? {
+        val request = Request.Builder().url("$baseUrl/api/items/$movieId.json").build()
+        val response = client.newCall(request).execute()
+        if (!response.isSuccessful) return null
+        val obj = JSONObject(response.body?.string() ?: return null)
+        return MovieDetail(
+            id = obj.getString("id"),
+            titleEn = obj.getString("title_en"),
+            titleJa = obj.getString("title_ja"),
+            cover = obj.optString("cover", ""),
+            episode = parseEpisode(obj.getJSONObject("episode")),
+        )
     }
 
     fun videoUrl(seriesId: String, filename: String): String =
@@ -65,36 +145,6 @@ class JanusApi(private val baseUrl: String) {
 
     fun subsUrl(seriesId: String, srtFile: String): String =
         "$baseUrl/api/subs/$seriesId/$srtFile"
-
-    fun coverUrl(seriesId: String): String =
-        "$baseUrl/api/cover/$seriesId.jpg"
-
-    fun fetchSrt(seriesId: String, srtFile: String): String? {
-        val url = subsUrl(seriesId, srtFile)
-        val request = Request.Builder().url(url).build()
-        return try {
-            val response = client.newCall(request).execute()
-            if (response.isSuccessful) response.body?.string() else null
-        } catch (e: Exception) {
-            Log.e("JanusApi", "SRT fetch failed: ${e.message}")
-            null
-        }
-    }
-
-    private fun parseItem(obj: JSONObject): Series {
-        val episodes = obj.getJSONArray("episodes")
-        return Series(
-            id = obj.getString("id"),
-            type = obj.getString("type"),
-            titleEn = obj.getString("title_en"),
-            titleJa = obj.getString("title_ja"),
-            cover = obj.optString("cover", ""),
-            episodeCount = obj.getInt("episode_count"),
-            episodes = (0 until episodes.length()).map { parseEpisode(episodes.getJSONObject(it)) },
-            lastWatchedEpisode = obj.opt("last_watched_episode") as? Int,
-            overallProgress = obj.optDouble("overall_progress", 0.0)
-        )
-    }
 
     private fun parseEpisode(obj: JSONObject): Episode = Episode(
         season = obj.getInt("season"),

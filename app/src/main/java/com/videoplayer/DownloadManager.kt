@@ -54,23 +54,6 @@ object DownloadManager {
         Log.d(TAG, "Enqueued $seriesId ep$episodeNum")
     }
 
-    fun enqueueSeries(series: JanusApi.Series, api: JanusApi) {
-        for (ep in series.episodes) {
-            val srtFiles = mutableListOf<Pair<String, String>>()
-            if (ep.hasJaSubs && ep.jaSrtFile != null)
-                srtFiles.add(ep.jaSrtFile to api.subsUrl(series.id, ep.jaSrtFile))
-            if (ep.hasEnSubs && ep.enSrtFile != null)
-                srtFiles.add(ep.enSrtFile to api.subsUrl(series.id, ep.enSrtFile))
-            if (ep.hasFrSubs && ep.frSrtFile != null)
-                srtFiles.add(ep.frSrtFile to api.subsUrl(series.id, ep.frSrtFile))
-            enqueueEpisode(
-                series.id, ep.episode, ep.filename,
-                api.videoUrl(series.id, ep.filename), srtFiles,
-                titleEn = "Episode ${ep.episode}", seriesTitleEn = series.titleEn
-            )
-        }
-    }
-
     fun getNextQueued(): DownloadItem? = items.firstOrNull { it.state == State.QUEUED }
 
     fun getLocalVideoPath(seriesId: String, filename: String): String? {

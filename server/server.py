@@ -23,6 +23,8 @@ class JanusHandler(http.server.BaseHTTPRequestHandler):
 
         if path == "/api/library":
             self.serve_json(LIBRARY_FILE)
+        elif path.startswith("/api/items/"):
+            self.serve_file(os.path.join(DATA_DIR, "items", path[11:]))
         elif path.startswith("/api/thumbs/"):
             self.serve_file(os.path.join(DATA_DIR, "thumbs", path[12:]))
         elif path.startswith("/api/subs/"):

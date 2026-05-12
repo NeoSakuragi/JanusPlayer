@@ -800,9 +800,12 @@ class ExoPlayerActivity : ComponentActivity() {
         val pos = player.currentPosition
         val dur = player.duration.coerceAtLeast(1)
         val prefs = getSharedPreferences("watch_progress", MODE_PRIVATE)
+        val videoUrl = intent.getStringExtra(EXTRA_VIDEO_URL) ?: ""
+        val filename = videoUrl.substringAfterLast("/")
         prefs.edit()
             .putLong("${seriesId}_ep${epNum}_pos", pos)
             .putLong("${seriesId}_ep${epNum}_dur", dur)
+            .putString("${seriesId}_ep${epNum}_filename", filename)
             .putString("${seriesId}_last_ep", "$epNum")
             .putLong("${seriesId}_last_pos", pos)
             .apply()

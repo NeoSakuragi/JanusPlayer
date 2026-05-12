@@ -33,7 +33,8 @@ class AppUpdater(private val activity: Activity) {
                 val remoteCode = json.getInt("version_code")
                 val remoteName = json.optString("version_name", "")
                 val apkName = json.optString("apk", "janus.apk")
-                val localCode = activity.packageManager.getPackageInfo(activity.packageName, 0).longVersionCode.toInt()
+                @Suppress("DEPRECATION")
+                val localCode = activity.packageManager.getPackageInfo(activity.packageName, 0).versionCode
                 if (remoteCode > localCode) {
                     activity.runOnUiThread { onResult(UpdateInfo(remoteCode, remoteName, apkName)) }
                 } else {
