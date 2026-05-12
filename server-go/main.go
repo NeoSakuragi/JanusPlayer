@@ -22,11 +22,18 @@ var (
 
 func main() {
 	dataDir = envOr("JANUS_DATA", "/data/janus")
-	host := envOr("JANUS_HOST", "0.0.0.0")
-	port := envOr("JANUS_PORT", "8900")
+
+	if len(os.Args) > 1 {
+		initDB()
+		runCommand(os.Args[1], os.Args[2:])
+		return
+	}
 
 	initDB()
 	startTime = time.Now()
+
+	host := envOr("JANUS_HOST", "0.0.0.0")
+	port := envOr("JANUS_PORT", "8900")
 
 	mux := http.NewServeMux()
 
