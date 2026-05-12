@@ -158,6 +158,16 @@ var schema = []string{
 		role TEXT DEFAULT 'viewer',
 		created_at INTEGER DEFAULT (strftime('%s','now'))
 	)`,
+	`CREATE TABLE IF NOT EXISTS subtitles (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		item_id TEXT NOT NULL,
+		season INTEGER NOT NULL,
+		episode INTEGER NOT NULL,
+		language TEXT NOT NULL,
+		label TEXT DEFAULT '',
+		srt_file TEXT NOT NULL,
+		UNIQUE(item_id, season, episode, srt_file)
+	)`,
 	`INSERT OR IGNORE INTO meta (key, value) VALUES ('library_version', '1')`,
 	`INSERT OR IGNORE INTO meta (key, value) VALUES ('app_version_code', '9')`,
 	`INSERT OR IGNORE INTO meta (key, value) VALUES ('app_version_name', '1.8')`,
@@ -326,6 +336,19 @@ func handleSeason(w http.ResponseWriter, itemID string, seasonNum int) {
 		rows.Scan(&season, &episode, &filename, &durSec, &titleEn,
 			&synEn, &synFr, &synJa, &thumb,
 			&hasJa, &hasEn, &hasFr, &jaSrt, &enSrt, &frSrt, &jaLines)
+		// Fetch subtitle tracks from subtitles table
+		subTracks := []map[string]any{}
+		subRows, _ := db.Query("SELECT language, label, srt_file FROM subtitles WHERE item_id=? AND season=? AND episode=? ORDER BY language, id",
+			itemID, season, episode)
+		if subRows != nil {
+			for subRows.Next() {
+				var sLang, sLabel, sFile string
+				subRows.Scan(&sLang, &sLabel, &sFile)
+				subTracks = append(subTracks, map[string]any{"language": sLang, "label": sLabel, "srt_file": sFile})
+			}
+			subRows.Close()
+		}
+
 		episodes = append(episodes, map[string]any{
 			"season": season, "episode": episode, "filename": filename,
 			"duration_sec": durSec, "title_en": titleEn,
@@ -334,6 +357,7 @@ func handleSeason(w http.ResponseWriter, itemID string, seasonNum int) {
 			"has_ja_subs": hasJa == 1, "has_en_subs": hasEn == 1, "has_fr_subs": hasFr == 1,
 			"ja_srt_file": jaSrt, "en_srt_file": enSrt, "fr_srt_file": frSrt,
 			"ja_sub_lines": jaLines,
+			"subtitles": subTracks,
 			"watch_progress_sec": 0, "completed": false,
 		})
 	}
@@ -359,6 +383,19 @@ func queryEpisode(itemID string, season, episode int) map[string]any {
 	if err != nil {
 		return nil
 	}
+
+	subTracks := []map[string]any{}
+	subRows, _ := db.Query("SELECT language, label, srt_file FROM subtitles WHERE item_id=? AND season=? AND episode=? ORDER BY language, id",
+		itemID, season, episode)
+	if subRows != nil {
+		for subRows.Next() {
+			var sLang, sLabel, sFile string
+			subRows.Scan(&sLang, &sLabel, &sFile)
+			subTracks = append(subTracks, map[string]any{"language": sLang, "label": sLabel, "srt_file": sFile})
+		}
+		subRows.Close()
+	}
+
 	return map[string]any{
 		"season": s, "episode": ep, "filename": filename,
 		"duration_sec": durSec, "title_en": titleEn,
@@ -367,6 +404,7 @@ func queryEpisode(itemID string, season, episode int) map[string]any {
 		"has_ja_subs": hasJa == 1, "has_en_subs": hasEn == 1, "has_fr_subs": hasFr == 1,
 		"ja_srt_file": jaSrt, "en_srt_file": enSrt, "fr_srt_file": frSrt,
 		"ja_sub_lines": jaLines,
+		"subtitles": subTracks,
 		"watch_progress_sec": 0, "completed": false,
 	}
 }
@@ -412,18 +450,35 @@ func handleStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Subtitles
-	if len(parts) == 5 && parts[3] == "subs" {
+	// Subtitles: /api/stream/{id}/{s}/{e}/subs/{lang}[/{index}]
+	if len(parts) >= 5 && parts[3] == "subs" {
 		lang := parts[4]
-		var srtFile string
-		switch lang {
-		case "ja":
-			srtFile = jaSrt
-		case "en":
-			srtFile = enSrt
-		case "fr":
-			srtFile = frSrt
+		trackIdx := 0
+		if len(parts) >= 6 {
+			trackIdx = atoi(parts[5])
 		}
+
+		var srtFile string
+		if trackIdx > 0 {
+			db.QueryRow("SELECT srt_file FROM subtitles WHERE item_id=? AND season=? AND episode=? AND language=? ORDER BY id LIMIT 1 OFFSET ?",
+				itemID, season, episode, lang, trackIdx-1).Scan(&srtFile)
+		} else {
+			db.QueryRow("SELECT srt_file FROM subtitles WHERE item_id=? AND season=? AND episode=? AND language=? ORDER BY id LIMIT 1",
+				itemID, season, episode, lang).Scan(&srtFile)
+		}
+
+		// Fallback to episodes table
+		if srtFile == "" {
+			switch lang {
+			case "ja":
+				srtFile = jaSrt
+			case "en":
+				srtFile = enSrt
+			case "fr":
+				srtFile = frSrt
+			}
+		}
+
 		if srtFile == "" {
 			http.Error(w, "not found", 404)
 			return

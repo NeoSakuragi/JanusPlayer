@@ -54,6 +54,7 @@ class LibraryActivity : ComponentActivity() {
 
     enum class Screen { LOGIN, MAIN, ITEM_DETAIL, DOWNLOADS }
     enum class LibraryRow { HEADER, CONTINUE, SERIES, MOVIES }
+    enum class DetailFocus { HERO, GRID }
 
     private val screen = mutableStateOf(Screen.MAIN)
     private val currentRow = mutableStateOf(LibraryRow.SERIES)
@@ -68,6 +69,7 @@ class LibraryActivity : ComponentActivity() {
     private val serverUrl = mutableStateOf(DEFAULT_SERVER_URL)
     private val showCursorState = mutableStateOf(true)
     private val loginError = mutableStateOf("")
+    private var pendingDetailItemId: String? = null
     private val selectedLibItem = mutableStateOf<JanusApi.LibraryItem?>(null)
     private val detailEpisodes = mutableStateListOf<JanusApi.Episode>()
     private val detailSeasons = mutableStateListOf<JanusApi.SeasonInfo>()
@@ -75,6 +77,8 @@ class LibraryActivity : ComponentActivity() {
     private val detailLoading = mutableStateOf(false)
     private val previewRequested = mutableStateOf(false)
     private val showPreview = mutableStateOf(false)
+    private val detailFocus = mutableStateOf(DetailFocus.HERO)
+    private val heroButtonFocus = mutableIntStateOf(0) // 0=play, 1=download
 
     private lateinit var api: JanusApi
 
@@ -102,9 +106,32 @@ class LibraryActivity : ComponentActivity() {
         if (openScreen == "downloads") screen.value = Screen.DOWNLOADS
         else if (openScreen == "login") { logout(); return }
 
+        // Restore state after recreation
+        savedInstanceState?.let {
+            val savedScreen = it.getString("screen")
+            val savedItemId = it.getString("selectedItemId")
+            if (savedScreen == "ITEM_DETAIL" && savedItemId != null) {
+                val item = library.firstOrNull { lib -> lib.id == savedItemId }
+                    ?: seriesList.firstOrNull { lib -> lib.id == savedItemId }
+                    ?: movieList.firstOrNull { lib -> lib.id == savedItemId }
+                if (item != null) {
+                    openItemDetail(item)
+                } else {
+                    // Library not loaded yet — save ID and open detail after load
+                    pendingDetailItemId = savedItemId
+                }
+            }
+        }
+
         setContent {
             LibraryScreen()
         }
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        outState.putString("screen", screen.value.name)
+        selectedLibItem.value?.let { outState.putString("selectedItemId", it.id) }
     }
 
     override fun onResume() {
@@ -779,9 +806,14 @@ class LibraryActivity : ComponentActivity() {
                             if (firstEp != null) "▶  Play Episode ${firstEp.episode}" else "▶  Play"
                         }
                     }
+                    val dFocus by detailFocus
+                    val hFocus by heroButtonFocus
+                    val playFocused = showCursor && dFocus == DetailFocus.HERO && hFocus == 0
+                    val dlFocused = showCursor && dFocus == DetailFocus.HERO && hFocus == 1
                     Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                         Box(
                             modifier = Modifier.weight(1f)
+                                .then(if (playFocused) Modifier.border(2.dp, Color.White, RoundedCornerShape(8.dp)) else Modifier)
                                 .background(Color(0xFFBB86FC), RoundedCornerShape(8.dp))
                                 .clickable { releasePreviewPlayer(); playItem() }
                                 .padding(horizontal = 20.dp, vertical = 14.dp),
@@ -797,6 +829,7 @@ class LibraryActivity : ComponentActivity() {
                         if (!allDownloaded) {
                             Box(
                                 modifier = Modifier
+                                    .then(if (dlFocused) Modifier.border(2.dp, Color(0xFFBB86FC), RoundedCornerShape(8.dp)) else Modifier)
                                     .background(Color(0xFF2A2A3A), RoundedCornerShape(8.dp))
                                     .clickable { startDownload() }
                                     .padding(horizontal = 20.dp, vertical = 14.dp),
@@ -862,7 +895,7 @@ class LibraryActivity : ComponentActivity() {
                             val y = coords.positionInParent().y.toInt()
                             epCardPositions[idx] = y to (y + coords.size.height)
                         }) {
-                            EpisodeGridCard(item.id, ep, focused = showCursor && idx == focusIdx) {
+                            EpisodeGridCard(item.id, ep, focused = showCursor && detailFocus.value == DetailFocus.GRID && idx == focusIdx) {
                                 episodeFocus.intValue = idx
                                 releasePreviewPlayer()
                                 launchPlayer(item, ep)
@@ -1102,6 +1135,10 @@ class LibraryActivity : ComponentActivity() {
                     movieList.addAll(items.filter { it.type == "MOVIE" })
                     loading.value = false
                     Log.d(TAG, "Library loaded: ${seriesList.size} series, ${movieList.size} movies")
+                    pendingDetailItemId?.let { id ->
+                        pendingDetailItemId = null
+                        library.firstOrNull { it.id == id }?.let { openItemDetail(it) }
+                    }
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to load library: ${e.message}")
@@ -1140,30 +1177,53 @@ class LibraryActivity : ComponentActivity() {
                 val maxIdx = detailEpisodes.size - 1
                 when (event.keyCode) {
                     KeyEvent.KEYCODE_BACK -> { closeItemDetail(); return true }
-                    KeyEvent.KEYCODE_DPAD_LEFT -> {
-                        if (item.type != "MOVIE" && episodeFocus.intValue > 0) episodeFocus.intValue--
-                    }
-                    KeyEvent.KEYCODE_DPAD_RIGHT -> {
-                        if (item.type != "MOVIE" && episodeFocus.intValue < maxIdx) episodeFocus.intValue++
-                    }
                     KeyEvent.KEYCODE_DPAD_DOWN -> {
-                        if (item.type != "MOVIE") {
-                            val next = episodeFocus.intValue + cols
-                            if (next <= maxIdx) episodeFocus.intValue = next
+                        when (detailFocus.value) {
+                            DetailFocus.HERO -> {
+                                if (item.type != "MOVIE" && detailEpisodes.isNotEmpty()) {
+                                    detailFocus.value = DetailFocus.GRID
+                                }
+                            }
+                            DetailFocus.GRID -> {
+                                val next = episodeFocus.intValue + cols
+                                if (next <= maxIdx) episodeFocus.intValue = next
+                            }
                         }
                     }
                     KeyEvent.KEYCODE_DPAD_UP -> {
-                        if (item.type != "MOVIE") {
-                            val prev = episodeFocus.intValue - cols
-                            if (prev >= 0) episodeFocus.intValue = prev
+                        when (detailFocus.value) {
+                            DetailFocus.HERO -> {}
+                            DetailFocus.GRID -> {
+                                val prev = episodeFocus.intValue - cols
+                                if (prev >= 0) episodeFocus.intValue = prev
+                                else detailFocus.value = DetailFocus.HERO
+                            }
+                        }
+                    }
+                    KeyEvent.KEYCODE_DPAD_LEFT -> {
+                        when (detailFocus.value) {
+                            DetailFocus.HERO -> { if (heroButtonFocus.intValue > 0) heroButtonFocus.intValue-- }
+                            DetailFocus.GRID -> { if (episodeFocus.intValue > 0) episodeFocus.intValue-- }
+                        }
+                    }
+                    KeyEvent.KEYCODE_DPAD_RIGHT -> {
+                        when (detailFocus.value) {
+                            DetailFocus.HERO -> { if (heroButtonFocus.intValue < 1) heroButtonFocus.intValue++ }
+                            DetailFocus.GRID -> { if (episodeFocus.intValue < maxIdx) episodeFocus.intValue++ }
                         }
                     }
                     KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> {
-                        if (item.type == "MOVIE") {
-                            playItem()
-                        } else {
-                            val ep = detailEpisodes.getOrNull(episodeFocus.intValue)
-                            if (ep != null) { releasePreviewPlayer(); launchPlayer(item, ep) }
+                        when (detailFocus.value) {
+                            DetailFocus.HERO -> {
+                                when (heroButtonFocus.intValue) {
+                                    0 -> playItem()
+                                    1 -> startDownload()
+                                }
+                            }
+                            DetailFocus.GRID -> {
+                                val ep = detailEpisodes.getOrNull(episodeFocus.intValue)
+                                if (ep != null) { releasePreviewPlayer(); launchPlayer(item, ep) }
+                            }
                         }
                     }
                     else -> return false
@@ -1258,6 +1318,8 @@ class LibraryActivity : ComponentActivity() {
     private fun openItemDetail(item: JanusApi.LibraryItem) {
         selectedLibItem.value = item
         episodeFocus.intValue = 0
+        detailFocus.value = DetailFocus.HERO
+        heroButtonFocus.intValue = 0
         detailEpisodes.clear()
         detailSeasons.clear()
         detailLoading.value = true

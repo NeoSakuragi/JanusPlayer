@@ -155,6 +155,9 @@ class ExoPlayerActivity : ComponentActivity() {
     private val fontSizeIdx = mutableIntStateOf(0)
     private val fontIdx = mutableIntStateOf(0)
 
+    private var pendingVideoUrl: String? = null
+    private var pendingStartPos: Long = 0L
+
     // Backend
     private lateinit var player: ExoPlayer
     private var subtitleCues = listOf<SrtParser.Cue>()
@@ -187,8 +190,24 @@ class ExoPlayerActivity : ComponentActivity() {
         val startPos = intent.getLongExtra(EXTRA_START_POSITION, 0L)
 
         DownloadManager.init(this)
-        player = PlayerManager.getPlayer(this)
-        PlayerManager.play(this, videoUrl, startPos)
+
+        // Own player — not shared with preview
+        val builder = ExoPlayer.Builder(this)
+        val token = PlayerManager.authToken
+        if (token != null) {
+            val headers = mapOf("Authorization" to "Bearer $token")
+            val httpFactory = androidx.media3.datasource.DefaultHttpDataSource.Factory()
+                .setDefaultRequestProperties(headers)
+            builder.setMediaSourceFactory(androidx.media3.exoplayer.source.DefaultMediaSourceFactory(httpFactory))
+        }
+        player = builder.build()
+        player.trackSelectionParameters = player.trackSelectionParameters.buildUpon()
+            .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
+            .build()
+        player.setMediaItem(MediaItem.fromUri(videoUrl))
+        player.prepare()
+        if (startPos > 0) player.seekTo(startPos)
+        player.play()
         updateDlLabel()
 
         // Load subtitles
@@ -303,7 +322,9 @@ class ExoPlayerActivity : ComponentActivity() {
                         }
                     }
                 },
-                update = { view -> PlayerManager.attachView(view) },
+                update = { view ->
+                    view.player = this@ExoPlayerActivity.player
+                },
                 modifier = Modifier.fillMaxSize()
             )
 
@@ -578,7 +599,7 @@ class ExoPlayerActivity : ComponentActivity() {
     private fun transition(state: Screen, key: Int): Boolean {
         when (state) {
             Screen.PLAYING -> when (key) {
-                KeyEvent.KEYCODE_BACK -> { finish(); return true }
+                KeyEvent.KEYCODE_BACK -> { saveProgress(); finish(); return true }
                 KeyEvent.KEYCODE_DPAD_LEFT -> {
                     val prev = SrtParser.prevCueBefore(subtitleCues, player.currentPosition)
                     if (prev != null) player.seekTo(prev.startMs) else player.seekTo((player.currentPosition - 10000).coerceAtLeast(0))
@@ -928,6 +949,6 @@ class ExoPlayerActivity : ComponentActivity() {
         super.onDestroy()
         saveProgress()
         handler.removeCallbacksAndMessages(null)
-        PlayerManager.detachView()
+        player.release()
     }
 }

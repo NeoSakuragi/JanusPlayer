@@ -32,6 +32,8 @@ func runCommand(cmd string, args []string) {
 		cmdExtractThumbs()
 	case "strip-tags":
 		cmdStripTags()
+	case "migrate-subs":
+		cmdMigrateSubs()
 	case "add-user":
 		initAuth()
 		cmdAddUser(args)
@@ -423,6 +425,107 @@ func cmdStripTags() {
 		return nil
 	})
 	fmt.Printf("Cleaned %d files\n", count)
+}
+
+// ── Migrate Subs ──────────────────────────────────────
+
+func cmdMigrateSubs() {
+	// Migrate from episodes table columns to subtitles table
+	rows, _ := db.Query("SELECT item_id, season, episode, ja_srt_file, en_srt_file, fr_srt_file FROM episodes")
+	if rows == nil {
+		return
+	}
+	defer rows.Close()
+
+	count := 0
+	for rows.Next() {
+		var itemID, jaSrt, enSrt, frSrt string
+		var season, episode int
+		rows.Scan(&itemID, &season, &episode, &jaSrt, &enSrt, &frSrt)
+
+		if jaSrt != "" {
+			db.Exec(`INSERT OR IGNORE INTO subtitles (item_id, season, episode, language, label, srt_file) VALUES (?,?,?,?,?,?)`,
+				itemID, season, episode, "ja", "Japanese", jaSrt)
+			count++
+		}
+		if enSrt != "" {
+			db.Exec(`INSERT OR IGNORE INTO subtitles (item_id, season, episode, language, label, srt_file) VALUES (?,?,?,?,?,?)`,
+				itemID, season, episode, "en", "English", enSrt)
+			count++
+		}
+		if frSrt != "" {
+			db.Exec(`INSERT OR IGNORE INTO subtitles (item_id, season, episode, language, label, srt_file) VALUES (?,?,?,?,?,?)`,
+				itemID, season, episode, "fr", "French", frSrt)
+			count++
+		}
+	}
+
+	// Scan for extra sub files on disk (e.g. movie_ja2.srt, movie_ja3.srt)
+	subsDir := filepath.Join(dataDir, "subs")
+	dirs, _ := os.ReadDir(subsDir)
+	for _, d := range dirs {
+		if !d.IsDir() {
+			continue
+		}
+		itemID := d.Name()
+		files, _ := os.ReadDir(filepath.Join(subsDir, itemID))
+		for _, f := range files {
+			if f.IsDir() || !strings.HasSuffix(f.Name(), ".srt") {
+				continue
+			}
+			name := f.Name()
+			// Detect language from filename
+			lang := ""
+			label := ""
+			if strings.Contains(name, "_ja") || strings.Contains(name, "_ja.") {
+				lang = "ja"
+				label = "Japanese"
+			} else if strings.Contains(name, "_en") || strings.Contains(name, "_en.") {
+				lang = "en"
+				label = "English"
+			} else if strings.Contains(name, "_fr") || strings.Contains(name, "_fr.") {
+				lang = "fr"
+				label = "French"
+			}
+			if lang == "" {
+				continue
+			}
+
+			// Find which episode this belongs to
+			epRows, _ := db.Query("SELECT season, episode FROM episodes WHERE item_id=?", itemID)
+			if epRows == nil {
+				continue
+			}
+			// For movies or single-episode, assign to season 1 episode 1
+			season, episode := 1, 1
+			if epRows.Next() {
+				epRows.Scan(&season, &episode)
+			}
+			epRows.Close()
+
+			// Add label from filename for multi-track (e.g. movie_ja2.srt → "Japanese 2")
+			if strings.Contains(name, "ja1") || strings.Contains(name, "ja2") || strings.Contains(name, "ja3") || strings.Contains(name, "ja4") {
+				for i := 1; i <= 4; i++ {
+					if strings.Contains(name, fmt.Sprintf("ja%d", i)) {
+						label = fmt.Sprintf("Japanese %d", i)
+						break
+					}
+				}
+			}
+
+			_, err := db.Exec(`INSERT OR IGNORE INTO subtitles (item_id, season, episode, language, label, srt_file) VALUES (?,?,?,?,?,?)`,
+				itemID, season, episode, lang, label, name)
+			if err == nil {
+				count++
+			}
+		}
+	}
+
+	fmt.Printf("Migrated %d subtitle tracks\n", count)
+
+	var total int
+	db.QueryRow("SELECT COUNT(*) FROM subtitles").Scan(&total)
+	fmt.Printf("Total subtitles in DB: %d\n", total)
 }
 
 // ── FFmpeg/FFprobe helpers ────────────────────────────
