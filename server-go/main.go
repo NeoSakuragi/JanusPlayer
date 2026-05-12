@@ -41,6 +41,7 @@ func main() {
 	mux.HandleFunc("/api/subs/", serveStatic("subs"))
 	mux.HandleFunc("/api/covers/", serveStatic("covers"))
 	mux.HandleFunc("/api/thumbs/", serveStatic("thumbs"))
+	mux.HandleFunc("/api/update/", serveStaticAt("updates", "/api/update/"))
 
 	addr := host + ":" + port
 	fmt.Println("Janus Media Server (Go)")
@@ -211,7 +212,7 @@ func handleItems(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	itemID := parts[0]
+	itemID := strings.TrimSuffix(parts[0], ".json")
 
 	// GET /api/items/{id} — item detail
 	if len(parts) == 1 {
@@ -370,7 +371,10 @@ func handleVideo(w http.ResponseWriter, r *http.Request) {
 }
 
 func serveStatic(subdir string) http.HandlerFunc {
-	prefix := "/api/" + subdir + "/"
+	return serveStaticAt(subdir, "/api/"+subdir+"/")
+}
+
+func serveStaticAt(subdir, prefix string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		path := strings.TrimPrefix(r.URL.Path, prefix)
 		if path == "" || strings.Contains(path, "..") {

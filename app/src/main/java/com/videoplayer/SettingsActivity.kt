@@ -58,7 +58,8 @@ class SettingsActivity : AppCompatActivity() {
 
         findViewById<LinearLayout>(R.id.settingCheckAppUpdate).setOnClickListener {
             tvAppStatus.text = "Checking..."
-            val updater = AppUpdater(this)
+            val currentUrl = prefs.getString("server_url", serverUrl) ?: serverUrl
+            val updater = AppUpdater(this, currentUrl)
             updater.checkForUpdate { info ->
                 if (info != null) {
                     tvAppStatus.text = "Update available: v${info.versionName}"
@@ -67,8 +68,11 @@ class SettingsActivity : AppCompatActivity() {
                         .setTitle("Update Available")
                         .setMessage("New version v${info.versionName} available.\nCurrent: v$currentName\n\nInstall now?")
                         .setPositiveButton("Install") { _, _ ->
-                            tvAppStatus.text = "Downloading..."
-                            updater.downloadAndInstall(info.apkName)
+                            tvAppStatus.text = "Downloading... 0%"
+                            updater.downloadAndInstall(info.apkName) { pct ->
+                                if (pct >= 0) tvAppStatus.text = "Downloading... $pct%"
+                                else tvAppStatus.text = "Download failed"
+                            }
                         }
                         .setNegativeButton("Later", null)
                         .show()

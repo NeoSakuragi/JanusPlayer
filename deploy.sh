@@ -1,12 +1,9 @@
 #!/bin/bash
-# Build and deploy Janus APK to Hetzner for auto-update
+# Build and deploy Janus APK to the local Go server for auto-update
 set -e
 
-HETZNER_HOST="root@195.201.91.211"
-HETZNER_KEY="$HOME/.ssh/id_ed25519"
-HETZNER_PATH="/var/www/kanji/janus"
-SSH="ssh -i $HETZNER_KEY $HETZNER_HOST"
-SCP="scp -i $HETZNER_KEY"
+DATA_DIR="/data/janus"
+UPDATES_DIR="$DATA_DIR/updates"
 APP_DIR="$(dirname "$0")"
 
 cd "$APP_DIR"
@@ -27,17 +24,21 @@ fi
 # Read version from build.gradle.kts
 VERSION_CODE=$(grep 'versionCode' app/build.gradle.kts | head -1 | grep -o '[0-9]*')
 VERSION_NAME=$(grep 'versionName' app/build.gradle.kts | head -1 | grep -o '"[^"]*"' | tr -d '"')
-echo "Deploying v${VERSION_NAME} (code ${VERSION_CODE}) to ${HETZNER_HOST}"
 
-cat > /tmp/janus-version.json << EOF
-{"version_code": ${VERSION_CODE}, "version_name": "${VERSION_NAME}", "apk": "janus.apk"}
-EOF
+echo "Deploying v${VERSION_NAME} (code ${VERSION_CODE})"
 
-$SSH "mkdir -p ${HETZNER_PATH}"
-$SCP "$APK" "${HETZNER_HOST}:${HETZNER_PATH}/janus.apk"
-$SCP /tmp/janus-version.json "${HETZNER_HOST}:${HETZNER_PATH}/version.json"
+# Copy APK to updates dir
+mkdir -p "$UPDATES_DIR"
+cp "$APK" "$UPDATES_DIR/janus.apk"
+
+# Update version in DB
+sqlite3 "$DATA_DIR/janus.db" "
+    INSERT OR REPLACE INTO meta (key, value, updated_at) VALUES ('app_version_code', '${VERSION_CODE}', strftime('%s','now'));
+    INSERT OR REPLACE INTO meta (key, value, updated_at) VALUES ('app_version_name', '${VERSION_NAME}', strftime('%s','now'));
+"
 
 echo "Deployed:"
-echo "  APK:     https://canneji.duckdns.org/janus/janus.apk"
-echo "  Version: https://canneji.duckdns.org/janus/version.json"
-$SSH "cat ${HETZNER_PATH}/version.json"
+echo "  APK:     $UPDATES_DIR/janus.apk"
+echo "  Version: v${VERSION_NAME} (code ${VERSION_CODE})"
+echo "  Server:  http://localhost:8900/api/version"
+curl -s http://localhost:8900/api/version 2>/dev/null || echo "(server not running)"
