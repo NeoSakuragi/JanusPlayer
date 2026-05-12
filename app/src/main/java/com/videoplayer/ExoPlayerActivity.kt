@@ -108,6 +108,8 @@ class ExoPlayerActivity : ComponentActivity() {
 
     private val CTRL_CONDENSED = 5
     private val condensedMode = mutableStateOf(false)
+    private var condensedSkipping = false
+    private var condensedFadeStart = 0L
 
     private val CTRL_HWSW = 6
     private val hwDecoding = mutableStateOf(true)
@@ -193,8 +195,9 @@ class ExoPlayerActivity : ComponentActivity() {
         if (subsUrl != null) {
             Thread {
                 val srt = try {
-                    okhttp3.OkHttpClient().newCall(okhttp3.Request.Builder().url(subsUrl).build())
-                        .execute().body?.string()
+                    val reqBuilder = okhttp3.Request.Builder().url(subsUrl)
+                    PlayerManager.authToken?.let { reqBuilder.header("Authorization", "Bearer $it") }
+                    okhttp3.OkHttpClient().newCall(reqBuilder.build()).execute().body?.string()
                 } catch (_: Exception) { null }
                 if (srt != null) {
                     subtitleCues = SrtParser.parse(srt)
@@ -222,11 +225,24 @@ class ExoPlayerActivity : ComponentActivity() {
                     val cue = SrtParser.cueAt(subtitleCues, pos)
                     currentSubText.value = cue?.text
 
-                    // Condensed: if no current sub, playing, and gap to next > 2s, skip
-                    if (condensedMode.value && cue == null && player.isPlaying && screen.value == Screen.PLAYING) {
+                    // Condensed: if no current sub, playing, and gap to next > 2s, skip once
+                    if (condensedMode.value && cue == null && player.isPlaying && screen.value == Screen.PLAYING && !condensedSkipping) {
                         val next = SrtParser.nextCueAfter(subtitleCues, pos)
                         if (next != null && next.startMs - pos > 2000) {
-                            player.seekTo(next.startMs - 200)
+                            condensedSkipping = true
+                            player.volume = 0f
+                            player.seekTo(next.startMs - 500)
+                            condensedFadeStart = System.currentTimeMillis()
+                        }
+                    }
+                    if (cue != null) condensedSkipping = false
+                    if (condensedFadeStart > 0) {
+                        val elapsed = System.currentTimeMillis() - condensedFadeStart
+                        if (elapsed >= 500) {
+                            player.volume = 1f
+                            condensedFadeStart = 0
+                        } else {
+                            player.volume = (elapsed / 500f).coerceIn(0f, 1f)
                         }
                     }
                 }

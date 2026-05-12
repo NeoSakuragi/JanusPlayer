@@ -149,7 +149,9 @@ func authMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Public endpoints — no auth required
 		path := r.URL.Path
-		if path == "/api/login" || path == "/api/health" || path == "/api/version" || strings.HasPrefix(path, "/api/update/") {
+		if path == "/api/login" || path == "/api/health" || path == "/api/version" ||
+			strings.HasPrefix(path, "/api/update/") ||
+			strings.HasPrefix(path, "/api/covers/") {
 			next.ServeHTTP(w, r)
 			return
 		}

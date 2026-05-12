@@ -5,7 +5,9 @@ import android.util.Log
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
+import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.ui.PlayerView
 
 object PlayerManager {
@@ -13,16 +15,25 @@ object PlayerManager {
     private const val TAG = "PlayerManager"
     private var player: ExoPlayer? = null
     private var currentUrl: String? = null
+    var authToken: String? = null
     private var attachedView: PlayerView? = null
 
+    @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
     fun getPlayer(context: Context): ExoPlayer {
         if (player == null) {
-            player = ExoPlayer.Builder(context.applicationContext).build().apply {
+            val builder = ExoPlayer.Builder(context.applicationContext)
+            if (authToken != null) {
+                val headers = mapOf("Authorization" to "Bearer $authToken")
+                val httpDataSourceFactory = DefaultHttpDataSource.Factory()
+                    .setDefaultRequestProperties(headers)
+                builder.setMediaSourceFactory(DefaultMediaSourceFactory(httpDataSourceFactory))
+            }
+            player = builder.build().apply {
                 trackSelectionParameters = trackSelectionParameters.buildUpon()
                     .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
                     .build()
             }
-            Log.d(TAG, "Player created")
+            Log.d(TAG, "Player created (auth: ${authToken != null})")
         }
         return player!!
     }

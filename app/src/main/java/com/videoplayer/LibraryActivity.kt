@@ -90,6 +90,7 @@ class LibraryActivity : ComponentActivity() {
         val savedToken = prefs.getString("auth_token", null)
         if (savedToken != null) {
             api.token = savedToken
+            PlayerManager.authToken = savedToken
             loadLibrary()
         } else {
             screen.value = Screen.LOGIN
@@ -554,7 +555,7 @@ class LibraryActivity : ComponentActivity() {
             androidx.compose.material3.OutlinedTextField(
                 value = serverInput, onValueChange = { serverInput = it },
                 singleLine = true, colors = fieldColors,
-                modifier = Modifier.fillMaxWidth(0.5f)
+                modifier = Modifier.fillMaxWidth(0.7f)
             )
             Spacer(Modifier.height(16.dp))
 
@@ -563,7 +564,7 @@ class LibraryActivity : ComponentActivity() {
             androidx.compose.material3.OutlinedTextField(
                 value = username, onValueChange = { username = it },
                 singleLine = true, colors = fieldColors,
-                modifier = Modifier.fillMaxWidth(0.5f)
+                modifier = Modifier.fillMaxWidth(0.7f)
             )
             Spacer(Modifier.height(16.dp))
 
@@ -573,7 +574,7 @@ class LibraryActivity : ComponentActivity() {
                 value = password, onValueChange = { password = it },
                 singleLine = true, colors = fieldColors,
                 visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
-                modifier = Modifier.fillMaxWidth(0.5f)
+                modifier = Modifier.fillMaxWidth(0.7f)
             )
 
             if (error.isNotEmpty()) {
@@ -602,6 +603,7 @@ class LibraryActivity : ComponentActivity() {
                                 val result = api.login(user, pass)
                                 runOnUiThread {
                                     if (result != null) {
+                                        PlayerManager.authToken = result.token
                                         getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
                                             .putString("server_url", url)
                                             .putString("auth_token", result.token)
