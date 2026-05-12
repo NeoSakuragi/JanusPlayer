@@ -797,17 +797,56 @@ class ExoPlayerActivity : ComponentActivity() {
     }
 
     private fun showSubsList() {
-        // For now, subtitles come from pre-extracted SRT, not embedded tracks
-        // Show available SRT languages
+        val allSubs = intent.getStringArrayListExtra("all_subs") ?: arrayListOf()
+        val currentSubUrl = intent.getStringExtra(EXTRA_SUBS_URL)
+
         listItems.clear()
         listItems.add(ListItem("Off", selected = subtitleCues.isEmpty()))
-        listItems.add(ListItem("Japanese", "Pre-extracted SRT", selected = subtitleCues.isNotEmpty()))
+
+        val subEntries = allSubs.map { entry ->
+            val parts = entry.split("|", limit = 2)
+            val name = parts[0]
+            val url = if (parts.size == 2) parts[1] else ""
+            val label = when {
+                name.contains("_ja") -> "Japanese"
+                name.contains("_en") -> "English"
+                name.contains("_fr") -> "French"
+                else -> name
+            }
+            // Add track number for multi-track
+            val trackNum = name.replace(Regex("[^0-9]"), "").takeLast(1)
+            val fullLabel = if (trackNum.isNotEmpty() && trackNum != "0") "$label $trackNum" else label
+            Triple(fullLabel, url, name)
+        }
+
+        subEntries.forEachIndexed { i, (label, url, _) ->
+            val isActive = url == currentSubUrl || (i == 0 && subtitleCues.isNotEmpty() && subEntries.size == 1)
+            listItems.add(ListItem(label, selected = isActive))
+        }
+
         listTitle.value = "Subtitles"
-        listFocus.intValue = if (subtitleCues.isNotEmpty()) 1 else 0
+        listFocus.intValue = listItems.indexOfFirst { it.selected }.coerceAtLeast(0)
         listReturnFocus = CTRL_SUBS
         listCallback = { idx ->
-            if (idx == 0) subtitleCues = emptyList()
-            // idx == 1 already loaded
+            if (idx == 0) {
+                subtitleCues = emptyList()
+                currentSubText.value = null
+            } else {
+                val (_, url, _) = subEntries[idx - 1]
+                Thread {
+                    val srt = try {
+                        val reqBuilder = okhttp3.Request.Builder().url(url)
+                        PlayerManager.authToken?.let { reqBuilder.header("Authorization", "Bearer $it") }
+                        okhttp3.OkHttpClient().newCall(reqBuilder.build()).execute().body?.string()
+                    } catch (_: Exception) { null }
+                    runOnUiThread {
+                        if (srt != null) {
+                            subtitleCues = SrtParser.parse(srt)
+                            Log.d(TAG, "Switched to ${subEntries[idx - 1].first}: ${subtitleCues.size} cues")
+                        }
+                    }
+                }.start()
+            }
         }
         screen.value = Screen.LIST_SELECT
     }

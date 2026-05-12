@@ -22,10 +22,12 @@ class DownloadService : Service() {
         private const val NOTIFICATION_ID = 42
     }
 
-    private val client = OkHttpClient.Builder()
-        .connectTimeout(30, TimeUnit.SECONDS)
-        .readTimeout(60, TimeUnit.SECONDS)
-        .build()
+    private val client by lazy {
+        OkHttpClient.Builder()
+            .connectTimeout(30, TimeUnit.SECONDS)
+            .readTimeout(60, TimeUnit.SECONDS)
+            .build()
+    }
 
     private var running = false
 
@@ -109,6 +111,7 @@ class DownloadService : Service() {
         val existingBytes = if (workFile.exists()) workFile.length() else 0L
 
         val requestBuilder = Request.Builder().url(url)
+        PlayerManager.authToken?.let { requestBuilder.header("Authorization", "Bearer $it") }
         if (existingBytes > 0) {
             requestBuilder.header("Range", "bytes=$existingBytes-")
         }

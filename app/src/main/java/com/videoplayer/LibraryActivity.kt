@@ -966,31 +966,7 @@ class LibraryActivity : ComponentActivity() {
                                 .background(Color(0xFF1A1A2E), RoundedCornerShape(6.dp))
                                 .clickable {
                                     if (item.state == DownloadManager.State.COMPLETED) {
-                                        val localPath = DownloadManager.getLocalVideoPath(item.seriesId, item.videoFilename)
-                                        if (localPath != null) {
-                                            val matchingLib = library.firstOrNull { it.id == item.seriesId }
-                                            val libItem = matchingLib ?: JanusApi.LibraryItem(
-                                                id = item.seriesId, type = "TV_SERIES",
-                                                titleEn = item.seriesTitleEn.ifEmpty { item.seriesId },
-                                                titleJa = "", cover = "", episodeCount = 0,
-                                                seasonCount = 0, durationMin = 0
-                                            )
-                                            val localJaSrt = item.srtFiles.firstOrNull { it.first.contains("_ja") }?.first
-                                            val localEnSrt = item.srtFiles.firstOrNull { it.first.contains("_en") }?.first
-                                            val localFrSrt = item.srtFiles.firstOrNull { it.first.contains("_fr") }?.first
-                                            val ep = JanusApi.Episode(
-                                                season = 1, episode = item.episodeNum,
-                                                filename = item.videoFilename,
-                                                durationSec = item.totalBytes / 1000.0,
-                                                hasJaSubs = localJaSrt != null, hasFrSubs = localFrSrt != null,
-                                                hasEnSubs = localEnSrt != null,
-                                                jaSrtFile = localJaSrt, frSrtFile = localFrSrt,
-                                                enSrtFile = localEnSrt, jaSubLines = 0, watchProgressSec = 0.0,
-                                                completed = false, titleEn = item.titleEn,
-                                                synopsisEn = "", thumb = null
-                                            )
-                                            launchPlayer(libItem, ep)
-                                        }
+                                        playDownloadedItem(item)
                                     }
                                 }
                                 .padding(horizontal = 12.dp, vertical = 8.dp)
@@ -1408,11 +1384,17 @@ class LibraryActivity : ComponentActivity() {
         val savedPos = getWatchProgress(item.id, episode.episode)
         val title = if (item.type == "MOVIE") item.titleEn else "${item.titleEn} - Episode ${episode.episode}"
 
-        // Collect all available sub files for offline download
+        // Collect all subtitle tracks
         val allSubs = mutableListOf<String>()
-        if (episode.hasJaSubs && episode.jaSrtFile != null) allSubs.add(episode.jaSrtFile + "|" + api.subsUrl(item.id, episode.jaSrtFile))
-        if (episode.hasEnSubs && episode.enSrtFile != null) allSubs.add(episode.enSrtFile + "|" + api.subsUrl(item.id, episode.enSrtFile))
-        if (episode.hasFrSubs && episode.frSrtFile != null) allSubs.add(episode.frSrtFile + "|" + api.subsUrl(item.id, episode.frSrtFile))
+        if (episode.subtitles.isNotEmpty()) {
+            for (sub in episode.subtitles) {
+                allSubs.add(sub.srtFile + "|" + api.streamSubsUrl(item.id, episode.season, episode.episode, sub.language + if (episode.subtitles.count { it.language == sub.language } > 1) "/${episode.subtitles.filter { it.language == sub.language }.indexOf(sub) + 1}" else ""))
+            }
+        } else {
+            if (episode.hasJaSubs) allSubs.add((episode.jaSrtFile ?: "ep${episode.episode}_ja.srt") + "|" + api.streamSubsUrl(item.id, episode.season, episode.episode, "ja"))
+            if (episode.hasEnSubs && episode.enSrtFile != null) allSubs.add(episode.enSrtFile + "|" + api.streamSubsUrl(item.id, episode.season, episode.episode, "en"))
+            if (episode.hasFrSubs && episode.frSrtFile != null) allSubs.add(episode.frSrtFile + "|" + api.streamSubsUrl(item.id, episode.season, episode.episode, "fr"))
+        }
 
         AppNavigator.navigate(this, AppNavigator.Action.PLAY_VIDEO) { intent ->
             intent.putExtra(ExoPlayerActivity.EXTRA_VIDEO_URL, videoUrl)
@@ -1449,6 +1431,47 @@ class LibraryActivity : ComponentActivity() {
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Continue item failed: ${e.message}")
+            }
+        }.start()
+    }
+
+    private fun playDownloadedItem(item: DownloadManager.DownloadItem) {
+        val libItem = library.firstOrNull { it.id == item.seriesId } ?: return
+        Thread {
+            try {
+                val realEp = if (libItem.type == "MOVIE") {
+                    api.fetchMovieDetail(libItem.id)?.episode
+                } else {
+                    var found: JanusApi.Episode? = null
+                    val info = api.fetchSeriesDetail(libItem.id)
+                    if (info != null) {
+                        for (s in info.seasons) {
+                            val season = api.fetchSeason(libItem.id, s.season)
+                            found = season?.episodes?.firstOrNull { it.episode == item.episodeNum }
+                            if (found != null) break
+                        }
+                    }
+                    found
+                }
+                if (realEp != null) {
+                    runOnUiThread { launchPlayer(libItem, realEp) }
+                }
+            } catch (_: Exception) {
+                // Offline — launch with local files directly
+                val localPath = DownloadManager.getLocalVideoPath(item.seriesId, item.videoFilename) ?: return@Thread
+                val subsPath = item.srtFiles.firstOrNull { it.first.contains("_ja") }?.first
+                    ?.let { DownloadManager.getLocalSubsPath(item.seriesId, it) }
+                runOnUiThread {
+                    val title = if (libItem.type == "MOVIE") libItem.titleEn else "${libItem.titleEn} - Episode ${item.episodeNum}"
+                    AppNavigator.navigate(this@LibraryActivity, AppNavigator.Action.PLAY_VIDEO) { intent ->
+                        intent.putExtra(ExoPlayerActivity.EXTRA_VIDEO_URL, "file://$localPath")
+                        intent.putExtra(ExoPlayerActivity.EXTRA_SUBS_URL, subsPath?.let { "file://$it" })
+                        intent.putExtra(ExoPlayerActivity.EXTRA_TITLE, title)
+                        intent.putExtra(ExoPlayerActivity.EXTRA_START_POSITION, 0L)
+                        intent.putExtra(ExoPlayerActivity.EXTRA_SERIES_ID, item.seriesId)
+                        intent.putExtra(ExoPlayerActivity.EXTRA_EPISODE_NUM, item.episodeNum)
+                    }
+                }
             }
         }.start()
     }

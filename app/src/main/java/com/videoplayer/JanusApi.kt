@@ -80,6 +80,8 @@ class JanusApi(private val baseUrl: String) {
         val episodes: List<Episode>,
     )
 
+    data class SubTrack(val language: String, val label: String, val srtFile: String)
+
     data class Episode(
         val season: Int,
         val episode: Int,
@@ -97,6 +99,7 @@ class JanusApi(private val baseUrl: String) {
         val titleEn: String,
         val synopsisEn: String,
         val thumb: String?,
+        val subtitles: List<SubTrack>,
     )
 
     fun fetchLibrary(): List<LibraryItem> {
@@ -199,5 +202,11 @@ class JanusApi(private val baseUrl: String) {
         titleEn = obj.optString("title_en", ""),
         synopsisEn = obj.optString("synopsis_en", ""),
         thumb = obj.optString("thumb", null),
+        subtitles = obj.optJSONArray("subtitles")?.let { arr ->
+            (0 until arr.length()).map { i ->
+                val s = arr.getJSONObject(i)
+                SubTrack(s.getString("language"), s.getString("label"), s.getString("srt_file"))
+            }
+        } ?: emptyList(),
     )
 }
