@@ -1339,10 +1339,10 @@ class LibraryActivity : ComponentActivity() {
 
     private fun launchPlayer(item: JanusApi.LibraryItem, episode: JanusApi.Episode) {
         releasePreviewPlayer()
-        val videoUrl = resolveVideoUrl(item.id, episode.filename)
-        // Try JA subs from episode data, or guess the filename pattern
-        val srtFile = episode.jaSrtFile ?: "ep%03d_ja.srt".format(episode.episode)
-        val subsUrl = resolveSubsUrl(item.id, srtFile)
+        val localVideo = DownloadManager.getLocalVideoPath(item.id, episode.filename)
+        val videoUrl = localVideo ?: api.streamUrl(item.id, episode.season, episode.episode)
+        val localSubs = if (episode.hasJaSubs && episode.jaSrtFile != null) DownloadManager.getLocalSubsPath(item.id, episode.jaSrtFile) else null
+        val subsUrl = localSubs ?: if (episode.hasJaSubs) api.streamSubsUrl(item.id, episode.season, episode.episode, "ja") else null
         val savedPos = getWatchProgress(item.id, episode.episode)
         val title = if (item.type == "MOVIE") item.titleEn else "${item.titleEn} - Episode ${episode.episode}"
 

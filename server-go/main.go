@@ -47,7 +47,10 @@ func main() {
 	mux.HandleFunc("/api/library", handleLibrary)
 	mux.HandleFunc("/api/items/", handleItems)
 
-	// Static file endpoints
+	// Stream by episode ID
+	mux.HandleFunc("/api/stream/", handleStream)
+
+	// Static file endpoints (legacy)
 	mux.HandleFunc("/api/video/", handleVideo)
 	mux.HandleFunc("/api/subs/", serveStatic("subs"))
 	mux.HandleFunc("/api/covers/", serveStatic("covers"))
@@ -369,6 +372,77 @@ func queryEpisode(itemID string, season, episode int) map[string]any {
 }
 
 // ── Static files ──────────────────────────────────────
+
+func handleStream(w http.ResponseWriter, r *http.Request) {
+	path := strings.TrimPrefix(r.URL.Path, "/api/stream/")
+	parts := strings.Split(path, "/")
+
+	// /api/stream/{itemId}/{season}/{episode} → video
+	// /api/stream/{itemId}/{season}/{episode}/subs/{lang} → subtitle
+	if len(parts) < 3 {
+		http.Error(w, "not found", 404)
+		return
+	}
+
+	itemID := parts[0]
+	season := atoi(parts[1])
+	episode := atoi(parts[2])
+
+	var filename, jaSrt, enSrt, frSrt string
+	err := db.QueryRow("SELECT filename, ja_srt_file, en_srt_file, fr_srt_file FROM episodes WHERE item_id=? AND season=? AND episode=?",
+		itemID, season, episode).Scan(&filename, &jaSrt, &enSrt, &frSrt)
+	if err != nil {
+		http.Error(w, "not found", 404)
+		return
+	}
+
+	// Video stream
+	if len(parts) == 3 {
+		videoPath := filepath.Join(dataDir, "videos", itemID, filename)
+		f, err := os.Open(videoPath)
+		if err != nil {
+			http.Error(w, "not found", 404)
+			return
+		}
+		defer f.Close()
+		stat, _ := f.Stat()
+		w.Header().Set("Content-Type", "video/x-matroska")
+		w.Header().Set("Accept-Ranges", "bytes")
+		http.ServeContent(w, r, stat.Name(), stat.ModTime(), f)
+		return
+	}
+
+	// Subtitles
+	if len(parts) == 5 && parts[3] == "subs" {
+		lang := parts[4]
+		var srtFile string
+		switch lang {
+		case "ja":
+			srtFile = jaSrt
+		case "en":
+			srtFile = enSrt
+		case "fr":
+			srtFile = frSrt
+		}
+		if srtFile == "" {
+			http.Error(w, "not found", 404)
+			return
+		}
+		srtPath := filepath.Join(dataDir, "subs", itemID, srtFile)
+		f, err := os.Open(srtPath)
+		if err != nil {
+			http.Error(w, "not found", 404)
+			return
+		}
+		defer f.Close()
+		stat, _ := f.Stat()
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		http.ServeContent(w, r, stat.Name(), stat.ModTime(), f)
+		return
+	}
+
+	http.Error(w, "not found", 404)
+}
 
 func handleVideo(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, "/api/video/")

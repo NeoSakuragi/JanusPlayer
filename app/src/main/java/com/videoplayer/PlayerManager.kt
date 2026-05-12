@@ -15,24 +15,35 @@ object PlayerManager {
     private const val TAG = "PlayerManager"
     private var player: ExoPlayer? = null
     private var currentUrl: String? = null
+    private var currentToken: String? = null
+    @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
+    private var httpDataSourceFactory: DefaultHttpDataSource.Factory? = null
     var authToken: String? = null
     private var attachedView: PlayerView? = null
 
     @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
     fun getPlayer(context: Context): ExoPlayer {
+        // Recreate if token changed
+        if (player != null && currentToken != authToken) {
+            Log.d(TAG, "Token changed, recreating player")
+            detachView()
+            player?.release()
+            player = null
+        }
         if (player == null) {
-            val builder = ExoPlayer.Builder(context.applicationContext)
+            val factory = DefaultHttpDataSource.Factory()
             if (authToken != null) {
-                val headers = mapOf("Authorization" to "Bearer $authToken")
-                val httpDataSourceFactory = DefaultHttpDataSource.Factory()
-                    .setDefaultRequestProperties(headers)
-                builder.setMediaSourceFactory(DefaultMediaSourceFactory(httpDataSourceFactory))
+                factory.setDefaultRequestProperties(mapOf("Authorization" to "Bearer $authToken"))
             }
-            player = builder.build().apply {
-                trackSelectionParameters = trackSelectionParameters.buildUpon()
-                    .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
-                    .build()
-            }
+            httpDataSourceFactory = factory
+            currentToken = authToken
+            player = ExoPlayer.Builder(context.applicationContext)
+                .setMediaSourceFactory(DefaultMediaSourceFactory(factory))
+                .build().apply {
+                    trackSelectionParameters = trackSelectionParameters.buildUpon()
+                        .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
+                        .build()
+                }
             Log.d(TAG, "Player created (auth: ${authToken != null})")
         }
         return player!!

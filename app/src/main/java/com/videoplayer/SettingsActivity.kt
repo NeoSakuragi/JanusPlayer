@@ -139,8 +139,9 @@ class SettingsActivity : AppCompatActivity() {
             val currentUrl = prefs.getString("server_url", serverUrl) ?: serverUrl
             Thread {
                 try {
-                    val request = okhttp3.Request.Builder().url("$currentUrl/api/library").build()
-                    val response = okhttp3.OkHttpClient().newCall(request).execute()
+                    val reqBuilder = okhttp3.Request.Builder().url("$currentUrl/api/library")
+                    prefs.getString("auth_token", null)?.let { reqBuilder.header("Authorization", "Bearer $it") }
+                    val response = okhttp3.OkHttpClient().newCall(reqBuilder.build()).execute()
                     if (!response.isSuccessful) {
                         runOnUiThread { tvLibStatus.text = "Failed: server unreachable"; tvLibStatus.setTextColor(0xFFFF5252.toInt()) }
                         return@Thread

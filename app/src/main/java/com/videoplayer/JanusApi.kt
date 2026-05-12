@@ -171,7 +171,13 @@ class JanusApi(private val baseUrl: String) {
     }
 
     fun videoUrl(seriesId: String, filename: String): String =
-        "$baseUrl/api/video/$seriesId/$filename"
+        "$baseUrl/api/video/$seriesId/${java.net.URLEncoder.encode(filename, "UTF-8").replace("+", "%20")}"
+
+    fun streamUrl(seriesId: String, season: Int, episode: Int): String =
+        "$baseUrl/api/stream/$seriesId/$season/$episode"
+
+    fun streamSubsUrl(seriesId: String, season: Int, episode: Int, lang: String): String =
+        "$baseUrl/api/stream/$seriesId/$season/$episode/subs/$lang"
 
     fun subsUrl(seriesId: String, srtFile: String): String =
         "$baseUrl/api/subs/$seriesId/$srtFile"
