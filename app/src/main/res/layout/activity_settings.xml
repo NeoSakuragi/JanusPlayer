@@ -47,6 +47,33 @@
             android:orientation="vertical"
             android:padding="16dp">
 
+            <!-- Updates section -->
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="UPDATES"
+                android:textColor="#7986CB"
+                android:textSize="12sp"
+                android:textStyle="bold"
+                android:layout_marginBottom="8dp"
+                android:layout_marginTop="8dp" />
+
+            <LinearLayout android:id="@+id/settingCheckAppUpdate" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:padding="12dp" android:background="@drawable/focus_highlight" android:focusable="true" android:clickable="true">
+                <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Check for app update" android:textColor="#EEEEEE" android:textSize="15sp" />
+                <TextView android:id="@+id/tvAppUpdateStatus" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Tap to check" android:textColor="#888888" android:textSize="13sp" android:layout_marginTop="2dp" />
+            </LinearLayout>
+
+            <LinearLayout android:id="@+id/settingCheckLibrary" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:padding="12dp" android:background="@drawable/focus_highlight" android:focusable="true" android:clickable="true">
+                <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Check for library update" android:textColor="#EEEEEE" android:textSize="15sp" />
+                <TextView android:id="@+id/tvLibraryUpdateStatus" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Tap to check" android:textColor="#888888" android:textSize="13sp" android:layout_marginTop="2dp" />
+            </LinearLayout>
+
+            <!-- Server URL -->
+            <LinearLayout android:id="@+id/settingServerUrl" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:padding="12dp" android:background="@drawable/focus_highlight" android:focusable="true" android:clickable="true">
+                <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Server URL" android:textColor="#EEEEEE" android:textSize="15sp" />
+                <TextView android:id="@+id/tvServerUrlValue" android:layout_width="wrap_content" android:layout_height="wrap_content" android:textColor="#888888" android:textSize="13sp" android:layout_marginTop="2dp" />
+            </LinearLayout>
+
             <!-- Playback section -->
             <TextView
                 android:layout_width="match_parent"

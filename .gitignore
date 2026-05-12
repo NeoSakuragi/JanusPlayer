@@ -11,3 +11,5 @@
 *.ap_
 *.aab
 /app/src/main/assets/dictionary.db
+server-go/janus-server
+server-go/janus-import

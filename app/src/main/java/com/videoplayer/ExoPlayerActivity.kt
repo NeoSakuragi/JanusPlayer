@@ -109,6 +109,9 @@ class ExoPlayerActivity : ComponentActivity() {
     private val CTRL_CONDENSED = 5
     private val condensedMode = mutableStateOf(false)
 
+    private val CTRL_HWSW = 6
+    private val hwDecoding = mutableStateOf(true)
+
     private val screen = mutableStateOf(Screen.PLAYING)
     private val controlFocus = mutableIntStateOf(CTRL_SEEK)
 
@@ -166,27 +169,20 @@ class ExoPlayerActivity : ComponentActivity() {
         dictDb = DictionaryDatabase.getInstance(this)
         dictDb.ensureReady()
 
-        // Restore font prefs
         val appSettings = AppSettings(this)
         val savedSizeIdx = FONT_SIZES.indexOf(appSettings.fontSize)
         if (savedSizeIdx >= 0) fontSizeIdx.intValue = savedSizeIdx
         val savedFontIdx = FONT_KEYS.indexOf(appSettings.fontKey)
         if (savedFontIdx >= 0) fontIdx.intValue = savedFontIdx
+        hwDecoding.value = appSettings.hardwareDecoding
 
         val videoUrl = intent.getStringExtra(EXTRA_VIDEO_URL) ?: run { finish(); return }
         val subsUrl = intent.getStringExtra(EXTRA_SUBS_URL)
         titleText.value = intent.getStringExtra(EXTRA_TITLE) ?: ""
         val startPos = intent.getLongExtra(EXTRA_START_POSITION, 0L)
 
-        player = ExoPlayer.Builder(this).build()
-        // Disable ExoPlayer's built-in subtitle rendering — we use our own overlay from SRT
-        player.trackSelectionParameters = player.trackSelectionParameters.buildUpon()
-            .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
-            .build()
-        player.setMediaItem(MediaItem.fromUri(videoUrl))
-        player.prepare()
-        if (startPos > 0) player.seekTo(startPos)
-        player.play()
+        player = PlayerManager.getPlayer(this)
+        PlayerManager.play(this, videoUrl, startPos)
 
         // Load subtitles
         if (subsUrl != null) {
@@ -269,24 +265,23 @@ class ExoPlayerActivity : ComponentActivity() {
             // ExoPlayer surface — tap here to toggle controls
             AndroidView(
                 factory = { ctx ->
-                    val exo = this@ExoPlayerActivity.player
                     PlayerView(ctx).apply {
-                        this.player = exo
                         useController = false
                         setOnClickListener {
                             when (screen.value) {
                                 Screen.PLAYING -> {
-                                    exo.pause()
+                                    this@ExoPlayerActivity.player.pause()
                                     if (!enterWordNav()) goto(Screen.CONTROLS, CTRL_SEEK)
                                 }
                                 Screen.CONTROLS, Screen.WORD_NAV -> {
-                                    clearDict(); exo.play(); goto(Screen.PLAYING)
+                                    clearDict(); this@ExoPlayerActivity.player.play(); goto(Screen.PLAYING)
                                 }
                                 else -> {}
                             }
                         }
                     }
                 },
+                update = { view -> PlayerManager.attachView(view) },
                 modifier = Modifier.fillMaxSize()
             )
 
@@ -311,6 +306,9 @@ class ExoPlayerActivity : ComponentActivity() {
                     Spacer(Modifier.width(8.dp))
                     val condOn by condensedMode
                     CtrlBtn("⏩", if (condOn) "COND ON" else "COND OFF", CTRL_CONDENSED, cFocus) { condensedMode.value = !condensedMode.value }
+                    Spacer(Modifier.width(8.dp))
+                    val hwOn by hwDecoding
+                    CtrlBtn("⚡", if (hwOn) "HW" else "SW", CTRL_HWSW, cFocus) { toggleHwSwDecoding() }
                 }
             }
 
@@ -591,7 +589,7 @@ class ExoPlayerActivity : ComponentActivity() {
                     }
                     KeyEvent.KEYCODE_DPAD_RIGHT -> when {
                         f == CTRL_SEEK -> player.seekTo(player.currentPosition + 10000)
-                        f < CTRL_CONDENSED -> controlFocus.intValue = f + 1
+                        f < CTRL_HWSW -> controlFocus.intValue = f + 1
                     }
                     KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> when (f) {
                         CTRL_SEEK -> { player.play(); goto(Screen.PLAYING) }
@@ -600,6 +598,7 @@ class ExoPlayerActivity : ComponentActivity() {
                         CTRL_FONTSIZE -> cycleFontSize()
                         CTRL_FONT -> cycleFont()
                         CTRL_CONDENSED -> condensedMode.value = !condensedMode.value
+                        CTRL_HWSW -> toggleHwSwDecoding()
                     }
                     else -> return false
                 }
@@ -766,6 +765,35 @@ class ExoPlayerActivity : ComponentActivity() {
         screen.value = Screen.LIST_SELECT
     }
 
+    @OptIn(androidx.media3.common.util.UnstableApi::class)
+    private fun toggleHwSwDecoding() {
+        hwDecoding.value = !hwDecoding.value
+        AppSettings(this).hardwareDecoding = hwDecoding.value
+        val pos = player.currentPosition
+        val wasPlaying = player.isPlaying
+        val videoUrl = intent.getStringExtra(EXTRA_VIDEO_URL) ?: return
+
+        PlayerManager.release()
+
+        val builder = ExoPlayer.Builder(this)
+        if (!hwDecoding.value) {
+            builder.setRenderersFactory(
+                androidx.media3.exoplayer.DefaultRenderersFactory(this)
+                    .setExtensionRendererMode(androidx.media3.exoplayer.DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER)
+                    .setEnableDecoderFallback(true)
+            )
+        }
+        // Rebuild PlayerManager with custom player would require refactoring — for now recreate locally
+        player = builder.build()
+        player.trackSelectionParameters = player.trackSelectionParameters.buildUpon()
+            .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
+            .build()
+        player.setMediaItem(MediaItem.fromUri(videoUrl))
+        player.prepare()
+        player.seekTo(pos)
+        if (wasPlaying) player.play()
+    }
+
     private fun cycleFontSize() {
         fontSizeIdx.intValue = (fontSizeIdx.intValue + 1) % FONT_SIZES.size
         AppSettings(this).fontSize = FONT_SIZES[fontSizeIdx.intValue]
@@ -813,16 +841,14 @@ class ExoPlayerActivity : ComponentActivity() {
 
     override fun onPause() {
         super.onPause()
-        if (::player.isInitialized) {
-            saveProgress()
-            player.pause()
-        }
+        saveProgress()
+        player.pause()
     }
 
     override fun onDestroy() {
         super.onDestroy()
         saveProgress()
         handler.removeCallbacksAndMessages(null)
-        if (::player.isInitialized) player.release()
+        PlayerManager.detachView()
     }
 }

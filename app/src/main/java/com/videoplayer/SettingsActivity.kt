@@ -26,10 +26,101 @@ class SettingsActivity : AppCompatActivity() {
 
         findViewById<ImageButton>(R.id.btnBack).setOnClickListener { finish() }
 
+        setupUpdates()
         setupPlaybackSettings()
         setupDictionaries()
         setupAnkiSettings()
         setupFieldMappings()
+    }
+
+    private fun setupUpdates() {
+        val prefs = getSharedPreferences("janus_settings", MODE_PRIVATE)
+        val serverUrl = prefs.getString("server_url", "http://10.0.2.2:8900") ?: "http://10.0.2.2:8900"
+
+        // Server URL
+        val tvServerUrl = findViewById<TextView>(R.id.tvServerUrlValue)
+        tvServerUrl.text = serverUrl
+        findViewById<LinearLayout>(R.id.settingServerUrl).setOnClickListener {
+            showTextInput("Server URL", "http://192.168.1.29:8900", tvServerUrl.text.toString()) { url ->
+                var newUrl = url.trim()
+                if (newUrl.isNotEmpty() && !newUrl.startsWith("http")) newUrl = "http://$newUrl"
+                prefs.edit().putString("server_url", newUrl).apply()
+                tvServerUrl.text = newUrl
+            }
+        }
+
+        // App update check
+        val tvAppStatus = findViewById<TextView>(R.id.tvAppUpdateStatus)
+        @Suppress("DEPRECATION")
+        val currentCode = packageManager.getPackageInfo(packageName, 0).versionCode
+        val currentName = packageManager.getPackageInfo(packageName, 0).versionName
+        tvAppStatus.text = "Current: v$currentName (code $currentCode)"
+
+        findViewById<LinearLayout>(R.id.settingCheckAppUpdate).setOnClickListener {
+            tvAppStatus.text = "Checking..."
+            val updater = AppUpdater(this)
+            updater.checkForUpdate { info ->
+                if (info != null) {
+                    tvAppStatus.text = "Update available: v${info.versionName}"
+                    tvAppStatus.setTextColor(0xFF81C784.toInt())
+                    AlertDialog.Builder(this)
+                        .setTitle("Update Available")
+                        .setMessage("New version v${info.versionName} available.\nCurrent: v$currentName\n\nInstall now?")
+                        .setPositiveButton("Install") { _, _ ->
+                            tvAppStatus.text = "Downloading..."
+                            updater.downloadAndInstall(info.apkName)
+                        }
+                        .setNegativeButton("Later", null)
+                        .show()
+                } else {
+                    tvAppStatus.text = "Up to date (v$currentName)"
+                    tvAppStatus.setTextColor(0xFF888888.toInt())
+                }
+            }
+        }
+
+        // Library update check
+        val tvLibStatus = findViewById<TextView>(R.id.tvLibraryUpdateStatus)
+        val lastSeenLibrary = prefs.getLong("library_last_modified", 0)
+        tvLibStatus.text = if (lastSeenLibrary > 0) "Last synced: ${android.text.format.DateUtils.getRelativeTimeSpanString(lastSeenLibrary * 1000)}" else "Never synced"
+
+        findViewById<LinearLayout>(R.id.settingCheckLibrary).setOnClickListener {
+            tvLibStatus.text = "Checking..."
+            val currentUrl = prefs.getString("server_url", serverUrl) ?: serverUrl
+            Thread {
+                try {
+                    val request = okhttp3.Request.Builder().url("$currentUrl/api/library").build()
+                    val response = okhttp3.OkHttpClient().newCall(request).execute()
+                    if (!response.isSuccessful) {
+                        runOnUiThread { tvLibStatus.text = "Failed: server unreachable"; tvLibStatus.setTextColor(0xFFFF5252.toInt()) }
+                        return@Thread
+                    }
+                    val json = org.json.JSONObject(response.body?.string() ?: "")
+                    val serverTimestamp = json.optLong("last_modified", 0)
+                    runOnUiThread {
+                        if (serverTimestamp > lastSeenLibrary) {
+                            tvLibStatus.text = "New content available"
+                            tvLibStatus.setTextColor(0xFF81C784.toInt())
+                            AlertDialog.Builder(this)
+                                .setTitle("Library Updated")
+                                .setMessage("New content is available on the server.\n\nRefresh library?")
+                                .setPositiveButton("Refresh") { _, _ ->
+                                    prefs.edit().putLong("library_last_modified", serverTimestamp).apply()
+                                    tvLibStatus.text = "Library refreshed"
+                                    setResult(RESULT_OK)
+                                }
+                                .setNegativeButton("Later", null)
+                                .show()
+                        } else {
+                            tvLibStatus.text = "Library is current"
+                            tvLibStatus.setTextColor(0xFF888888.toInt())
+                        }
+                    }
+                } catch (e: Exception) {
+                    runOnUiThread { tvLibStatus.text = "Failed: ${e.message}"; tvLibStatus.setTextColor(0xFFFF5252.toInt()) }
+                }
+            }.start()
+        }
     }
 
     private fun setupPlaybackSettings() {

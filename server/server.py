@@ -123,7 +123,7 @@ def main():
     print(f"  Listen:  http://{HOST}:{PORT}")
     print()
 
-    server = http.server.HTTPServer((HOST, PORT), JanusHandler)
+    server = http.server.ThreadingHTTPServer((HOST, PORT), JanusHandler)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

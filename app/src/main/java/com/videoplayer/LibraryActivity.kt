@@ -66,9 +66,6 @@ class LibraryActivity : ComponentActivity() {
     private val movieList = mutableStateListOf<JanusApi.LibraryItem>()
     private val loading = mutableStateOf(true)
     private val serverUrl = mutableStateOf(DEFAULT_SERVER_URL)
-    private val updateAvailable = mutableStateOf<AppUpdater.UpdateInfo?>(null)
-    private val updateDownloading = mutableStateOf(false)
-    private var appUpdater: AppUpdater? = null
     private val showCursorState = mutableStateOf(true)
     private val selectedLibItem = mutableStateOf<JanusApi.LibraryItem?>(null)
     private val detailEpisodes = mutableStateListOf<JanusApi.Episode>()
@@ -176,37 +173,6 @@ class LibraryActivity : ComponentActivity() {
                         }
                     }
 
-                    // Update banner
-                    val update by updateAvailable
-                    val downloading by updateDownloading
-                    if (update != null) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.fillMaxWidth()
-                                .padding(horizontal = 32.dp, vertical = 4.dp)
-                                .background(Color(0xFF2A2A4A), RoundedCornerShape(8.dp))
-                                .clickable {
-                                    if (!downloading) {
-                                        updateDownloading.value = true
-                                        appUpdater?.downloadAndInstall(update!!.apkName)
-                                    }
-                                }
-                                .padding(horizontal = 16.dp, vertical = 10.dp)
-                        ) {
-                            androidx.compose.material3.Text(
-                                if (downloading) "Downloading update..."
-                                else "New version available (${update!!.versionName})",
-                                color = Color.White, fontSize = 14.sp
-                            )
-                            Spacer(Modifier.weight(1f))
-                            if (!downloading) {
-                                androidx.compose.material3.Text(
-                                    "Update",
-                                    color = Color(0xFFBB86FC), fontSize = 14.sp, fontWeight = FontWeight.Bold
-                                )
-                            }
-                        }
-                    }
                 }
 
                 // Content area
@@ -534,11 +500,9 @@ class LibraryActivity : ComponentActivity() {
         }
     }
 
-    private var previewPlayer: ExoPlayer? = null
-
     private fun releasePreviewPlayer() {
-        previewPlayer?.release()
-        previewPlayer = null
+        PlayerManager.stop()
+        PlayerManager.detachView()
     }
 
     @OptIn(androidx.media3.common.util.UnstableApi::class)
@@ -609,23 +573,12 @@ class LibraryActivity : ComponentActivity() {
                     if (firstEp != null) {
                         AndroidView(
                             factory = { ctx ->
-                                releasePreviewPlayer()
-                                val player = ExoPlayer.Builder(ctx).build().apply {
-                                    trackSelectionParameters = trackSelectionParameters.buildUpon()
-                                        .setTrackTypeDisabled(androidx.media3.common.C.TRACK_TYPE_TEXT, true)
-                                        .build()
-                                    val url = api.videoUrl(item.id, firstEp.filename)
-                                    setMediaItem(MediaItem.fromUri(url))
-                                    prepare()
-                                    seekTo(8 * 60 * 1000L)
-                                    volume = 1f
-                                    play()
-                                }
-                                previewPlayer = player
-                                PlayerView(ctx).apply {
-                                    this.player = player
-                                    useController = false
-                                }
+                                PlayerView(ctx).apply { useController = false }
+                            },
+                            update = { view ->
+                                val url = api.videoUrl(item.id, firstEp.filename)
+                                PlayerManager.attachView(view)
+                                PlayerManager.preview(view.context, url, 8 * 60 * 1000L)
                             },
                             modifier = Modifier.fillMaxSize()
                         )
@@ -676,7 +629,10 @@ class LibraryActivity : ComponentActivity() {
                         lastWatched != null && item.type == "MOVIE" -> "▶  Resume"
                         lastWatched != null -> "▶  Resume Ep. ${lastWatched.first}"
                         item.type == "MOVIE" -> "▶  Play"
-                        else -> "▶  Play Episode 1"
+                        else -> {
+                            val firstEp = detailEpisodes.firstOrNull()
+                            if (firstEp != null) "▶  Play Episode ${firstEp.episode}" else "▶  Play"
+                        }
                     }
                     Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                         Box(
@@ -972,8 +928,6 @@ class LibraryActivity : ComponentActivity() {
                     movieList.addAll(items.filter { it.type == "MOVIE" })
                     loading.value = false
                     Log.d(TAG, "Library loaded: ${seriesList.size} series, ${movieList.size} movies")
-                    appUpdater = AppUpdater(this@LibraryActivity)
-                    appUpdater?.checkForUpdate { info -> updateAvailable.value = info }
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to load library: ${e.message}")
@@ -1121,7 +1075,9 @@ class LibraryActivity : ComponentActivity() {
 
     private fun openSettings() {
         AppNavigator.navigate(this, AppNavigator.Action.OPEN_SETTINGS)
-        startActivity(Intent(this, SettingsActivity::class.java))
+        startActivity(Intent(this, SettingsActivity::class.java).apply {
+            addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
+        })
     }
 
     private fun openItemDetail(item: JanusApi.LibraryItem) {
@@ -1207,6 +1163,7 @@ class LibraryActivity : ComponentActivity() {
     }
 
     private fun launchPlayer(item: JanusApi.LibraryItem, episode: JanusApi.Episode) {
+        releasePreviewPlayer()
         val videoUrl = resolveVideoUrl(item.id, episode.filename)
         val subsUrl = if (episode.hasJaSubs) resolveSubsUrl(item.id, episode.jaSrtFile) else null
         val savedPos = getWatchProgress(item.id, episode.episode)
@@ -1254,11 +1211,11 @@ class LibraryActivity : ComponentActivity() {
 
     override fun onPause() {
         super.onPause()
-        previewPlayer?.pause()
+        PlayerManager.pause()
     }
 
     override fun onDestroy() {
         super.onDestroy()
-        releasePreviewPlayer()
+        PlayerManager.release()
     }
 }

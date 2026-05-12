@@ -19,6 +19,7 @@ class AppUpdater(private val activity: Activity) {
     private val client = OkHttpClient.Builder()
         .connectTimeout(5, TimeUnit.SECONDS)
         .readTimeout(120, TimeUnit.SECONDS)
+        .cache(null)
         .build()
 
     data class UpdateInfo(val versionCode: Int, val versionName: String, val apkName: String)
