@@ -27,10 +27,32 @@ class SettingsActivity : AppCompatActivity() {
         findViewById<ImageButton>(R.id.btnBack).setOnClickListener { finish() }
 
         setupUpdates()
+        setupDownloads()
         setupPlaybackSettings()
         setupDictionaries()
         setupAnkiSettings()
         setupFieldMappings()
+    }
+
+    private fun setupDownloads() {
+        DownloadManager.init(this)
+        val tvStatus = findViewById<TextView>(R.id.tvDownloadsStatus)
+        val count = DownloadManager.items.size
+        val completed = DownloadManager.items.count { it.state == DownloadManager.State.COMPLETED }
+        val active = DownloadManager.items.count { it.state == DownloadManager.State.DOWNLOADING || it.state == DownloadManager.State.QUEUED }
+        val totalMb = DownloadManager.totalDiskUsage() / (1024 * 1024)
+        tvStatus.text = when {
+            count == 0 -> "No downloads"
+            active > 0 -> "$active downloading, $completed completed ($totalMb MB)"
+            else -> "$completed episodes ($totalMb MB)"
+        }
+        findViewById<LinearLayout>(R.id.settingDownloads).setOnClickListener {
+            // Open downloads screen in LibraryActivity
+            val intent = android.content.Intent(this, LibraryActivity::class.java)
+            intent.putExtra("open_screen", "downloads")
+            intent.addFlags(android.content.Intent.FLAG_ACTIVITY_CLEAR_TOP)
+            startActivity(intent)
+        }
     }
 
     private fun setupUpdates() {

@@ -1,4 +1,4 @@
-# Hetzner Server — Janus APK Hosting
+# Hetzner Server
 
 ## Server
 - **Provider**: Hetzner Cloud CX23 (shared with NeoMobiles26)
@@ -7,21 +7,12 @@
 - **SSH**: `ssh -i ~/.ssh/id_ed25519 root@195.201.91.211`
 - **OS**: Ubuntu 24.04, nginx
 
-## Janus Update Files
+## Janus APK (backup mirror)
 - **Path on server**: `/var/www/kanji/janus/`
-- **Version manifest**: https://canneji.duckdns.org/janus/version.json
-- **APK downloads**: https://canneji.duckdns.org/janus/janus-v{VERSION}.apk
+- **URL**: https://canneji.duckdns.org/janus/janus.apk
+- **AFTV code**: aftv.news/7996988
 
-### version.json format
-```json
-{"version_code": 2, "version_name": "1.1", "apk": "janus-v1.1.apk"}
-```
-
-## Deploying a New Version
-1. Bump `versionCode` and `versionName` in `app/build.gradle.kts`
-2. Run `./deploy.sh`
-
-This builds the APK, uploads it to Hetzner with a versioned filename, and updates version.json. The app checks on startup and shows an update banner if a newer version is available.
+Note: The primary update path is now the local Go server (`/api/update/janus.apk`). Hetzner is a backup for initial installs or when not on LAN.
 
 ## Nginx
-Served by the existing `canneji.duckdns.org` config at `/etc/nginx/sites-enabled/kanji`. The `/janus/` path is handled by the `try_files` directive — no additional nginx config needed.
+Served by the `canneji.duckdns.org` config at `/etc/nginx/sites-enabled/kanji`. The `/janus/` path is handled by `try_files`.

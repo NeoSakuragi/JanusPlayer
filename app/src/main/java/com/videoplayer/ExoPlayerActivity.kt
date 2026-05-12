@@ -112,6 +112,9 @@ class ExoPlayerActivity : ComponentActivity() {
     private val CTRL_HWSW = 6
     private val hwDecoding = mutableStateOf(true)
 
+    private val CTRL_DOWNLOAD = 7
+    private val dlLabel = mutableStateOf("↓ DL")
+
     private val screen = mutableStateOf(Screen.PLAYING)
     private val controlFocus = mutableIntStateOf(CTRL_SEEK)
 
@@ -181,8 +184,10 @@ class ExoPlayerActivity : ComponentActivity() {
         titleText.value = intent.getStringExtra(EXTRA_TITLE) ?: ""
         val startPos = intent.getLongExtra(EXTRA_START_POSITION, 0L)
 
+        DownloadManager.init(this)
         player = PlayerManager.getPlayer(this)
         PlayerManager.play(this, videoUrl, startPos)
+        updateDlLabel()
 
         // Load subtitles
         if (subsUrl != null) {
@@ -211,6 +216,7 @@ class ExoPlayerActivity : ComponentActivity() {
                         saveProgress()
                     }
                     positionMs.longValue = pos
+                    updateDlLabel()
                     durationMs.longValue = player.duration.coerceAtLeast(0)
                     isPaused.value = !player.isPlaying
                     val cue = SrtParser.cueAt(subtitleCues, pos)
@@ -309,6 +315,9 @@ class ExoPlayerActivity : ComponentActivity() {
                     Spacer(Modifier.width(8.dp))
                     val hwOn by hwDecoding
                     CtrlBtn("⚡", if (hwOn) "HW" else "SW", CTRL_HWSW, cFocus) { toggleHwSwDecoding() }
+                    Spacer(Modifier.width(8.dp))
+                    val dlText by dlLabel
+                    CtrlBtn("↓", dlText, CTRL_DOWNLOAD, cFocus) { toggleDownload() }
                 }
             }
 
@@ -589,7 +598,7 @@ class ExoPlayerActivity : ComponentActivity() {
                     }
                     KeyEvent.KEYCODE_DPAD_RIGHT -> when {
                         f == CTRL_SEEK -> player.seekTo(player.currentPosition + 10000)
-                        f < CTRL_HWSW -> controlFocus.intValue = f + 1
+                        f < CTRL_DOWNLOAD -> controlFocus.intValue = f + 1
                     }
                     KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> when (f) {
                         CTRL_SEEK -> { player.play(); goto(Screen.PLAYING) }
@@ -599,6 +608,7 @@ class ExoPlayerActivity : ComponentActivity() {
                         CTRL_FONT -> cycleFont()
                         CTRL_CONDENSED -> condensedMode.value = !condensedMode.value
                         CTRL_HWSW -> toggleHwSwDecoding()
+                        CTRL_DOWNLOAD -> toggleDownload()
                     }
                     else -> return false
                 }
@@ -763,6 +773,54 @@ class ExoPlayerActivity : ComponentActivity() {
             // idx == 1 already loaded
         }
         screen.value = Screen.LIST_SELECT
+    }
+
+    private fun toggleDownload() {
+        val seriesId = intent.getStringExtra(EXTRA_SERIES_ID) ?: return
+        val epNum = intent.getIntExtra(EXTRA_EPISODE_NUM, -1)
+        if (epNum < 0) return
+        val videoUrl = intent.getStringExtra(EXTRA_VIDEO_URL) ?: return
+        val subsUrl = intent.getStringExtra(EXTRA_SUBS_URL)
+
+        val existing = DownloadManager.getItemState(seriesId, epNum)
+        when (existing?.state) {
+            DownloadManager.State.QUEUED, DownloadManager.State.DOWNLOADING -> {
+                DownloadManager.delete(seriesId, epNum)
+                dlLabel.value = "↓ DL"
+            }
+            DownloadManager.State.COMPLETED -> {
+                DownloadManager.delete(seriesId, epNum)
+                dlLabel.value = "↓ DL"
+            }
+            else -> {
+                val filename = videoUrl.substringAfterLast("/")
+                val srtFiles = mutableListOf<Pair<String, String>>()
+                if (subsUrl != null) {
+                    val srtName = subsUrl.substringAfterLast("/")
+                    srtFiles.add(srtName to subsUrl)
+                }
+                DownloadManager.enqueueEpisode(
+                    seriesId, epNum, filename, videoUrl, srtFiles,
+                    titleEn = "Episode $epNum", seriesTitleEn = ""
+                )
+                startService(android.content.Intent(this, DownloadService::class.java))
+                dlLabel.value = "QUEUED"
+            }
+        }
+    }
+
+    private fun updateDlLabel() {
+        val seriesId = intent.getStringExtra(EXTRA_SERIES_ID) ?: return
+        val epNum = intent.getIntExtra(EXTRA_EPISODE_NUM, -1)
+        if (epNum < 0) return
+        val item = DownloadManager.getItemState(seriesId, epNum)
+        dlLabel.value = when (item?.state) {
+            DownloadManager.State.COMPLETED -> "✓ DL"
+            DownloadManager.State.DOWNLOADING -> "↓${item.progress}%"
+            DownloadManager.State.QUEUED -> "QUEUED"
+            DownloadManager.State.FAILED -> "FAILED"
+            null -> "↓ DL"
+        }
     }
 
     @OptIn(androidx.media3.common.util.UnstableApi::class)

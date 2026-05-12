@@ -1,56 +1,61 @@
-# Janus Media Server
+# Janus Build Tools (Python)
 
-Serves curated anime library to the Janus player app.
+**Note**: The Python server (`server.py`) is deprecated. Use the Go server (`/server-go/`) for serving. These Python scripts are build tools only.
 
-## Setup
+## Tools
 
-```bash
-pip install -r requirements.txt
-```
-
-## Directory Structure
-
-```
-/data/janus/
-├── videos/
-│   ├── saint-seiya/          # MKV files
-│   └── maison-ikkoku/
-├── subs/
-│   ├── saint-seiya/          # Pre-extracted SRT files (JA/FR/EN)
-│   └── maison-ikkoku/
-├── covers/                   # Cover art from AniList
-└── library.json              # Generated metadata
-```
+| Script | Purpose |
+|--------|---------|
+| `build_library.py` | Scan videos, extract subs (ffmpeg), fetch TMDB metadata, generate JSON |
+| `fetch_covers.py` | Download cover art from AniList API |
+| `manage.py` | CLI wrapper: build, covers, status |
+| `config.py` | Data directory paths |
 
 ## Usage
 
 ```bash
-# Rebuild library from video files (extracts subs, generates metadata)
-python3 manage.py build
-
-# Fetch cover art from AniList
-python3 manage.py covers
-
-# Show library status
-python3 manage.py status
-
-# Start server
-python3 manage.py serve
+python3 manage.py build     # Extract subs + fetch TMDB + generate JSON
+python3 manage.py covers    # Fetch cover art from AniList
+python3 manage.py status    # Show library stats
 ```
 
-## API Endpoints
+After building, import the JSON data into SQLite:
+```bash
+cd /home/bruno/VideoPlayer/server-go
+./janus-import /data/janus
+```
 
-| Endpoint | Description |
-|----------|-------------|
-| `GET /api/library` | Full library JSON |
-| `GET /api/video/{series}/{file}` | Video stream (Range support) |
-| `GET /api/subs/{series}/{file}` | SRT subtitle file |
-| `GET /api/covers/{file}` | Cover/banner image |
-| `GET /api/health` | Health check |
+## Adding Content
 
-## Adding a Series
-
-1. Create `videos/{series-id}/` and copy MKV files
-2. Edit `build_library.py` SERIES list with file pattern
+### Series
+1. Copy MKV files to `/data/janus/videos/{series-id}/`
+2. Add entry to `SERIES` list in `build_library.py` with file pattern and TMDB ID
 3. Run `python3 manage.py build`
-4. Run `python3 manage.py covers`
+4. Run `./janus-import /data/janus` to import into SQLite
+
+### Movie
+1. Encode/copy MKV to `/data/janus/videos/{movie-id}/`
+2. Add entry to `MOVIES` list in `build_library.py` with TMDB ID
+3. Run `python3 manage.py build`
+4. Run `./janus-import /data/janus`
+
+## TMDB Integration
+- Episode synopses in EN/FR/JA
+- Episode thumbnails
+- Movie synopses and backdrops
+- Cached in `tmdb_cache.json` (fetched once, reused on rebuilds)
+- API key: configured in `build_library.py`
+
+## Data Directory
+
+```
+/data/janus/
+├── janus.db              ← SQLite (production data)
+├── videos/{id}/          ← MKV files
+├── subs/{id}/            ← SRT files
+├── covers/               ← Cover art + banners
+├── thumbs/{id}/          ← Episode thumbnails
+├── updates/              ← APK for self-update
+├── items/                ← JSON files (legacy, imported to DB)
+└── tmdb_cache.json       ← TMDB API response cache
+```

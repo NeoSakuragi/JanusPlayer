@@ -73,6 +73,7 @@ class LibraryActivity : ComponentActivity() {
     private val selectedSeason = mutableIntStateOf(0)
     private val detailLoading = mutableStateOf(false)
     private val previewRequested = mutableStateOf(false)
+    private val showPreview = mutableStateOf(false)
 
     private lateinit var api: JanusApi
 
@@ -87,6 +88,10 @@ class LibraryActivity : ComponentActivity() {
         loadLibrary()
 
         AppNavigator.registerOnExit(AppNavigator.Screen.ITEM_DETAIL) { releasePreviewPlayer() }
+
+        if (intent.getStringExtra("open_screen") == "downloads") {
+            screen.value = Screen.DOWNLOADS
+        }
 
         setContent {
             LibraryScreen()
@@ -230,6 +235,20 @@ class LibraryActivity : ComponentActivity() {
                             androidx.compose.material3.Text(
                                 "Connect", color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Bold
                             )
+                        }
+                        if (DownloadManager.items.any { it.state == DownloadManager.State.COMPLETED }) {
+                            Spacer(Modifier.height(24.dp))
+                            Box(
+                                modifier = Modifier
+                                    .background(Color(0xFF2A2A3A), RoundedCornerShape(8.dp))
+                                    .clickable { screen.value = Screen.DOWNLOADS }
+                                    .padding(horizontal = 32.dp, vertical = 12.dp)
+                            ) {
+                                val count = DownloadManager.items.count { it.state == DownloadManager.State.COMPLETED }
+                                androidx.compose.material3.Text(
+                                    "Watch offline ($count episodes)", color = Color(0xFFCCCCCC), fontSize = 16.sp
+                                )
+                            }
                         }
                     }
                 } else {
@@ -503,13 +522,15 @@ class LibraryActivity : ComponentActivity() {
     private fun releasePreviewPlayer() {
         PlayerManager.stop()
         PlayerManager.detachView()
+        showPreview.value = false
+        previewRequested.value = false
     }
 
     @OptIn(androidx.media3.common.util.UnstableApi::class)
     @Composable
     private fun ItemDetailPage(item: JanusApi.LibraryItem, focusIdx: Int, showCursor: Boolean) {
         val scrollState = rememberScrollState()
-        var showPreview by remember { mutableStateOf(false) }
+        val showPreviewState by showPreview
 
         val epCardPositions = remember { mutableStateMapOf<Int, Pair<Int, Int>>() }
         var detailViewportHeight by remember { mutableIntStateOf(1080) }
@@ -532,9 +553,9 @@ class LibraryActivity : ComponentActivity() {
         val shouldStartPreview by previewRequested
         LaunchedEffect(shouldStartPreview) {
             if (shouldStartPreview) {
-                showPreview = false
+                showPreview.value = false
                 delay(3000)
-                showPreview = true
+                showPreview.value = true
                 previewRequested.value = false
             }
         }
@@ -565,20 +586,23 @@ class LibraryActivity : ComponentActivity() {
 
                 // Video preview fades in after 3s
                 androidx.compose.animation.AnimatedVisibility(
-                    visible = showPreview,
+                    visible = showPreviewState,
                     enter = fadeIn(tween(1500)),
                     modifier = Modifier.fillMaxSize()
                 ) {
                     val firstEp = detailEpisodes.firstOrNull()
                     if (firstEp != null) {
+                        val previewUrl = remember(item.id) { api.videoUrl(item.id, firstEp.filename) }
                         AndroidView(
                             factory = { ctx ->
-                                PlayerView(ctx).apply { useController = false }
+                                PlayerView(ctx).apply {
+                                    useController = false
+                                    PlayerManager.preview(ctx, previewUrl, 8 * 60 * 1000L)
+                                    PlayerManager.attachView(this)
+                                }
                             },
                             update = { view ->
-                                val url = api.videoUrl(item.id, firstEp.filename)
-                                PlayerManager.attachView(view)
-                                PlayerManager.preview(view.context, url, 8 * 60 * 1000L)
+                                if (view.player == null) PlayerManager.attachView(view)
                             },
                             modifier = Modifier.fillMaxSize()
                         )
@@ -786,6 +810,29 @@ class LibraryActivity : ComponentActivity() {
                             modifier = Modifier.fillMaxWidth()
                                 .padding(start = 16.dp, top = 2.dp, bottom = 2.dp)
                                 .background(Color(0xFF1A1A2E), RoundedCornerShape(6.dp))
+                                .clickable {
+                                    if (item.state == DownloadManager.State.COMPLETED) {
+                                        val localPath = DownloadManager.getLocalVideoPath(item.seriesId, item.videoFilename)
+                                        if (localPath != null) {
+                                            val libItem = JanusApi.LibraryItem(
+                                                id = item.seriesId, type = "TV_SERIES",
+                                                titleEn = item.seriesTitleEn.ifEmpty { item.seriesId },
+                                                titleJa = "", cover = "", episodeCount = 0,
+                                                seasonCount = 0, durationMin = 0
+                                            )
+                                            val ep = JanusApi.Episode(
+                                                season = 1, episode = item.episodeNum,
+                                                filename = item.videoFilename,
+                                                durationSec = 0.0, hasJaSubs = false, hasFrSubs = false,
+                                                hasEnSubs = false, jaSrtFile = null, frSrtFile = null,
+                                                enSrtFile = null, jaSubLines = 0, watchProgressSec = 0.0,
+                                                completed = false, titleEn = item.titleEn,
+                                                synopsisEn = "", thumb = null
+                                            )
+                                            launchPlayer(libItem, ep)
+                                        }
+                                    }
+                                }
                                 .padding(horizontal = 12.dp, vertical = 8.dp)
                         ) {
                             val stateText = when (item.state) {

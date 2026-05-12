@@ -1,104 +1,68 @@
 # Janus Server
 
-Python HTTP server that serves curated anime library to the Janus player.
+Go HTTP server with SQLite backend. Serves the media library, video streams, and app updates.
 
-## What It Does
+## Architecture
 
-- Serves video files with HTTP Range support (seeking)
-- Serves pre-extracted SRT subtitle files (JA/FR/EN)
-- Serves cover art (from AniList)
-- Serves library metadata as JSON
-- Runs on any machine — local dev, Raspberry Pi, cloud server
+- **Go** (`/server-go/main.go`) — concurrent HTTP server, SQLite queries for data
+- **SQLite** (`/data/janus/janus.db`) — items, episodes, metadata, watch progress
+- **Static files** — videos, subtitles, covers, thumbnails, APK updates served from disk
 
 ## API
 
 | Endpoint | Description |
 |----------|-------------|
-| `GET /api/library` | Full library JSON (series, episodes, metadata) |
-| `GET /api/video/{series}/{file}` | Video stream with Range support |
-| `GET /api/subs/{series}/{file}` | SRT subtitle file |
+| `GET /api/health` | Server status, uptime, item/episode counts |
+| `GET /api/version` | App version info (for self-update) |
+| `GET /api/library` | Library index (lightweight, for main page) |
+| `GET /api/items/{id}` | Item detail (series with seasons, or movie with episode) |
+| `GET /api/items/{id}/season/{n}` | Episodes for a season |
+| `GET /api/video/{id}/{file}` | Video stream (Range support via http.ServeContent) |
+| `GET /api/subs/{id}/{file}` | SRT subtitle file |
 | `GET /api/covers/{file}` | Cover/banner image |
-| `GET /api/health` | Health check |
+| `GET /api/thumbs/{id}/{file}` | Episode thumbnail |
+| `GET /api/update/{file}` | APK for self-update |
 
-## Management CLI
+## Database Schema
+
+- **items** — id, type, title_en, title_ja, cover, episode_count, season_count, duration_min, synopsis (EN/FR/JA), tmdb_id
+- **episodes** — item_id, season, episode, filename, duration_sec, title_en, synopsis (EN/FR/JA), thumb, subtitle flags/files
+- **meta** — key/value store (library_version, app_version_code, app_version_name)
+- **watch_progress** — series_id, episode_num, position_ms, duration_ms
+
+## Running
 
 ```bash
-python3 manage.py build     # Scan videos, extract subs, generate library.json
-python3 manage.py covers    # Fetch cover art from AniList API
-python3 manage.py status    # Show library stats
-python3 manage.py serve     # Start the server
+cd /home/bruno/VideoPlayer/server-go
+./janus-server                # Listens on 0.0.0.0:8900
 ```
 
-## Library Build Pipeline
+Environment variables:
+- `JANUS_DATA` — data directory (default: `/data/janus`)
+- `JANUS_HOST` — bind address (default: `0.0.0.0`)
+- `JANUS_PORT` — port (default: `8900`)
 
-When `manage.py build` runs:
+## Building
 
-1. Scans `videos/{series-id}/` for MKV files
-2. Runs `ffprobe` to extract duration, track info (audio, subtitle codecs/languages)
-3. Extracts Japanese SRT via `ffmpeg -map 0:{stream_index}` (if embedded)
-4. Extracts French and English SRT tracks similarly
-5. Uses external SRT files if present in `subs/{series-id}/`
-6. Generates `library.json` with full metadata per episode
-
-## Cover Art Pipeline
-
-When `manage.py covers` runs:
-
-1. Queries AniList GraphQL API for each series title
-2. Downloads cover image (portrait) and banner image (wide)
-3. Saves to `covers/{series-id}.jpg` and `covers/{series-id}-banner.jpg`
-4. Saves AniList metadata (genres, score, description) as JSON
-
-## Adding a New Series
-
-1. Create `videos/{series-id}/` and copy MKV files
-2. Add entry to `SERIES` list in `build_library.py`:
-   ```python
-   {
-       "id": "series-id",
-       "title_en": "English Title",
-       "title_ja": "日本語タイトル",
-       "type": "TV_SERIES",  # or "MOVIE"
-       "video_dir": os.path.join(VIDEOS_DIR, "series-id"),
-       "subs_dir": os.path.join(SUBS_DIR, "series-id"),
-       "file_pattern": r"regex to extract episode number",
-       "ja_sub_stream": "jpn",  # or None for external SRTs
-   }
-   ```
-3. Run `python3 manage.py build`
-4. Run `python3 manage.py covers`
-
-## Encoding Recommendations
-
-For efficiency (480p h264):
 ```bash
-ffmpeg -i input.mkv -vf scale=-2:480 -c:v libx264 -preset medium -crf 23 \
-    -c:a aac -b:a 128k -map 0:v:0 -map 0:a -map 0:s output.mkv
+cd /home/bruno/VideoPlayer/server-go
+CGO_ENABLED=1 go build -o janus-server main.go
 ```
 
-## Configuration
+## Importing Data
 
-`config.py` — all paths and ports. Override with environment variables:
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `JANUS_DATA_DIR` | `/data/janus` | Base data directory |
-| `JANUS_HOST` | `0.0.0.0` | Listen address |
-| `JANUS_PORT` | `8900` | Listen port |
-
-## Directory Structure
-
+```bash
+./janus-import /data/janus    # Reads JSON files from /data/janus/items/, writes to janus.db
 ```
-/data/janus/
-├── server/           # This code
-├── videos/
-│   ├── saint-seiya/  # MKV files
-│   ├── maison-ikkoku/
-│   └── dbz/
-├── subs/
-│   ├── saint-seiya/  # ep075_ja.srt, ep075_fr.srt, ep075_en.srt
-│   ├── maison-ikkoku/
-│   └── dbz/
-├── covers/           # AniList art
-└── library.json      # Generated metadata
+
+## Deploying App Updates
+
+```bash
+./deploy.sh                   # Builds APK → /data/janus/updates/janus.apk, updates version in DB
 ```
+
+## Legacy Python Server
+
+The Python server (`/server/server.py`) is deprecated. It was single-threaded and caused timeouts under load. The Go server replaced it with concurrent request handling and SQLite storage.
+
+Build tools in `/server/` (build_library.py, fetch_covers.py) are still used for content pipeline tasks (subtitle extraction, TMDB fetching) but their output is imported into SQLite via `janus-import`.
