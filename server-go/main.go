@@ -50,6 +50,12 @@ func main() {
 	// Stream by episode ID
 	mux.HandleFunc("/api/stream/", handleStream)
 
+	// User settings
+	mux.HandleFunc("/api/settings", handleUserSettings)
+
+	// Debug
+	mux.HandleFunc("/api/debug/events", handleDebugEvents)
+
 	// Static file endpoints (legacy)
 	mux.HandleFunc("/api/video/", handleVideo)
 	mux.HandleFunc("/api/subs/", serveStatic("subs"))
@@ -168,6 +174,41 @@ var schema = []string{
 		srt_file TEXT NOT NULL,
 		UNIQUE(item_id, season, episode, srt_file)
 	)`,
+	`CREATE TABLE IF NOT EXISTS debug_events (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		session TEXT NOT NULL,
+		item_id TEXT DEFAULT '',
+		episode INTEGER DEFAULT 0,
+		ts_client REAL NOT NULL,
+		event TEXT NOT NULL,
+		position_ms INTEGER DEFAULT 0,
+		target_ms INTEGER DEFAULT 0,
+		speed REAL DEFAULT 1.0,
+		detail TEXT DEFAULT '',
+		created_at INTEGER DEFAULT (strftime('%s','now'))
+	)`,
+	`CREATE TABLE IF NOT EXISTS user_settings (
+		user_id INTEGER NOT NULL,
+		key TEXT NOT NULL,
+		value TEXT DEFAULT '',
+		PRIMARY KEY (user_id, key)
+	)`,
+	`CREATE TABLE IF NOT EXISTS item_locales (
+		item_id TEXT NOT NULL,
+		language TEXT NOT NULL,
+		title TEXT DEFAULT '',
+		synopsis TEXT DEFAULT '',
+		PRIMARY KEY (item_id, language)
+	)`,
+	`CREATE TABLE IF NOT EXISTS episode_locales (
+		item_id TEXT NOT NULL,
+		season INTEGER NOT NULL,
+		episode INTEGER NOT NULL,
+		language TEXT NOT NULL,
+		title TEXT DEFAULT '',
+		synopsis TEXT DEFAULT '',
+		PRIMARY KEY (item_id, season, episode, language)
+	)`,
 	`INSERT OR IGNORE INTO meta (key, value) VALUES ('library_version', '1')`,
 	`INSERT OR IGNORE INTO meta (key, value) VALUES ('app_version_code', '9')`,
 	`INSERT OR IGNORE INTO meta (key, value) VALUES ('app_version_name', '1.8')`,
@@ -218,6 +259,7 @@ func handleLibrary(w http.ResponseWriter, r *http.Request) {
 			"id": id, "type": typ,
 			"title_en": titleEn, "title_ja": titleJa,
 			"cover": cover, "episode_count": epCount,
+			"locales": queryItemLocales(id),
 		}
 		if typ == "MOVIE" {
 			item["duration_min"] = durMin
@@ -319,8 +361,7 @@ func handleItemDetail(w http.ResponseWriter, itemID string) {
 
 func handleSeason(w http.ResponseWriter, itemID string, seasonNum int) {
 	rows, err := db.Query(`SELECT season, episode, filename, duration_sec, title_en,
-		synopsis_en, synopsis_fr, synopsis_ja, thumb,
-		has_ja_subs, has_en_subs, has_fr_subs, ja_srt_file, en_srt_file, fr_srt_file, ja_sub_lines
+		synopsis_en, synopsis_fr, synopsis_ja, thumb
 		FROM episodes WHERE item_id=? AND season=? ORDER BY episode`, itemID, seasonNum)
 	if err != nil {
 		http.Error(w, err.Error(), 500)
@@ -330,34 +371,21 @@ func handleSeason(w http.ResponseWriter, itemID string, seasonNum int) {
 
 	episodes := []map[string]any{}
 	for rows.Next() {
-		var season, episode, hasJa, hasEn, hasFr, jaLines int
-		var filename, titleEn, synEn, synFr, synJa, thumb, jaSrt, enSrt, frSrt string
+		var season, episode int
+		var filename, titleEn, synEn, synFr, synJa, thumb string
 		var durSec float64
 		rows.Scan(&season, &episode, &filename, &durSec, &titleEn,
-			&synEn, &synFr, &synJa, &thumb,
-			&hasJa, &hasEn, &hasFr, &jaSrt, &enSrt, &frSrt, &jaLines)
-		// Fetch subtitle tracks from subtitles table
-		subTracks := []map[string]any{}
-		subRows, _ := db.Query("SELECT language, label, srt_file FROM subtitles WHERE item_id=? AND season=? AND episode=? ORDER BY language, id",
-			itemID, season, episode)
-		if subRows != nil {
-			for subRows.Next() {
-				var sLang, sLabel, sFile string
-				subRows.Scan(&sLang, &sLabel, &sFile)
-				subTracks = append(subTracks, map[string]any{"language": sLang, "label": sLabel, "srt_file": sFile})
-			}
-			subRows.Close()
-		}
+			&synEn, &synFr, &synJa, &thumb)
+
+		subTracks := querySubtitles(itemID, season, episode)
 
 		episodes = append(episodes, map[string]any{
 			"season": season, "episode": episode, "filename": filename,
 			"duration_sec": durSec, "title_en": titleEn,
 			"synopsis_en": synEn, "synopsis_fr": synFr, "synopsis_ja": synJa,
 			"thumb": thumb,
-			"has_ja_subs": hasJa == 1, "has_en_subs": hasEn == 1, "has_fr_subs": hasFr == 1,
-			"ja_srt_file": jaSrt, "en_srt_file": enSrt, "fr_srt_file": frSrt,
-			"ja_sub_lines": jaLines,
-			"subtitles": subTracks,
+			"subtitles":          subTracks,
+			"locales":            queryEpisodeLocales(itemID, season, episode),
 			"watch_progress_sec": 0, "completed": false,
 		})
 	}
@@ -370,20 +398,32 @@ func handleSeason(w http.ResponseWriter, itemID string, seasonNum int) {
 }
 
 func queryEpisode(itemID string, season, episode int) map[string]any {
-	var s, ep, hasJa, hasEn, hasFr, jaLines int
-	var filename, titleEn, synEn, synFr, synJa, thumb, jaSrt, enSrt, frSrt string
+	var s, ep int
+	var filename, titleEn, synEn, synFr, synJa, thumb string
 	var durSec float64
 	err := db.QueryRow(`SELECT season, episode, filename, duration_sec, title_en,
-		synopsis_en, synopsis_fr, synopsis_ja, thumb,
-		has_ja_subs, has_en_subs, has_fr_subs, ja_srt_file, en_srt_file, fr_srt_file, ja_sub_lines
+		synopsis_en, synopsis_fr, synopsis_ja, thumb
 		FROM episodes WHERE item_id=? AND season=? AND episode=?`, itemID, season, episode).
 		Scan(&s, &ep, &filename, &durSec, &titleEn,
-			&synEn, &synFr, &synJa, &thumb,
-			&hasJa, &hasEn, &hasFr, &jaSrt, &enSrt, &frSrt, &jaLines)
+			&synEn, &synFr, &synJa, &thumb)
 	if err != nil {
 		return nil
 	}
 
+	subTracks := querySubtitles(itemID, s, ep)
+
+	return map[string]any{
+		"season": s, "episode": ep, "filename": filename,
+		"duration_sec": durSec, "title_en": titleEn,
+		"synopsis_en": synEn, "synopsis_fr": synFr, "synopsis_ja": synJa,
+		"thumb": thumb,
+		"subtitles":          subTracks,
+		"locales":            queryEpisodeLocales(itemID, s, ep),
+		"watch_progress_sec": 0, "completed": false,
+	}
+}
+
+func querySubtitles(itemID string, season, episode int) []map[string]any {
 	subTracks := []map[string]any{}
 	subRows, _ := db.Query("SELECT language, label, srt_file FROM subtitles WHERE item_id=? AND season=? AND episode=? ORDER BY language, id",
 		itemID, season, episode)
@@ -395,18 +435,66 @@ func queryEpisode(itemID string, season, episode int) map[string]any {
 		}
 		subRows.Close()
 	}
+	return subTracks
+}
 
-	return map[string]any{
-		"season": s, "episode": ep, "filename": filename,
-		"duration_sec": durSec, "title_en": titleEn,
-		"synopsis_en": synEn, "synopsis_fr": synFr, "synopsis_ja": synJa,
-		"thumb": thumb,
-		"has_ja_subs": hasJa == 1, "has_en_subs": hasEn == 1, "has_fr_subs": hasFr == 1,
-		"ja_srt_file": jaSrt, "en_srt_file": enSrt, "fr_srt_file": frSrt,
-		"ja_sub_lines": jaLines,
-		"subtitles": subTracks,
-		"watch_progress_sec": 0, "completed": false,
+func queryItemLocales(itemID string) map[string]map[string]string {
+	locales := map[string]map[string]string{}
+	rows, _ := db.Query("SELECT language, title, synopsis FROM item_locales WHERE item_id=?", itemID)
+	if rows != nil {
+		for rows.Next() {
+			var lang, title, synopsis string
+			rows.Scan(&lang, &title, &synopsis)
+			locales[lang] = map[string]string{"title": title, "synopsis": synopsis}
+		}
+		rows.Close()
 	}
+	// Fallback: populate from legacy columns on items table
+	if len(locales) == 0 {
+		var titleEn, titleJa, synEn, synFr, synJa string
+		db.QueryRow("SELECT title_en, title_ja, synopsis_en, synopsis_fr, synopsis_ja FROM items WHERE id=?", itemID).
+			Scan(&titleEn, &titleJa, &synEn, &synFr, &synJa)
+		if titleEn != "" {
+			locales["en"] = map[string]string{"title": titleEn, "synopsis": synEn}
+		}
+		if titleJa != "" {
+			locales["ja"] = map[string]string{"title": titleJa, "synopsis": synJa}
+		}
+		if synFr != "" {
+			locales["fr"] = map[string]string{"title": titleEn, "synopsis": synFr}
+		}
+	}
+	return locales
+}
+
+func queryEpisodeLocales(itemID string, season, episode int) map[string]map[string]string {
+	locales := map[string]map[string]string{}
+	rows, _ := db.Query("SELECT language, title, synopsis FROM episode_locales WHERE item_id=? AND season=? AND episode=?",
+		itemID, season, episode)
+	if rows != nil {
+		for rows.Next() {
+			var lang, title, synopsis string
+			rows.Scan(&lang, &title, &synopsis)
+			locales[lang] = map[string]string{"title": title, "synopsis": synopsis}
+		}
+		rows.Close()
+	}
+	// Fallback from episodes table
+	if len(locales) == 0 {
+		var titleEn, synEn, synFr, synJa string
+		db.QueryRow("SELECT title_en, synopsis_en, synopsis_fr, synopsis_ja FROM episodes WHERE item_id=? AND season=? AND episode=?",
+			itemID, season, episode).Scan(&titleEn, &synEn, &synFr, &synJa)
+		if titleEn != "" {
+			locales["en"] = map[string]string{"title": titleEn, "synopsis": synEn}
+		}
+		if synJa != "" {
+			locales["ja"] = map[string]string{"title": "", "synopsis": synJa}
+		}
+		if synFr != "" {
+			locales["fr"] = map[string]string{"title": "", "synopsis": synFr}
+		}
+	}
+	return locales
 }
 
 // ── Static files ──────────────────────────────────────
@@ -426,9 +514,9 @@ func handleStream(w http.ResponseWriter, r *http.Request) {
 	season := atoi(parts[1])
 	episode := atoi(parts[2])
 
-	var filename, jaSrt, enSrt, frSrt string
-	err := db.QueryRow("SELECT filename, ja_srt_file, en_srt_file, fr_srt_file FROM episodes WHERE item_id=? AND season=? AND episode=?",
-		itemID, season, episode).Scan(&filename, &jaSrt, &enSrt, &frSrt)
+	var filename string
+	err := db.QueryRow("SELECT filename FROM episodes WHERE item_id=? AND season=? AND episode=?",
+		itemID, season, episode).Scan(&filename)
 	if err != nil {
 		http.Error(w, "not found", 404)
 		return
@@ -465,18 +553,6 @@ func handleStream(w http.ResponseWriter, r *http.Request) {
 		} else {
 			db.QueryRow("SELECT srt_file FROM subtitles WHERE item_id=? AND season=? AND episode=? AND language=? ORDER BY id LIMIT 1",
 				itemID, season, episode, lang).Scan(&srtFile)
-		}
-
-		// Fallback to episodes table
-		if srtFile == "" {
-			switch lang {
-			case "ja":
-				srtFile = jaSrt
-			case "en":
-				srtFile = enSrt
-			case "fr":
-				srtFile = frSrt
-			}
 		}
 
 		if srtFile == "" {
@@ -551,6 +627,97 @@ func serveStaticAt(subdir, prefix string) http.HandlerFunc {
 }
 
 // ── Helpers ───────────────────────────────────────────
+
+func handleUserSettings(w http.ResponseWriter, r *http.Request) {
+	userID := atoi(r.Header.Get("X-User-ID"))
+	if userID == 0 {
+		http.Error(w, `{"error":"unauthorized"}`, 401)
+		return
+	}
+
+	if r.Method == "PUT" || r.Method == "POST" {
+		var settings map[string]string
+		if err := json.NewDecoder(r.Body).Decode(&settings); err != nil {
+			http.Error(w, err.Error(), 400)
+			return
+		}
+		for k, v := range settings {
+			db.Exec("INSERT OR REPLACE INTO user_settings (user_id, key, value) VALUES (?,?,?)", userID, k, v)
+		}
+		writeJSON(w, map[string]any{"ok": true})
+		return
+	}
+
+	rows, err := db.Query("SELECT key, value FROM user_settings WHERE user_id=?", userID)
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	defer rows.Close()
+	settings := map[string]string{}
+	for rows.Next() {
+		var k, v string
+		rows.Scan(&k, &v)
+		settings[k] = v
+	}
+	writeJSON(w, settings)
+}
+
+func handleDebugEvents(w http.ResponseWriter, r *http.Request) {
+	if r.Method == "POST" {
+		var batch []struct {
+			Session    string  `json:"session"`
+			ItemID     string  `json:"item_id"`
+			Episode    int     `json:"episode"`
+			TsClient   float64 `json:"ts_client"`
+			Event      string  `json:"event"`
+			PositionMs int64   `json:"position_ms"`
+			TargetMs   int64   `json:"target_ms"`
+			Speed      float64 `json:"speed"`
+			Detail     string  `json:"detail"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&batch); err != nil {
+			http.Error(w, err.Error(), 400)
+			return
+		}
+		for _, e := range batch {
+			db.Exec(`INSERT INTO debug_events (session, item_id, episode, ts_client, event, position_ms, target_ms, speed, detail) VALUES (?,?,?,?,?,?,?,?,?)`,
+				e.Session, e.ItemID, e.Episode, e.TsClient, e.Event, e.PositionMs, e.TargetMs, e.Speed, e.Detail)
+		}
+		writeJSON(w, map[string]any{"inserted": len(batch)})
+		return
+	}
+
+	// GET: retrieve events, optionally filtered by session
+	session := r.URL.Query().Get("session")
+	var rows *sql.Rows
+	var err error
+	if session != "" {
+		rows, err = db.Query("SELECT id, session, item_id, episode, ts_client, event, position_ms, target_ms, speed, detail FROM debug_events WHERE session=? ORDER BY ts_client", session)
+	} else {
+		rows, err = db.Query("SELECT id, session, item_id, episode, ts_client, event, position_ms, target_ms, speed, detail FROM debug_events ORDER BY id DESC LIMIT 500")
+	}
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	defer rows.Close()
+
+	events := []map[string]any{}
+	for rows.Next() {
+		var id, episode int
+		var posMs, targetMs int64
+		var tsClient, speed float64
+		var sess, itemID, event, detail string
+		rows.Scan(&id, &sess, &itemID, &episode, &tsClient, &event, &posMs, &targetMs, &speed, &detail)
+		events = append(events, map[string]any{
+			"id": id, "session": sess, "item_id": itemID, "episode": episode,
+			"ts_client": tsClient, "event": event,
+			"position_ms": posMs, "target_ms": targetMs, "speed": speed, "detail": detail,
+		})
+	}
+	writeJSON(w, events)
+}
 
 func writeJSON(w http.ResponseWriter, data any) {
 	w.Header().Set("Content-Type", "application/json")

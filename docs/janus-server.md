@@ -33,7 +33,7 @@ Go HTTP server with SQLite backend. Serves the media library, video streams, and
 ## Running
 
 ```bash
-cd /home/bruno/VideoPlayer/server-go
+cd /home/bruno/CLProjects/Janus/server-go
 ./janus-server                # Listens on 0.0.0.0:8900
 ```
 
@@ -45,7 +45,7 @@ Environment variables:
 ## Building
 
 ```bash
-cd /home/bruno/VideoPlayer/server-go
+cd /home/bruno/CLProjects/Janus/server-go
 CGO_ENABLED=1 go build -o janus-server main.go
 ```
 
@@ -61,8 +61,6 @@ CGO_ENABLED=1 go build -o janus-server main.go
 ./deploy.sh                   # Builds APK → /data/janus/updates/janus.apk, updates version in DB
 ```
 
-## Legacy Python Server
-
-The Python server (`/server/server.py`) is deprecated. It was single-threaded and caused timeouts under load. The Go server replaced it with concurrent request handling and SQLite storage.
+## Build Tools
 
 Build tools in `/server/` (build_library.py, fetch_covers.py) are still used for content pipeline tasks (subtitle extraction, TMDB fetching) but their output is imported into SQLite via `janus-import`.

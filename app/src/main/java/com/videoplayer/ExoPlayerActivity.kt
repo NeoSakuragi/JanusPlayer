@@ -34,6 +34,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import kotlinx.coroutines.delay
+import okhttp3.MediaType.Companion.toMediaTypeOrNull
+import okhttp3.RequestBody.Companion.toRequestBody
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
@@ -108,11 +111,67 @@ class ExoPlayerActivity : ComponentActivity() {
 
     private val CTRL_CONDENSED = 5
     private val condensedMode = mutableStateOf(false)
-    private var condensedSkipping = false
-    private var condensedFadeStart = 0L
+    private val condensedSpeedLabel = mutableStateOf<String?>(null)
+    private var lastCondensedSpeed = 1f
+
+    private fun seriesPrefsKey(key: String): String {
+        val seriesId = intent.getStringExtra(EXTRA_SERIES_ID) ?: return key
+        return "series_${seriesId}_$key"
+    }
+
+    private fun saveSeriesPref(key: String, value: Int) {
+        getSharedPreferences("player_prefs", MODE_PRIVATE).edit()
+            .putInt(seriesPrefsKey(key), value).apply()
+    }
+
+    private fun loadSeriesPref(key: String, default: Int): Int =
+        getSharedPreferences("player_prefs", MODE_PRIVATE)
+            .getInt(seriesPrefsKey(key), default)
+
+    private val debugEvents = mutableListOf<org.json.JSONObject>()
+    private val debugSession = java.util.UUID.randomUUID().toString().take(8)
+
+    private fun debugEvent(event: String, speed: Float = 1f, detail: String = "") {
+        if (!condensedMode.value && event != "condensed_off") return
+        val seriesId = intent.getStringExtra(EXTRA_SERIES_ID) ?: ""
+        val epNum = intent.getIntExtra(EXTRA_EPISODE_NUM, 0)
+        val pos = if (::player.isInitialized) player.currentPosition else 0L
+        synchronized(debugEvents) {
+            debugEvents.add(org.json.JSONObject().apply {
+                put("session", debugSession)
+                put("item_id", seriesId)
+                put("episode", epNum)
+                put("ts_client", System.currentTimeMillis() / 1000.0)
+                put("event", event)
+                put("position_ms", pos)
+                put("target_ms", 0)
+                put("speed", speed.toDouble())
+                put("detail", detail)
+            })
+        }
+        if (debugEvents.size >= 10) flushDebugEvents()
+    }
+
+    private fun flushDebugEvents() {
+        val batch: List<org.json.JSONObject>
+        synchronized(debugEvents) {
+            if (debugEvents.isEmpty()) return
+            batch = debugEvents.toList()
+            debugEvents.clear()
+        }
+        val serverUrl = intent.getStringExtra(EXTRA_VIDEO_URL)?.substringBefore("/api/") ?: return
+        Thread {
+            try {
+                val arr = org.json.JSONArray(batch)
+                val body = arr.toString().toRequestBody("application/json".toMediaTypeOrNull())
+                val req = okhttp3.Request.Builder().url("$serverUrl/api/debug/events")
+                PlayerManager.authToken?.let { req.header("Authorization", "Bearer $it") }
+                okhttp3.OkHttpClient().newCall(req.post(body).build()).execute().close()
+            } catch (_: Exception) {}
+        }.start()
+    }
 
     private val CTRL_HWSW = 6
-    private val hwDecoding = mutableStateOf(true)
 
     private val CTRL_DOWNLOAD = 7
     private val dlLabel = mutableStateOf("↓ DL")
@@ -126,6 +185,8 @@ class ExoPlayerActivity : ComponentActivity() {
     private val durationMs = mutableLongStateOf(0L)
     private val currentSubText = mutableStateOf<String?>(null)
     private val titleText = mutableStateOf("")
+
+    private val currentRubySpans = mutableStateOf<List<RubySpan>>(emptyList())
 
     // Word navigation: cursor moves through japanesePositions, scanAt resolves the word
     private val cursorIdx = mutableIntStateOf(0)
@@ -182,7 +243,6 @@ class ExoPlayerActivity : ComponentActivity() {
         if (savedSizeIdx >= 0) fontSizeIdx.intValue = savedSizeIdx
         val savedFontIdx = FONT_KEYS.indexOf(appSettings.fontKey)
         if (savedFontIdx >= 0) fontIdx.intValue = savedFontIdx
-        hwDecoding.value = appSettings.hardwareDecoding
 
         val videoUrl = intent.getStringExtra(EXTRA_VIDEO_URL) ?: run { finish(); return }
         val subsUrl = intent.getStringExtra(EXTRA_SUBS_URL)
@@ -210,20 +270,40 @@ class ExoPlayerActivity : ComponentActivity() {
         player.play()
         updateDlLabel()
 
-        // Load subtitles
-        if (subsUrl != null) {
-            Thread {
-                val srt = try {
-                    val reqBuilder = okhttp3.Request.Builder().url(subsUrl)
-                    PlayerManager.authToken?.let { reqBuilder.header("Authorization", "Bearer $it") }
-                    okhttp3.OkHttpClient().newCall(reqBuilder.build()).execute().body?.string()
-                } catch (_: Exception) { null }
-                if (srt != null) {
-                    subtitleCues = SrtParser.parse(srt)
-                    Log.d(TAG, "Loaded ${subtitleCues.size} cues")
+        // Restore per-series settings when player is ready
+        player.addListener(object : androidx.media3.common.Player.Listener {
+            override fun onPlaybackStateChanged(state: Int) {
+                if (state != androidx.media3.common.Player.STATE_READY) return
+                player.removeListener(this)
+
+                condensedMode.value = loadSeriesPref("condensed", 0) == 1
+
+                val savedAudio = loadSeriesPref("audio_track", -1)
+                if (savedAudio >= 0) selectAudioTrack(savedAudio)
+
+                val savedSub = loadSeriesPref("sub_track", -1)
+                val allSubsList = intent.getStringArrayListExtra("all_subs") ?: arrayListOf()
+                val subUrlToLoad = when {
+                    savedSub == 0 -> null
+                    savedSub > 0 && savedSub <= allSubsList.size ->
+                        allSubsList[savedSub - 1].split("|", limit = 2).getOrNull(1)
+                    else -> subsUrl
                 }
-            }.start()
-        }
+                if (subUrlToLoad != null) {
+                    Thread {
+                        val srt = try {
+                            val reqBuilder = okhttp3.Request.Builder().url(subUrlToLoad)
+                            PlayerManager.authToken?.let { reqBuilder.header("Authorization", "Bearer $it") }
+                            okhttp3.OkHttpClient().newCall(reqBuilder.build()).execute().body?.string()
+                        } catch (_: Exception) { null }
+                        if (srt != null) {
+                            subtitleCues = SrtParser.parse(srt)
+                            Log.d(TAG, "Loaded ${subtitleCues.size} cues")
+                        }
+                    }.start()
+                }
+            }
+        })
 
         // Position updater + condensed mode + periodic save
         var saveCounter = 0
@@ -240,42 +320,68 @@ class ExoPlayerActivity : ComponentActivity() {
                     positionMs.longValue = pos
                     updateDlLabel()
                     durationMs.longValue = player.duration.coerceAtLeast(0)
-                    isPaused.value = !player.isPlaying
+                    if (lastCondensedSpeed <= 1f) isPaused.value = !player.isPlaying
                     val cue = SrtParser.cueAt(subtitleCues, pos)
-                    currentSubText.value = cue?.text
-
-                    // Condensed: if no current sub, playing, and gap to next > 2s, skip once
-                    if (condensedMode.value && cue == null && player.isPlaying && screen.value == Screen.PLAYING && !condensedSkipping) {
-                        val next = SrtParser.nextCueAfter(subtitleCues, pos)
-                        if (next != null && next.startMs - pos > 2000) {
-                            condensedSkipping = true
-                            player.volume = 0f
-                            player.seekTo(next.startMs - 500)
-                            condensedFadeStart = System.currentTimeMillis()
-                        }
+                    if (cue?.text != null) {
+                        val (clean, rubys) = stripFurigana(cue.text)
+                        currentSubText.value = clean
+                        currentRubySpans.value = rubys
+                    } else {
+                        currentSubText.value = null
+                        currentRubySpans.value = emptyList()
                     }
-                    if (cue != null) condensedSkipping = false
-                    if (condensedFadeStart > 0) {
-                        val elapsed = System.currentTimeMillis() - condensedFadeStart
-                        if (elapsed >= 500) {
-                            player.volume = 1f
-                            condensedFadeStart = 0
-                        } else {
-                            player.volume = (elapsed / 500f).coerceIn(0f, 1f)
+
+                    // Condensed: speed up through gaps between subtitles
+                    if (condensedMode.value && player.isPlaying && screen.value == Screen.PLAYING) {
+                        val midSub = cue != null
+                        val prev = subtitleCues.lastOrNull { it.endMs <= pos }
+                        val next = SrtParser.nextCueAfter(subtitleCues, pos)
+                        val deltaBefore = if (prev != null) pos - prev.endMs else Long.MAX_VALUE
+                        val deltaAfter = if (next != null) next.startMs - pos else Long.MAX_VALUE
+
+                        val speed = when {
+                            midSub || deltaBefore < 500 -> 1f
+                            deltaAfter > 10000          -> 16f
+                            deltaAfter > 3000           -> 8f
+                            deltaAfter > 900            -> 2f
+                            else                        -> 1f
+                        }
+
+                        if (speed != lastCondensedSpeed) {
+                            player.setPlaybackSpeed(speed)
+                            if (speed > 1f) {
+                                player.volume = 0f
+                                condensedSpeedLabel.value = "▸▸ ${speed.toInt()}x"
+                            } else {
+                                player.volume = 1f
+                                condensedSpeedLabel.value = null
+                            }
+                            debugEvent(
+                                if (speed > lastCondensedSpeed) "ff_start" else if (speed == 1f) "ff_stop" else "ff_decel",
+                                speed, "deltaBefore=${deltaBefore}ms,deltaAfter=${deltaAfter}ms"
+                            )
+                            lastCondensedSpeed = speed
                         }
                     }
                 }
-                handler.postDelayed(this, 200)
+                handler.postDelayed(this, if (lastCondensedSpeed > 1f) 50 else 200)
             }
         })
 
-        setContent { PlayerScreen() }
+        setContent {
+            val config = androidx.compose.ui.platform.LocalConfiguration.current
+            val dimens = computeDimens(config.screenWidthDp.dp)
+            androidx.compose.runtime.CompositionLocalProvider(LocalDimens provides dimens) {
+                PlayerScreen()
+            }
+        }
     }
 
     // ── Compose UI ───────────────────────────────────────────────────
 
     @Composable
     private fun PlayerScreen() {
+        val dimens = LocalDimens.current
         val scr by screen
         val paused by isPaused
         val pos by positionMs
@@ -303,23 +409,12 @@ class ExoPlayerActivity : ComponentActivity() {
         }
 
         Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
-            // ExoPlayer surface — tap here to toggle controls
+            // ExoPlayer surface
             AndroidView(
                 factory = { ctx ->
                     PlayerView(ctx).apply {
                         useController = false
-                        setOnClickListener {
-                            when (screen.value) {
-                                Screen.PLAYING -> {
-                                    this@ExoPlayerActivity.player.pause()
-                                    if (!enterWordNav()) goto(Screen.CONTROLS, CTRL_SEEK)
-                                }
-                                Screen.CONTROLS, Screen.WORD_NAV -> {
-                                    clearDict(); this@ExoPlayerActivity.player.play(); goto(Screen.PLAYING)
-                                }
-                                else -> {}
-                            }
-                        }
+                        setOnClickListener(null)
                     }
                 },
                 update = { view ->
@@ -327,6 +422,65 @@ class ExoPlayerActivity : ComponentActivity() {
                 },
                 modifier = Modifier.fillMaxSize()
             )
+
+            // Touch overlay: single tap = toggle controls, double tap = seek ±10s
+            var seekIndicator by remember { mutableStateOf<String?>(null) }
+            LaunchedEffect(seekIndicator) {
+                if (seekIndicator != null) { delay(600); seekIndicator = null }
+            }
+            Box(
+                modifier = Modifier.fillMaxSize()
+                    .pointerInput(Unit) {
+                        detectTapGestures(
+                            onDoubleTap = { offset ->
+                                val halfWidth = size.width / 2
+                                val seekMs = if (offset.x < halfWidth) -10_000L else 10_000L
+                                val newPos = (player.currentPosition + seekMs).coerceIn(0, player.duration.coerceAtLeast(0))
+                                player.seekTo(newPos)
+                                seekIndicator = if (seekMs < 0) "« 10s" else "10s »"
+                            },
+                            onTap = {
+                                when (screen.value) {
+                                    Screen.PLAYING -> {
+                                        player.pause()
+                                        if (!enterWordNav()) goto(Screen.CONTROLS, CTRL_SEEK)
+                                    }
+                                    Screen.CONTROLS, Screen.WORD_NAV -> {
+                                        clearDict(); player.play(); goto(Screen.PLAYING)
+                                    }
+                                    else -> {}
+                                }
+                            }
+                        )
+                    },
+                contentAlignment = Alignment.Center
+            ) {
+                AnimatedVisibility(
+                    visible = seekIndicator != null,
+                    enter = fadeIn(tween(100)),
+                    exit = fadeOut(tween(300))
+                ) {
+                    androidx.compose.material3.Text(
+                        seekIndicator ?: "",
+                        color = Color.White,
+                        fontSize = 28.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+                val speedLabel by condensedSpeedLabel
+                AnimatedVisibility(
+                    visible = speedLabel != null,
+                    enter = fadeIn(tween(100)),
+                    exit = fadeOut(tween(200))
+                ) {
+                    androidx.compose.material3.Text(
+                        speedLabel ?: "",
+                        color = Color(0xCCFFFFFF),
+                        fontSize = 22.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            }
 
             // Top: buttons row
             AnimatedVisibility(
@@ -339,19 +493,16 @@ class ExoPlayerActivity : ComponentActivity() {
                     verticalAlignment = Alignment.CenterVertically,
                     modifier = Modifier.padding(top = 16.dp, end = 24.dp)
                 ) {
-                    CtrlBtn("♪", "Audio", CTRL_AUDIO, cFocus) { showAudioList() }
+                    CtrlBtn("♪", Lang.s("audio"), CTRL_AUDIO, cFocus) { showAudioList() }
                     Spacer(Modifier.width(8.dp))
-                    CtrlBtn("CC", "Subs", CTRL_SUBS, cFocus) { showSubsList() }
+                    CtrlBtn("CC", Lang.s("subs"), CTRL_SUBS, cFocus) { showSubsList() }
                     Spacer(Modifier.width(8.dp))
                     CtrlBtn("Aa", "${FONT_SIZES[fSizeIdx]}sp", CTRL_FONTSIZE, cFocus) { cycleFontSize() }
                     Spacer(Modifier.width(8.dp))
                     CtrlBtn("F", FONT_NAMES[fIdx].take(8), CTRL_FONT, cFocus) { cycleFont() }
                     Spacer(Modifier.width(8.dp))
                     val condOn by condensedMode
-                    CtrlBtn("⏩", if (condOn) "COND ON" else "COND OFF", CTRL_CONDENSED, cFocus) { condensedMode.value = !condensedMode.value }
-                    Spacer(Modifier.width(8.dp))
-                    val hwOn by hwDecoding
-                    CtrlBtn("⚡", if (hwOn) "HW" else "SW", CTRL_HWSW, cFocus) { toggleHwSwDecoding() }
+                    CtrlBtn("⏩", if (condOn) Lang.s("cond_on") else Lang.s("cond_off"), CTRL_CONDENSED, cFocus) { toggleCondensed() }
                     Spacer(Modifier.width(8.dp))
                     val dlText by dlLabel
                     CtrlBtn("↓", dlText, CTRL_DOWNLOAD, cFocus) { toggleDownload() }
@@ -369,7 +520,7 @@ class ExoPlayerActivity : ComponentActivity() {
                     verticalAlignment = Alignment.CenterVertically,
                     modifier = Modifier.padding(top = 16.dp, start = 24.dp)
                 ) {
-                    CtrlBtn("←", "Back", -1, cFocus) { saveProgress(); finish() }
+                    CtrlBtn("←", Lang.s("back_label"), -1, cFocus) { saveProgress(); finish() }
                     Spacer(Modifier.width(12.dp))
                     androidx.compose.material3.Text(title, color = Color.White, fontSize = 14.sp)
                 }
@@ -380,7 +531,7 @@ class ExoPlayerActivity : ComponentActivity() {
                 visible = dVis && (scr == Screen.WORD_NAV),
                 enter = fadeIn(tween(150)),
                 exit = fadeOut(tween(100)),
-                modifier = Modifier.align(Alignment.TopCenter).padding(top = 80.dp)
+                modifier = Modifier.align(Alignment.TopCenter).padding(top = dimens.dictTopPadding)
             ) {
                 Column(
                     modifier = Modifier
@@ -393,7 +544,7 @@ class ExoPlayerActivity : ComponentActivity() {
                             if (dReadV.isNotEmpty()) {
                                 androidx.compose.material3.Text(dReadV, color = Color(0xFFAAAAAA), fontSize = 14.sp)
                             }
-                            androidx.compose.material3.Text(dTermV, color = Color.White, fontSize = 34.sp, fontWeight = FontWeight.Bold)
+                            androidx.compose.material3.Text(dTermV, color = Color.White, fontSize = dimens.dictTermSize, fontWeight = FontWeight.Bold)
                         }
                         Spacer(Modifier.width(14.dp))
                         if (dTagsV.isNotBlank()) {
@@ -432,31 +583,69 @@ class ExoPlayerActivity : ComponentActivity() {
                 }
 
                 var charBoxes by remember(subText) { mutableStateOf(emptyArray<androidx.compose.ui.geometry.Rect>()) }
+                val rubySpans by currentRubySpans
+                val rubyFontSize = subFontSize * 0.45f
+                val rubyTopPad = rubyFontSize.value.dp
                 Box(
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
-                        .padding(bottom = 60.dp, start = 32.dp, end = 32.dp)
+                        .padding(bottom = dimens.subBottomPadding, start = dimens.rowPadding, end = dimens.rowPadding)
                         .background(Color(0x99000000), RoundedCornerShape(6.dp))
                         .padding(horizontal = 12.dp, vertical = 8.dp)
                         .pointerInput(subText) {
                             detectTapGestures { pos ->
                                 val boxes = charBoxes
+                                val adjustedPos = androidx.compose.ui.geometry.Offset(pos.x, pos.y - with(density) { if (rubySpans.isNotEmpty()) rubyTopPad.toPx() else 0f })
                                 for (i in boxes.indices) {
-                                    if (boxes[i].contains(pos)) { onSubtitleTap(i); break }
+                                    if (boxes[i].contains(adjustedPos)) { onSubtitleTap(i); break }
                                 }
                             }
                         }
                 ) {
-                    androidx.compose.material3.Text(
-                        text = annotated, color = Color.Black, fontSize = subFontSize, fontFamily = subFontFamily,
-                        style = androidx.compose.ui.text.TextStyle(drawStyle = androidx.compose.ui.graphics.drawscope.Stroke(width = 6f))
-                    )
-                    androidx.compose.material3.Text(
-                        text = annotated, color = Color.White, fontSize = subFontSize, fontFamily = subFontFamily,
-                        onTextLayout = { layout ->
-                            charBoxes = Array(subText.length) { i -> layout.getBoundingBox(i) }
+                    if (rubySpans.isNotEmpty()) Spacer(Modifier.height(rubyTopPad))
+                    Box {
+                        androidx.compose.material3.Text(
+                            text = annotated, color = Color.Black, fontSize = subFontSize, fontFamily = subFontFamily,
+                            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                            modifier = Modifier.fillMaxWidth(),
+                            style = androidx.compose.ui.text.TextStyle(drawStyle = androidx.compose.ui.graphics.drawscope.Stroke(width = 6f))
+                        )
+                        androidx.compose.material3.Text(
+                            text = annotated, color = Color.White, fontSize = subFontSize, fontFamily = subFontFamily,
+                            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                            modifier = Modifier.fillMaxWidth(),
+                            onTextLayout = { layout ->
+                                charBoxes = Array(subText.length) { i -> layout.getBoundingBox(i) }
+                            }
+                        )
+                        val boxes = charBoxes
+                        if (boxes.isNotEmpty() && rubySpans.isNotEmpty()) {
+                            val textMeasurer = androidx.compose.ui.text.rememberTextMeasurer()
+                            androidx.compose.foundation.Canvas(modifier = Modifier.matchParentSize()) {
+                                for (ruby in rubySpans) {
+                                    if (ruby.start >= boxes.size || ruby.start + ruby.length - 1 >= boxes.size) continue
+                                    val left = boxes[ruby.start].left
+                                    val right = boxes[ruby.start + ruby.length - 1].right
+                                    val top = boxes[ruby.start].top
+                                    val kanjiWidth = right - left
+                                    val measured = textMeasurer.measure(
+                                        ruby.reading,
+                                        style = androidx.compose.ui.text.TextStyle(
+                                            fontSize = rubyFontSize,
+                                            fontFamily = subFontFamily,
+                                            color = Color(0xFFDDDDDD),
+                                        )
+                                    )
+                                    val rubyX = left + (kanjiWidth - measured.size.width) / 2f
+                                    val rubyY = top - measured.size.height + 4f
+                                    drawContext.canvas.save()
+                                    drawContext.canvas.translate(rubyX, rubyY)
+                                    measured.multiParagraph.paint(drawContext.canvas)
+                                    drawContext.canvas.restore()
+                                }
+                            }
                         }
-                    )
+                    }
                 }
             }
 
@@ -531,7 +720,7 @@ class ExoPlayerActivity : ComponentActivity() {
             ) {
                 Box(Modifier.fillMaxSize().background(Color(0xAA000000)).clickable { goto(Screen.CONTROLS, listReturnFocus) }) {
                     Column(
-                        Modifier.align(Alignment.CenterEnd).width(340.dp).fillMaxHeight()
+                        Modifier.align(Alignment.CenterEnd).width(dimens.listPanelWidth).fillMaxHeight()
                             .background(Color(0xFF1A1A2E)).padding(vertical = 12.dp)
                     ) {
                         androidx.compose.material3.Text(
@@ -579,13 +768,13 @@ class ExoPlayerActivity : ComponentActivity() {
         Column(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center,
-            modifier = Modifier.size(width = 72.dp, height = 56.dp)
+            modifier = Modifier.size(width = LocalDimens.current.ctrlBtnWidth, height = LocalDimens.current.ctrlBtnHeight)
                 .clickable { controlFocus.intValue = index; onTap() }
                 .background(if (focused) Color(0xFFBB86FC) else Color(0xFF2A2A3A), RoundedCornerShape(12.dp))
                 .then(if (focused) Modifier.border(1.dp, Color.White, RoundedCornerShape(12.dp)) else Modifier)
         ) {
-            androidx.compose.material3.Text(icon, color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold)
-            androidx.compose.material3.Text(label, color = if (focused) Color.White else Color(0xFFAAAAAA), fontSize = 9.sp)
+            androidx.compose.material3.Text(icon, color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+            androidx.compose.material3.Text(label, color = if (focused) Color.White else Color(0xFFAAAAAA), fontSize = 7.sp)
         }
     }
 
@@ -610,10 +799,11 @@ class ExoPlayerActivity : ComponentActivity() {
                 }
                 KeyEvent.KEYCODE_DPAD_UP -> { player.pause(); goto(Screen.CONTROLS, CTRL_AUDIO) }
                 KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE -> { if (player.isPlaying) player.pause() else player.play() }
-                else -> {
+                KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> {
                     player.pause()
                     if (!enterWordNav()) goto(Screen.CONTROLS, CTRL_SEEK)
                 }
+                else -> return false
             }
 
             Screen.CONTROLS -> {
@@ -643,8 +833,7 @@ class ExoPlayerActivity : ComponentActivity() {
                         CTRL_SUBS -> showSubsList()
                         CTRL_FONTSIZE -> cycleFontSize()
                         CTRL_FONT -> cycleFont()
-                        CTRL_CONDENSED -> condensedMode.value = !condensedMode.value
-                        CTRL_HWSW -> toggleHwSwDecoding()
+                        CTRL_CONDENSED -> toggleCondensed()
                         CTRL_DOWNLOAD -> toggleDownload()
                     }
                     else -> return false
@@ -683,6 +872,12 @@ class ExoPlayerActivity : ComponentActivity() {
     }
 
     private fun goto(s: Screen, focus: Int = -1) {
+        if (lastCondensedSpeed > 1f && s != Screen.PLAYING) {
+            player.setPlaybackSpeed(1f)
+            player.volume = 1f
+            lastCondensedSpeed = 1f
+            condensedSpeedLabel.value = null
+        }
         screen.value = s
         if (focus >= 0) controlFocus.intValue = focus
     }
@@ -772,10 +967,10 @@ class ExoPlayerActivity : ComponentActivity() {
                 listItems.add(ListItem(label, codec, group.isTrackSelected(i)))
             }
         }
-        listTitle.value = "Audio"
+        listTitle.value = Lang.s("audio")
         listFocus.intValue = listItems.indexOfFirst { it.selected }.coerceAtLeast(0)
         listReturnFocus = CTRL_AUDIO
-        listCallback = { idx -> selectAudioTrack(idx) }
+        listCallback = { idx -> selectAudioTrack(idx); saveSeriesPref("audio_track", idx) }
         screen.value = Screen.LIST_SELECT
     }
 
@@ -824,10 +1019,11 @@ class ExoPlayerActivity : ComponentActivity() {
             listItems.add(ListItem(label, selected = isActive))
         }
 
-        listTitle.value = "Subtitles"
+        listTitle.value = Lang.s("subs")
         listFocus.intValue = listItems.indexOfFirst { it.selected }.coerceAtLeast(0)
         listReturnFocus = CTRL_SUBS
         listCallback = { idx ->
+            saveSeriesPref("sub_track", idx)
             if (idx == 0) {
                 subtitleCues = emptyList()
                 currentSubText.value = null
@@ -881,8 +1077,10 @@ class ExoPlayerActivity : ComponentActivity() {
                     srtFiles.add(subsUrl.substringAfterLast("/") to subsUrl)
                 }
                 DownloadManager.enqueueEpisode(
-                    seriesId, epNum, filename, videoUrl, srtFiles,
-                    titleEn = "Episode $epNum", seriesTitleEn = ""
+                    seriesId, epNum,
+                    videoFilename = filename, videoUrl = videoUrl,
+                    srtFiles = srtFiles,
+                    titleEn = Lang.s("episode", epNum), seriesTitleEn = ""
                 )
                 startService(android.content.Intent(this, DownloadService::class.java))
                 dlLabel.value = "QUEUED"
@@ -904,33 +1102,20 @@ class ExoPlayerActivity : ComponentActivity() {
         }
     }
 
-    @OptIn(androidx.media3.common.util.UnstableApi::class)
-    private fun toggleHwSwDecoding() {
-        hwDecoding.value = !hwDecoding.value
-        AppSettings(this).hardwareDecoding = hwDecoding.value
-        val pos = player.currentPosition
-        val wasPlaying = player.isPlaying
-        val videoUrl = intent.getStringExtra(EXTRA_VIDEO_URL) ?: return
 
-        PlayerManager.release()
-
-        val builder = ExoPlayer.Builder(this)
-        if (!hwDecoding.value) {
-            builder.setRenderersFactory(
-                androidx.media3.exoplayer.DefaultRenderersFactory(this)
-                    .setExtensionRendererMode(androidx.media3.exoplayer.DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER)
-                    .setEnableDecoderFallback(true)
-            )
+    private fun toggleCondensed() {
+        condensedMode.value = !condensedMode.value
+        saveSeriesPref("condensed", if (condensedMode.value) 1 else 0)
+        if (!condensedMode.value) {
+            player.setPlaybackSpeed(1f)
+            player.volume = 1f
+            lastCondensedSpeed = 1f
+            condensedSpeedLabel.value = null
+            debugEvent("condensed_off")
+            flushDebugEvents()
+        } else {
+            debugEvent("condensed_on")
         }
-        // Rebuild PlayerManager with custom player would require refactoring — for now recreate locally
-        player = builder.build()
-        player.trackSelectionParameters = player.trackSelectionParameters.buildUpon()
-            .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
-            .build()
-        player.setMediaItem(MediaItem.fromUri(videoUrl))
-        player.prepare()
-        player.seekTo(pos)
-        if (wasPlaying) player.play()
     }
 
     private fun cycleFontSize() {
@@ -986,6 +1171,7 @@ class ExoPlayerActivity : ComponentActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
+        flushDebugEvents()
         saveProgress()
         handler.removeCallbacksAndMessages(null)
         player.release()

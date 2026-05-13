@@ -73,6 +73,18 @@ class DownloadService : Service() {
                 }
             }
 
+            // Download thumbnail (small)
+            if (item.thumbUrl.isNotEmpty() && item.thumbFile.isNotEmpty()) {
+                val thumbFile = File(seriesDir, item.thumbFile)
+                if (!thumbFile.exists()) {
+                    try {
+                        downloadFile(item.thumbUrl, thumbFile, null)
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Thumb download failed: ${item.thumbFile}: ${e.message}")
+                    }
+                }
+            }
+
             // Download video
             val videoFile = File(seriesDir, item.videoFilename)
             val tmpFile = File(seriesDir, "${item.videoFilename}.tmp")

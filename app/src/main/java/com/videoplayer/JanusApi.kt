@@ -43,6 +43,8 @@ class JanusApi(private val baseUrl: String) {
         return builder
     }
 
+    data class Locale(val title: String, val synopsis: String)
+
     data class LibraryItem(
         val id: String,
         val type: String,
@@ -52,7 +54,22 @@ class JanusApi(private val baseUrl: String) {
         val episodeCount: Int,
         val seasonCount: Int,
         val durationMin: Int,
-    )
+        val locales: Map<String, Locale> = emptyMap(),
+    ) {
+        fun title(): String {
+            val lang = Lang.current.value
+            locales[lang]?.title?.takeIf { it.isNotEmpty() }?.let { return it }
+            return when (lang) {
+                "ja" -> titleJa.ifEmpty { titleEn }
+                else -> titleEn
+            }
+        }
+        fun synopsis(): String {
+            val lang = Lang.current.value
+            return locales[lang]?.synopsis?.takeIf { it.isNotEmpty() }
+                ?: locales["en"]?.synopsis ?: ""
+        }
+    }
 
     data class SeasonInfo(val season: Int, val episodeCount: Int)
 
@@ -87,20 +104,32 @@ class JanusApi(private val baseUrl: String) {
         val episode: Int,
         val filename: String,
         val durationSec: Double,
-        val hasJaSubs: Boolean,
-        val hasFrSubs: Boolean,
-        val hasEnSubs: Boolean,
-        val jaSrtFile: String?,
-        val frSrtFile: String?,
-        val enSrtFile: String?,
-        val jaSubLines: Int,
         val watchProgressSec: Double,
         val completed: Boolean,
         val titleEn: String,
         val synopsisEn: String,
+        val synopsisJa: String,
+        val synopsisFr: String,
         val thumb: String?,
         val subtitles: List<SubTrack>,
-    )
+        val locales: Map<String, Locale> = emptyMap(),
+    ) {
+        fun hasSubs(lang: String) = subtitles.any { it.language == lang }
+        fun title(): String {
+            val lang = Lang.current.value
+            locales[lang]?.title?.takeIf { it.isNotEmpty() }?.let { return it }
+            return titleEn
+        }
+        fun synopsis(): String {
+            val lang = Lang.current.value
+            locales[lang]?.synopsis?.takeIf { it.isNotEmpty() }?.let { return it }
+            return when (lang) {
+                "ja" -> synopsisJa.ifEmpty { synopsisEn }
+                "fr" -> synopsisFr.ifEmpty { synopsisEn }
+                else -> synopsisEn
+            }
+        }
+    }
 
     fun fetchLibrary(): List<LibraryItem> {
         val request = authRequest("$baseUrl/api/library").build()
@@ -122,7 +151,16 @@ class JanusApi(private val baseUrl: String) {
                 episodeCount = obj.optInt("episode_count", 1),
                 seasonCount = obj.optInt("season_count", 1),
                 durationMin = obj.optInt("duration_min", 0),
+                locales = parseLocales(obj.optJSONObject("locales")),
             )
+        }
+    }
+
+    private fun parseLocales(obj: JSONObject?): Map<String, Locale> {
+        if (obj == null) return emptyMap()
+        return obj.keys().asSequence().associate { lang ->
+            val l = obj.getJSONObject(lang)
+            lang to Locale(l.optString("title", ""), l.optString("synopsis", ""))
         }
     }
 
@@ -190,17 +228,12 @@ class JanusApi(private val baseUrl: String) {
         episode = obj.getInt("episode"),
         filename = obj.getString("filename"),
         durationSec = obj.getDouble("duration_sec"),
-        hasJaSubs = obj.getBoolean("has_ja_subs"),
-        hasFrSubs = obj.optBoolean("has_fr_subs", false),
-        hasEnSubs = obj.optBoolean("has_en_subs", false),
-        jaSrtFile = obj.optString("ja_srt_file", null),
-        frSrtFile = obj.optString("fr_srt_file", null),
-        enSrtFile = obj.optString("en_srt_file", null),
-        jaSubLines = obj.optInt("ja_sub_lines", 0),
         watchProgressSec = obj.optDouble("watch_progress_sec", 0.0),
         completed = obj.optBoolean("completed", false),
         titleEn = obj.optString("title_en", ""),
         synopsisEn = obj.optString("synopsis_en", ""),
+        synopsisJa = obj.optString("synopsis_ja", ""),
+        synopsisFr = obj.optString("synopsis_fr", ""),
         thumb = obj.optString("thumb", null),
         subtitles = obj.optJSONArray("subtitles")?.let { arr ->
             (0 until arr.length()).map { i ->
@@ -208,5 +241,21 @@ class JanusApi(private val baseUrl: String) {
                 SubTrack(s.getString("language"), s.getString("label"), s.getString("srt_file"))
             }
         } ?: emptyList(),
+        locales = parseLocales(obj.optJSONObject("locales")),
     )
+
+    fun fetchSettings(): Map<String, String> {
+        val request = authRequest("$baseUrl/api/settings").build()
+        val response = try { client.newCall(request).execute() } catch (_: Exception) { return emptyMap() }
+        if (!response.isSuccessful) return emptyMap()
+        val json = JSONObject(response.body?.string() ?: return emptyMap())
+        return json.keys().asSequence().associateWith { json.getString(it) }
+    }
+
+    fun saveSettings(settings: Map<String, String>) {
+        val body = JSONObject(settings).toString()
+            .toRequestBody("application/json".toMediaTypeOrNull())
+        val request = authRequest("$baseUrl/api/settings").put(body).build()
+        try { client.newCall(request).execute().close() } catch (_: Exception) {}
+    }
 }

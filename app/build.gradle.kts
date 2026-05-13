@@ -11,8 +11,8 @@ android {
         applicationId = "com.videoplayer"
         minSdk = 26
         targetSdk = 34
-        versionCode = 38
-        versionName = "4.7"
+        versionCode = 61
+        versionName = "8.4"
     }
 
     splits {

@@ -1,6 +1,6 @@
 # Janus Build Tools (Python)
 
-**Note**: The Python server (`server.py`) is deprecated. Use the Go server (`/server-go/`) for serving. These Python scripts are build tools only.
+**Note**: These Python scripts are build tools only. The Go server (`/server-go/`) handles serving.
 
 ## Tools
 
@@ -21,7 +21,7 @@ python3 manage.py status    # Show library stats
 
 After building, import the JSON data into SQLite:
 ```bash
-cd /home/bruno/VideoPlayer/server-go
+cd /home/bruno/CLProjects/Janus/server-go
 ./janus-import /data/janus
 ```
 

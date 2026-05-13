@@ -236,11 +236,9 @@ func cmdAddSeries(args []string) {
 		id, "TV_SERIES", titleEn, titleJa, fmt.Sprintf("covers/%s.jpg", id), len(episodes), len(seasonSet), tmdbID)
 
 	for _, ep := range episodes {
-		db.Exec(`INSERT OR REPLACE INTO episodes (item_id, season, episode, filename, duration_sec, title_en, synopsis_en, synopsis_fr, synopsis_ja, thumb, has_ja_subs, has_en_subs, has_fr_subs, ja_srt_file, en_srt_file, fr_srt_file) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		db.Exec(`INSERT OR REPLACE INTO episodes (item_id, season, episode, filename, duration_sec, title_en, synopsis_en, synopsis_fr, synopsis_ja, thumb) VALUES (?,?,?,?,?,?,?,?,?,?)`,
 			id, ep.season, ep.episode, ep.filename, ep.durationSec, ep.titleEn,
-			ep.synopsisEn, ep.synopsisFr, ep.synopsisJa, ep.thumb,
-			boolToInt(ep.hasJa), boolToInt(ep.hasEn), boolToInt(ep.hasFr),
-			ep.jaSrt, ep.enSrt, ep.frSrt)
+			ep.synopsisEn, ep.synopsisFr, ep.synopsisJa, ep.thumb)
 	}
 
 	// Update library version
@@ -277,13 +275,7 @@ func cmdAddMovie(args []string) {
 	subsDir := filepath.Join(dataDir, "subs", id)
 	os.MkdirAll(subsDir, 0755)
 
-	hasJa, hasFr, hasEn := extractMovieSubs(videoFile, subsDir, info)
-
-	// Check for external subs
-	extJa := findExternalSubs(subsDir, "movie_ja")
-	if len(extJa) > 0 {
-		hasJa = true
-	}
+	extractMovieSubs(videoFile, subsDir, info)
 
 	titleEn := id
 	titleJa := ""
@@ -307,19 +299,12 @@ func cmdAddMovie(args []string) {
 	}
 
 	durMin := int(info.duration / 60)
-	jaSrt := ""
-	if hasJa {
-		if len(extJa) > 0 {
-			jaSrt = extJa[0]
-		}
-	}
 
 	db.Exec(`INSERT OR REPLACE INTO items (id, type, title_en, title_ja, cover, episode_count, duration_min, synopsis_en, synopsis_fr, synopsis_ja, tmdb_id) VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
 		id, "MOVIE", titleEn, titleJa, fmt.Sprintf("covers/%s.jpg", id), 1, durMin, synEn, synFr, synJa, tmdbID)
 
-	db.Exec(`INSERT OR REPLACE INTO episodes (item_id, season, episode, filename, duration_sec, synopsis_en, synopsis_fr, synopsis_ja, has_ja_subs, has_en_subs, has_fr_subs, ja_srt_file) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
-		id, 1, 1, filepath.Base(videoFile), info.duration, synEn, synFr, synJa,
-		boolToInt(hasJa), boolToInt(hasEn), boolToInt(hasFr), jaSrt)
+	db.Exec(`INSERT OR REPLACE INTO episodes (item_id, season, episode, filename, duration_sec, synopsis_en, synopsis_fr, synopsis_ja) VALUES (?,?,?,?,?,?,?,?)`,
+		id, 1, 1, filepath.Base(videoFile), info.duration, synEn, synFr, synJa)
 
 	db.Exec(`UPDATE meta SET value=?, updated_at=strftime('%s','now') WHERE key='library_version'`, fmt.Sprintf("%d", time.Now().Unix()))
 
@@ -491,17 +476,17 @@ func cmdMigrateSubs() {
 				continue
 			}
 
-			// Find which episode this belongs to
-			epRows, _ := db.Query("SELECT season, episode FROM episodes WHERE item_id=?", itemID)
-			if epRows == nil {
-				continue
-			}
-			// For movies or single-episode, assign to season 1 episode 1
+			// Parse episode number from filename (e.g. ep200_ja.srt → 200)
 			season, episode := 1, 1
-			if epRows.Next() {
-				epRows.Scan(&season, &episode)
+			re := regexp.MustCompile(`(?:ep|episode[_ ]?)(\d+)`)
+			if m := re.FindStringSubmatch(name); m != nil {
+				epNum, _ := strconv.Atoi(m[1])
+				if epNum > 0 {
+					episode = epNum
+				}
 			}
-			epRows.Close()
+			// Look up season for this episode
+			db.QueryRow("SELECT season FROM episodes WHERE item_id=? AND episode=?", itemID, episode).Scan(&season)
 
 			// Add label from filename for multi-track (e.g. movie_ja2.srt → "Japanese 2")
 			if strings.Contains(name, "ja1") || strings.Contains(name, "ja2") || strings.Contains(name, "ja3") || strings.Contains(name, "ja4") {

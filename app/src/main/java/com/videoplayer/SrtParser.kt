@@ -45,7 +45,7 @@ object SrtParser {
         cues.firstOrNull { positionMs >= it.startMs && positionMs < it.endMs }
 
     fun nextCueAfter(cues: List<Cue>, positionMs: Long): Cue? =
-        cues.firstOrNull { it.startMs > positionMs + 50 }
+        cues.firstOrNull { it.startMs > positionMs }
 
     fun prevCueBefore(cues: List<Cue>, positionMs: Long): Cue? =
         cues.lastOrNull { it.startMs < positionMs - 300 }

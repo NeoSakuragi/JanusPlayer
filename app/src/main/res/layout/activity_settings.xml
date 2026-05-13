@@ -27,6 +27,7 @@
             android:focusable="true" />
 
         <TextView
+            android:id="@+id/tvSettingsTitle"
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
@@ -57,6 +58,7 @@
             <TextView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
+                android:id="@+id/sectionUpdates"
                 android:text="UPDATES"
                 android:textColor="#7986CB"
                 android:textSize="12sp"
@@ -90,6 +92,7 @@
             <TextView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
+                android:id="@+id/sectionPlayback"
                 android:text="PLAYBACK"
                 android:textColor="#7986CB"
                 android:textSize="12sp"
@@ -128,6 +131,7 @@
             <TextView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
+                android:id="@+id/sectionAnki"
                 android:text="ANKI CONNECT"
                 android:textColor="#7986CB"
                 android:textSize="12sp"
@@ -175,6 +179,7 @@
             <TextView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
+                android:id="@+id/sectionDictionaries"
                 android:text="DICTIONARIES"
                 android:textColor="#7986CB"
                 android:textSize="12sp"
@@ -192,6 +197,7 @@
             <TextView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
+                android:id="@+id/sectionFieldMappings"
                 android:text="FIELD MAPPINGS"
                 android:textColor="#7986CB"
                 android:textSize="12sp"

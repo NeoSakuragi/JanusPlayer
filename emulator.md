@@ -43,7 +43,7 @@ LAN URL: `http://192.168.1.29:8900`
 
 The Go server must be running:
 ```bash
-/home/bruno/VideoPlayer/server-go/janus-server
+/home/bruno/CLProjects/Janus/server-go/janus-server
 ```
 
 ## Note

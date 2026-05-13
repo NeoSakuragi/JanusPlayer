@@ -26,6 +26,7 @@ class SettingsActivity : AppCompatActivity() {
 
         findViewById<ImageButton>(R.id.btnBack).setOnClickListener { finish() }
 
+        localizeLabels()
         setupAccount()
         setupUpdates()
         setupDownloads()
@@ -35,17 +36,52 @@ class SettingsActivity : AppCompatActivity() {
         setupFieldMappings()
     }
 
+    private fun localizeLabels() {
+        fun labelOf(container: LinearLayout): TextView? = (0 until container.childCount)
+            .map { container.getChildAt(it) }
+            .filterIsInstance<TextView>()
+            .firstOrNull()
+
+        fun sectionOf(id: Int): TextView? = findViewById(id)
+
+        // Title and section headers
+        findViewById<TextView>(R.id.tvSettingsTitle)?.text = Lang.s("settings")
+        findViewById<TextView>(R.id.sectionUpdates)?.text = Lang.s("updates")
+        findViewById<TextView>(R.id.sectionPlayback)?.text = Lang.s("playback")
+        findViewById<TextView>(R.id.sectionAnki)?.text = Lang.s("anki_connect")
+        findViewById<TextView>(R.id.sectionDictionaries)?.text = Lang.s("dictionaries")
+        findViewById<TextView>(R.id.sectionFieldMappings)?.text = Lang.s("field_mappings")
+
+        // Section labels
+        labelOf(findViewById(R.id.settingLogout))?.text = Lang.s("logout")
+        labelOf(findViewById(R.id.settingCheckAppUpdate))?.text = Lang.s("check_app_update")
+        labelOf(findViewById(R.id.settingCheckLibrary))?.text = Lang.s("check_library")
+        labelOf(findViewById(R.id.settingServerUrl))?.text = Lang.s("server_url")
+        labelOf(findViewById(R.id.settingDownloads))?.text = Lang.s("downloads")
+        findViewById<TextView>(R.id.tvDownloadsStatus)?.text = Lang.s("manage_downloads")
+        labelOf(findViewById(R.id.settingHwdec))?.text = Lang.s("hw_decoding")
+        labelOf(findViewById(R.id.settingAnkiEnabled))?.text = Lang.s("anki_connect")
+        labelOf(findViewById(R.id.settingAnkiUrl))?.text = "AnkiConnect URL"
+        labelOf(findViewById(R.id.settingAnkiTest))?.text = Lang.s("test_connection")
+        findViewById<TextView>(R.id.tvAnkiTestValue)?.text = Lang.s("tap_to_test")
+        labelOf(findViewById(R.id.settingAnkiDeck))?.text = Lang.s("deck")
+        labelOf(findViewById(R.id.settingAnkiNoteType))?.text = Lang.s("note_type")
+        labelOf(findViewById(R.id.settingAnkiTags))?.text = Lang.s("tags")
+        findViewById<TextView>(R.id.tvAppUpdateStatus)?.text = Lang.s("tap_to_check")
+        findViewById<TextView>(R.id.tvLibraryUpdateStatus)?.text = Lang.s("tap_to_check")
+    }
+
     private fun setupAccount() {
         val prefs = getSharedPreferences("janus_settings", MODE_PRIVATE)
         val username = prefs.getString("username", "unknown") ?: "unknown"
         val tvStatus = findViewById<TextView>(R.id.tvLogoutStatus)
-        tvStatus.text = "Logged in as $username"
+        tvStatus.text = Lang.s("logged_in_as", username)
 
         findViewById<LinearLayout>(R.id.settingLogout).setOnClickListener {
             AlertDialog.Builder(this)
-                .setTitle("Logout")
-                .setMessage("This will clear your session and cached library.")
-                .setPositiveButton("Logout") { _, _ ->
+                .setTitle(Lang.s("logout"))
+                .setMessage("")
+                .setPositiveButton(Lang.s("logout")) { _, _ ->
                     prefs.edit().remove("auth_token").remove("username").apply()
                     val intent = android.content.Intent(this, LibraryActivity::class.java)
                     intent.addFlags(android.content.Intent.FLAG_ACTIVITY_CLEAR_TOP or android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
@@ -53,7 +89,7 @@ class SettingsActivity : AppCompatActivity() {
                     startActivity(intent)
                     finish()
                 }
-                .setNegativeButton("Cancel", null)
+                .setNegativeButton(Lang.s("cancel"), null)
                 .show()
         }
     }

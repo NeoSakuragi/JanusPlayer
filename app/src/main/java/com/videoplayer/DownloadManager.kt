@@ -17,9 +17,13 @@ object DownloadManager {
     data class DownloadItem(
         val seriesId: String,
         val episodeNum: Int,
+        val season: Int = 1,
         val videoFilename: String,
         val videoUrl: String,
         val srtFiles: List<Pair<String, String>>,
+        val thumbUrl: String = "",
+        val thumbFile: String = "",
+        val durationSec: Double = 0.0,
         var state: State = State.QUEUED,
         var progress: Int = 0,
         var bytesDownloaded: Long = 0,
@@ -40,15 +44,19 @@ object DownloadManager {
     fun getDownloadsDir(): File = downloadsDir
 
     fun enqueueEpisode(
-        seriesId: String, episodeNum: Int, videoFilename: String,
-        videoUrl: String, srtFiles: List<Pair<String, String>>,
+        seriesId: String, episodeNum: Int, season: Int = 1,
+        videoFilename: String, videoUrl: String,
+        srtFiles: List<Pair<String, String>>,
+        thumbUrl: String = "", thumbFile: String = "",
+        durationSec: Double = 0.0,
         titleEn: String = "", seriesTitleEn: String = ""
     ) {
         if (items.any { it.seriesId == seriesId && it.episodeNum == episodeNum }) return
         items.add(DownloadItem(
-            seriesId = seriesId, episodeNum = episodeNum,
+            seriesId = seriesId, episodeNum = episodeNum, season = season,
             videoFilename = videoFilename, videoUrl = videoUrl,
-            srtFiles = srtFiles, titleEn = titleEn, seriesTitleEn = seriesTitleEn
+            srtFiles = srtFiles, thumbUrl = thumbUrl, thumbFile = thumbFile,
+            durationSec = durationSec, titleEn = titleEn, seriesTitleEn = seriesTitleEn
         ))
         saveState()
         Log.d(TAG, "Enqueued $seriesId ep$episodeNum")
@@ -66,6 +74,12 @@ object DownloadManager {
 
     fun getLocalSubsPath(seriesId: String, srtFile: String): String? {
         val file = File(downloadsDir, "$seriesId/$srtFile")
+        return if (file.exists()) file.absolutePath else null
+    }
+
+    fun getLocalThumbPath(seriesId: String, thumbFile: String): String? {
+        if (thumbFile.isEmpty()) return null
+        val file = File(downloadsDir, "$seriesId/$thumbFile")
         return if (file.exists()) file.absolutePath else null
     }
 
@@ -138,6 +152,7 @@ object DownloadManager {
                 arr.put(JSONObject().apply {
                     put("seriesId", item.seriesId)
                     put("episodeNum", item.episodeNum)
+                    put("season", item.season)
                     put("videoFilename", item.videoFilename)
                     put("videoUrl", item.videoUrl)
                     put("state", item.state.name)
@@ -146,6 +161,9 @@ object DownloadManager {
                     put("totalBytes", item.totalBytes)
                     put("titleEn", item.titleEn)
                     put("seriesTitleEn", item.seriesTitleEn)
+                    put("thumbUrl", item.thumbUrl)
+                    put("thumbFile", item.thumbFile)
+                    put("durationSec", item.durationSec)
                     val srtArr = JSONArray()
                     for ((name, url) in item.srtFiles) {
                         srtArr.put(JSONObject().apply { put("name", name); put("url", url) })
@@ -176,9 +194,13 @@ object DownloadManager {
                 items.add(DownloadItem(
                     seriesId = obj.getString("seriesId"),
                     episodeNum = obj.getInt("episodeNum"),
+                    season = obj.optInt("season", 1),
                     videoFilename = obj.getString("videoFilename"),
                     videoUrl = obj.getString("videoUrl"),
                     srtFiles = srtFiles,
+                    thumbUrl = obj.optString("thumbUrl", ""),
+                    thumbFile = obj.optString("thumbFile", ""),
+                    durationSec = obj.optDouble("durationSec", 0.0),
                     state = if (state == State.DOWNLOADING) State.QUEUED else state,
                     progress = obj.optInt("progress", 0),
                     bytesDownloaded = obj.optLong("bytesDownloaded", 0),

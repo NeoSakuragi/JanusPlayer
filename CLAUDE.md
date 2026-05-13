@@ -27,10 +27,19 @@ Janus is a video player designed for learning Japanese through anime and movies.
     JanusApi.kt               — HTTP client (split API: library index, item detail, season data)
     AppSettings.kt            — SharedPreferences wrapper
     SettingsActivity.kt       — Settings: updates, downloads, server URL, playback, Anki
+    AnkiConnectClient.kt     — AnkiConnect API for card export
+    BrowserActivity.kt       — WebView browser
+    CardData.kt              — Anki card data model
+    DictionaryCatalog.kt     — Available dictionary listing
+    DictionaryDownloader.kt  — Dictionary file downloader
+    DictionaryManager.kt     — Dictionary lifecycle management
+    MainActivity.kt          — Launch activity
+    MediaCapture.kt          — Screenshot/audio capture for Anki cards
 
 /server-go                    — Go media server (production)
     main.go                   — HTTP server, SQLite backend, REST API
-    import.go                 — JSON-to-SQLite migration tool
+    auth.go                   — JWT auth, user management CLI
+    pipeline.go               — Content pipeline (subtitle extraction, import)
     go.mod / go.sum           — Go modules
 
 /server                       — Python build tools (not runtime)
@@ -38,6 +47,8 @@ Janus is a video player designed for learning Japanese through anime and movies.
     fetch_covers.py           — AniList API cover art downloader
     manage.py                 — CLI: build, covers, status
     config.py                 — Configuration
+build_dict_db.py              — Dictionary DB builder (JMdict → SQLite)
+deploy.sh                     — Build APK + deploy to server
 
 /data/janus                   — Media data (not in git)
     janus.db                  — SQLite database (items, episodes, meta, watch progress)
@@ -78,7 +89,7 @@ DownloadService (foreground) downloads episodes to device storage. DownloadManag
 
 ### Server (Go)
 ```bash
-cd /home/bruno/VideoPlayer/server-go
+cd /home/bruno/CLProjects/Janus/server-go
 ./janus-server                # Starts on port 8900, reads /data/janus/janus.db
 ```
 
