@@ -202,7 +202,7 @@ class LibraryActivity : ComponentActivity() {
         ) {
             Column(
                 modifier = Modifier.fillMaxSize().then(
-                    if (currentScreen != Screen.ITEM_DETAIL) Modifier.padding(top = dimens.rowPadding) else Modifier
+                    if (currentScreen != Screen.ITEM_DETAIL && currentScreen != Screen.LOGIN) Modifier.padding(top = dimens.rowPadding) else Modifier
                 )
             ) {
                 // Header (hidden on login and item detail)
@@ -655,14 +655,6 @@ class LibraryActivity : ComponentActivity() {
                 Spacer(Modifier.height(48.dp))
 
                 androidx.compose.material3.OutlinedTextField(
-                    value = serverInput, onValueChange = { serverInput = it },
-                    label = { androidx.compose.material3.Text(Lang.s("server")) },
-                    singleLine = true, colors = fieldColors,
-                    modifier = Modifier.fillMaxWidth()
-                )
-                Spacer(Modifier.height(16.dp))
-
-                androidx.compose.material3.OutlinedTextField(
                     value = username, onValueChange = { username = it },
                     label = { androidx.compose.material3.Text(Lang.s("username")) },
                     singleLine = true, colors = fieldColors,
@@ -977,12 +969,6 @@ class LibraryActivity : ComponentActivity() {
                             }
                         }
                     }
-                } else if (detailSeasons.size == 1) {
-                    androidx.compose.material3.Text(
-                        Lang.s("episodes", item.episodeCount),
-                        color = Color(0xFFCCCCCC), fontSize = 15.sp,
-                        modifier = Modifier.padding(horizontal = dimens.rowPadding, vertical = 8.dp)
-                    )
                 }
 
             if (detailEpisodes.isNotEmpty()) {
