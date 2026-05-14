@@ -175,23 +175,6 @@
                 <TextView android:id="@+id/tvAnkiTagsValue" android:layout_width="wrap_content" android:layout_height="wrap_content" android:textColor="#888888" android:textSize="13sp" android:layout_marginTop="2dp" />
             </LinearLayout>
 
-            <!-- Dictionaries section -->
-            <TextView
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:id="@+id/sectionDictionaries"
-                android:text="DICTIONARIES"
-                android:textColor="#7986CB"
-                android:textSize="12sp"
-                android:textStyle="bold"
-                android:layout_marginBottom="8dp"
-                android:layout_marginTop="24dp" />
-
-            <LinearLayout
-                android:id="@+id/dictionariesContainer"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:orientation="vertical" />
 
             <!-- Field mappings header -->
             <TextView

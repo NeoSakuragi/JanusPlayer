@@ -9,6 +9,7 @@ import okhttp3.Request
 import org.json.JSONObject
 import java.io.File
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 
 class AppUpdater(private val activity: Activity, private val serverUrl: String) {
 
@@ -18,13 +19,22 @@ class AppUpdater(private val activity: Activity, private val serverUrl: String) 
         .cache(null)
         .build()
 
+    private val downloading = AtomicBoolean(false)
+
     data class UpdateInfo(val versionCode: Int, val versionName: String, val apkName: String)
+
+    private fun authRequest(url: String): Request {
+        val token = activity.getSharedPreferences("janus_settings", Activity.MODE_PRIVATE)
+            .getString("auth_token", null)
+        val builder = Request.Builder().url(url)
+        token?.let { builder.header("Authorization", "Bearer $it") }
+        return builder.build()
+    }
 
     fun checkForUpdate(onResult: (UpdateInfo?) -> Unit) {
         Thread {
             try {
-                val request = Request.Builder().url("$serverUrl/api/version").build()
-                val response = client.newCall(request).execute()
+                val response = client.newCall(authRequest("$serverUrl/api/version")).execute()
                 if (!response.isSuccessful) { activity.runOnUiThread { onResult(null) }; return@Thread }
                 val json = JSONObject(response.body?.string() ?: "")
                 val remoteCode = json.getInt("version_code")
@@ -45,14 +55,23 @@ class AppUpdater(private val activity: Activity, private val serverUrl: String) 
     }
 
     fun downloadAndInstall(apkName: String, onProgress: ((Int) -> Unit)? = null) {
+        if (!downloading.compareAndSet(false, true)) {
+            Log.d("AppUpdater", "Download already in progress")
+            return
+        }
         Thread {
             try {
-                val request = Request.Builder().url("$serverUrl/api/update/$apkName").build()
-                val response = client.newCall(request).execute()
-                if (!response.isSuccessful) return@Thread
+                val apkFile = File(activity.cacheDir, "janus-update.apk")
+                apkFile.delete()
+
+                val response = client.newCall(authRequest("$serverUrl/api/update/$apkName")).execute()
+                if (!response.isSuccessful) {
+                    Log.e("AppUpdater", "Download failed: ${response.code}")
+                    activity.runOnUiThread { onProgress?.invoke(-1) }
+                    return@Thread
+                }
                 val totalBytes = response.body?.contentLength() ?: -1
                 var downloaded = 0L
-                val apkFile = File(activity.cacheDir, "janus-update.apk")
                 apkFile.outputStream().use { out ->
                     response.body?.byteStream()?.let { input ->
                         val buffer = ByteArray(65536)
@@ -68,10 +87,19 @@ class AppUpdater(private val activity: Activity, private val serverUrl: String) 
                         }
                     }
                 }
+                if (totalBytes > 0 && apkFile.length() != totalBytes) {
+                    Log.e("AppUpdater", "Incomplete: ${apkFile.length()}/$totalBytes")
+                    apkFile.delete()
+                    activity.runOnUiThread { onProgress?.invoke(-1) }
+                    return@Thread
+                }
+                Log.d("AppUpdater", "Downloaded ${apkFile.length() / 1024 / 1024}MB")
                 activity.runOnUiThread { installApk(apkFile) }
             } catch (e: Exception) {
                 Log.e("AppUpdater", "Download failed: ${e.message}")
                 activity.runOnUiThread { onProgress?.invoke(-1) }
+            } finally {
+                downloading.set(false)
             }
         }.start()
     }

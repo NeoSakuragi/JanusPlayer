@@ -11,8 +11,8 @@ android {
         applicationId = "com.videoplayer"
         minSdk = 26
         targetSdk = 34
-        versionCode = 61
-        versionName = "8.4"
+        versionCode = 73
+        versionName = "10.2"
     }
 
     splits {
@@ -80,7 +80,7 @@ dependencies {
     implementation("com.hierynomus:smbj:0.13.0")
     implementation("androidx.recyclerview:recyclerview:1.3.2")
     implementation("androidx.swiperefreshlayout:swiperefreshlayout:1.1.0")
-    implementation("com.atilika.kuromoji:kuromoji-ipadic:0.9.0")
+
 
     // Networking + image loading
     implementation("com.squareup.okhttp3:okhttp:4.12.0")

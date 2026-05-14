@@ -31,7 +31,6 @@ class SettingsActivity : AppCompatActivity() {
         setupUpdates()
         setupDownloads()
         setupPlaybackSettings()
-        setupDictionaries()
         setupAnkiSettings()
         setupFieldMappings()
     }
@@ -49,7 +48,6 @@ class SettingsActivity : AppCompatActivity() {
         findViewById<TextView>(R.id.sectionUpdates)?.text = Lang.s("updates")
         findViewById<TextView>(R.id.sectionPlayback)?.text = Lang.s("playback")
         findViewById<TextView>(R.id.sectionAnki)?.text = Lang.s("anki_connect")
-        findViewById<TextView>(R.id.sectionDictionaries)?.text = Lang.s("dictionaries")
         findViewById<TextView>(R.id.sectionFieldMappings)?.text = Lang.s("field_mappings")
 
         // Section labels
@@ -362,131 +360,6 @@ class SettingsActivity : AppCompatActivity() {
         }
     }
 
-    private fun setupDictionaries() {
-        val container = findViewById<LinearLayout>(R.id.dictionariesContainer)
-        container.removeAllViews()
-
-        val dictDb = DictionaryDatabase.getInstance(this)
-        val installed = dictDb.getInstalledDicts()
-        val downloader = DictionaryDownloader(this)
-
-        // Quick Setup button — downloads prebuilt DB with everything
-        if (installed.isEmpty()) {
-            val quickBtn = MaterialButton(this).apply {
-                text = "Quick Setup (JMdict + Freq + Pitch + Kanji — 63MB)"
-                setBackgroundColor(0xFF7986CB.toInt())
-                setTextColor(0xFFFFFFFF.toInt())
-                textSize = 14f
-                isFocusable = true
-            }
-            val statusText = TextView(this).apply {
-                setTextColor(0xFF81C784.toInt())
-                textSize = 12f
-                setPadding(0, 8, 0, 16)
-                visibility = View.GONE
-            }
-            quickBtn.setOnClickListener {
-                quickBtn.isEnabled = false
-                quickBtn.text = "Downloading..."
-                statusText.visibility = View.VISIBLE
-                dictDb.downloadPrebuilt(
-                    onProgress = { phase, pct ->
-                        mainHandler.post { statusText.text = "$phase $pct%" }
-                    },
-                    onComplete = { success, msg ->
-                        mainHandler.post {
-                            if (success) {
-                                Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
-                                setupDictionaries()
-                            } else {
-                                statusText.text = "Failed: $msg"
-                                quickBtn.isEnabled = true
-                                quickBtn.text = "Retry Quick Setup"
-                            }
-                        }
-                    }
-                )
-            }
-            container.addView(quickBtn)
-            container.addView(statusText)
-        }
-
-        for (entry in DictionaryCatalog.entries) {
-            val row = layoutInflater.inflate(R.layout.item_dictionary, container, false)
-            val tvName = row.findViewById<TextView>(R.id.tvDictName)
-            val tvDesc = row.findViewById<TextView>(R.id.tvDictDesc)
-            val tvSize = row.findViewById<TextView>(R.id.tvDictSize)
-            val tvStatus = row.findViewById<TextView>(R.id.tvDictStatus)
-            val progress = row.findViewById<ProgressBar>(R.id.dictProgress)
-            val btnAction = row.findViewById<MaterialButton>(R.id.btnDictAction)
-
-            tvName.text = entry.name
-            tvDesc.text = entry.description
-            tvSize.text = if (entry.sizeMb >= 1f) "%.0f MB".format(entry.sizeMb) else "%.1f MB".format(entry.sizeMb)
-
-            val isInstalled = installed.contains(entry.id)
-
-            if (isInstalled) {
-                btnAction.text = "Delete"
-                btnAction.setBackgroundColor(0xFF442222.toInt())
-            } else {
-                btnAction.text = "Download"
-            }
-
-            val clickAction = android.view.View.OnClickListener {
-                if (installed.contains(entry.id) || dictDb.getInstalledDicts().contains(entry.id)) {
-                    // Delete
-                    AlertDialog.Builder(this)
-                        .setTitle("Delete ${entry.name}?")
-                        .setMessage("This will remove the dictionary data.")
-                        .setPositiveButton("Delete") { _, _ ->
-                            Thread {
-                                dictDb.deleteDictionary(entry.id)
-                                mainHandler.post { setupDictionaries() }
-                            }.start()
-                        }
-                        .setNegativeButton("Cancel", null)
-                        .show()
-                } else {
-                    // Download
-                    btnAction.isEnabled = false
-                    btnAction.text = "..."
-                    progress.visibility = View.VISIBLE
-                    tvStatus.visibility = View.VISIBLE
-                    tvStatus.text = "Starting..."
-
-                    downloader.download(entry, object : DictionaryDownloader.ProgressListener {
-                        override fun onProgress(phase: String, percent: Int) {
-                            mainHandler.post {
-                                tvStatus.text = phase
-                                progress.progress = percent
-                            }
-                        }
-
-                        override fun onComplete(success: Boolean, message: String) {
-                            mainHandler.post {
-                                progress.visibility = View.GONE
-                                if (success) {
-                                    tvStatus.text = message
-                                    Toast.makeText(this@SettingsActivity, "${entry.name} installed", Toast.LENGTH_SHORT).show()
-                                    setupDictionaries()
-                                } else {
-                                    tvStatus.text = "Failed: $message"
-                                    tvStatus.setTextColor(0xFFFF5555.toInt())
-                                    btnAction.isEnabled = true
-                                    btnAction.text = "Retry"
-                                }
-                            }
-                        }
-                    })
-                }
-            }
-
-            btnAction.setOnClickListener(clickAction)
-            row.setOnClickListener(clickAction)
-            container.addView(row)
-        }
-    }
 
     private fun showTextInput(title: String, hint: String, current: String, onSet: (String) -> Unit) {
         val input = EditText(this).apply {

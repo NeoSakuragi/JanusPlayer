@@ -103,8 +103,46 @@ func initDB() {
 			log.Fatalf("Schema: %v", err)
 		}
 	}
+	runMigrations()
 	log.Printf("DB ready: %s", dbPath)
 }
+
+// ── Migrations ───────────────────────────────────────
+
+var migrations = []struct {
+	id  string
+	sql string
+}{
+	{"001_season_locales", `CREATE TABLE IF NOT EXISTS season_locales (
+		item_id TEXT NOT NULL,
+		season INTEGER NOT NULL,
+		language TEXT NOT NULL,
+		name TEXT DEFAULT '',
+		PRIMARY KEY (item_id, season, language)
+	)`},
+}
+
+func runMigrations() {
+	db.Exec(`CREATE TABLE IF NOT EXISTS migrations (
+		id TEXT PRIMARY KEY,
+		applied_at INTEGER DEFAULT (strftime('%s','now'))
+	)`)
+	for _, m := range migrations {
+		var exists int
+		db.QueryRow("SELECT COUNT(*) FROM migrations WHERE id=?", m.id).Scan(&exists)
+		if exists > 0 {
+			continue
+		}
+		if _, err := db.Exec(m.sql); err != nil {
+			log.Printf("Migration %s failed: %v", m.id, err)
+			continue
+		}
+		db.Exec("INSERT INTO migrations (id) VALUES (?)", m.id)
+		log.Printf("Migration applied: %s", m.id)
+	}
+}
+
+// ── Schema ───────────────────────────────────────────
 
 var schema = []string{
 	`CREATE TABLE IF NOT EXISTS items (
@@ -347,7 +385,17 @@ func handleItemDetail(w http.ResponseWriter, itemID string) {
 			for rows.Next() {
 				var sNum, sCount int
 				rows.Scan(&sNum, &sCount)
-				seasons = append(seasons, map[string]any{"season": sNum, "episode_count": sCount})
+				names := map[string]string{}
+				nameRows, _ := db.Query("SELECT language, name FROM season_locales WHERE item_id=? AND season=?", itemID, sNum)
+				if nameRows != nil {
+					for nameRows.Next() {
+						var lang, name string
+						nameRows.Scan(&lang, &name)
+						names[lang] = name
+					}
+					nameRows.Close()
+				}
+				seasons = append(seasons, map[string]any{"season": sNum, "episode_count": sCount, "names": names})
 			}
 		}
 		writeJSON(w, map[string]any{

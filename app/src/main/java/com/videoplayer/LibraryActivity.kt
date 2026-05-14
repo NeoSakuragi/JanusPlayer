@@ -31,6 +31,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInParent
+import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -53,7 +54,7 @@ class LibraryActivity : ComponentActivity() {
 
     companion object {
         private const val TAG = "Library"
-        private const val DEFAULT_SERVER_URL = "http://10.0.2.2:8900"
+        private const val DEFAULT_SERVER_URL = "https://canneji.duckdns.org/janus"
         private const val PREFS_NAME = "janus_settings"
     }
 
@@ -81,6 +82,7 @@ class LibraryActivity : ComponentActivity() {
     private var gridColumnCount = 4
     private val detailSeasons = mutableStateListOf<JanusApi.SeasonInfo>()
     private val selectedSeason = mutableIntStateOf(0)
+    private val seasonCache = mutableMapOf<Int, List<JanusApi.Episode>>()
     private val detailLoading = mutableStateOf(false)
     private val previewRequested = mutableStateOf(false)
     private val showPreview = mutableStateOf(false)
@@ -203,8 +205,8 @@ class LibraryActivity : ComponentActivity() {
                     if (currentScreen != Screen.ITEM_DETAIL) Modifier.padding(top = dimens.rowPadding) else Modifier
                 )
             ) {
-                // Header (always visible except item detail)
-                if (currentScreen != Screen.ITEM_DETAIL) {
+                // Header (hidden on login and item detail)
+                if (currentScreen != Screen.ITEM_DETAIL && currentScreen != Screen.LOGIN) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         modifier = Modifier.fillMaxWidth().padding(horizontal = dimens.rowPadding, vertical = 8.dp)
@@ -596,97 +598,101 @@ class LibraryActivity : ComponentActivity() {
         var password by remember { mutableStateOf("") }
         val error by loginError
 
-        Column(
-            modifier = Modifier.fillMaxSize().padding(horizontal = dimens.rowPadding),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Center
-        ) {
-            androidx.compose.material3.Text(
-                Lang.s("app_name"), color = Color(0xFFBB86FC), fontSize = 36.sp, fontWeight = FontWeight.Bold
-            )
-            Spacer(Modifier.height(32.dp))
+        val fieldColors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(
+            focusedTextColor = Color.White, unfocusedTextColor = Color.White,
+            focusedBorderColor = Color(0xFFBB86FC), unfocusedBorderColor = Color(0xFF444444),
+            cursorColor = Color(0xFFBB86FC),
+            focusedContainerColor = Color(0xFF1E1E2E), unfocusedContainerColor = Color(0xFF1E1E2E),
+        )
 
-            val fieldColors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(
-                focusedTextColor = Color.White, unfocusedTextColor = Color.White,
-                focusedBorderColor = Color(0xFFBB86FC), unfocusedBorderColor = Color(0xFF444444),
-                cursorColor = Color(0xFFBB86FC),
-                focusedContainerColor = Color(0xFF1E1E2E), unfocusedContainerColor = Color(0xFF1E1E2E),
-            )
-
-            androidx.compose.material3.Text(Lang.s("server"), color = Color(0xFFAAAAAA), fontSize = 13.sp)
-            Spacer(Modifier.height(4.dp))
-            androidx.compose.material3.OutlinedTextField(
-                value = serverInput, onValueChange = { serverInput = it },
-                singleLine = true, colors = fieldColors,
-                modifier = Modifier.fillMaxWidth(dimens.loginFieldFraction)
-            )
-            Spacer(Modifier.height(16.dp))
-
-            androidx.compose.material3.Text(Lang.s("username"), color = Color(0xFFAAAAAA), fontSize = 13.sp)
-            Spacer(Modifier.height(4.dp))
-            androidx.compose.material3.OutlinedTextField(
-                value = username, onValueChange = { username = it },
-                singleLine = true, colors = fieldColors,
-                modifier = Modifier.fillMaxWidth(dimens.loginFieldFraction)
-            )
-            Spacer(Modifier.height(16.dp))
-
-            androidx.compose.material3.Text(Lang.s("password"), color = Color(0xFFAAAAAA), fontSize = 13.sp)
-            Spacer(Modifier.height(4.dp))
-            androidx.compose.material3.OutlinedTextField(
-                value = password, onValueChange = { password = it },
-                singleLine = true, colors = fieldColors,
-                visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
-                modifier = Modifier.fillMaxWidth(dimens.loginFieldFraction)
-            )
-
-            if (error.isNotEmpty()) {
-                Spacer(Modifier.height(8.dp))
-                androidx.compose.material3.Text(error, color = Color(0xFFFF5252), fontSize = 13.sp)
-            }
-
-            Spacer(Modifier.height(24.dp))
-            Box(
-                modifier = Modifier
-                    .background(Color(0xFFBB86FC), RoundedCornerShape(8.dp))
-                    .clickable {
-                        var url = serverInput.trim()
-                        if (url.isNotEmpty() && !url.startsWith("http")) url = "http://$url"
-                        val user = username.trim()
-                        val pass = password.trim()
-                        if (url.isEmpty() || user.isEmpty() || pass.isEmpty()) {
-                            loginError.value = Lang.s("all_fields_required")
-                            return@clickable
-                        }
-                        loginError.value = ""
-                        serverUrl.value = url
-                        api = JanusApi(url)
-                        Thread {
-                            try {
-                                val result = api.login(user, pass)
-                                runOnUiThread {
-                                    if (result != null) {
-                                        PlayerManager.authToken = result.token
-                                        getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
-                                            .putString("server_url", url)
-                                            .putString("auth_token", result.token)
-                                            .putString("username", result.username)
-                                            .apply()
-                                        screen.value = Screen.MAIN
-                                        loadLibrary()
-                                    } else {
-                                        loginError.value = Lang.s("invalid_credentials")
-                                    }
-                                }
-                            } catch (e: Exception) {
-                                runOnUiThread { loginError.value = "Connection failed: ${e.message}" }
+        val doLogin = {
+            var url = serverInput.trim()
+            if (url.isNotEmpty() && !url.startsWith("http")) url = "http://$url"
+            val user = username.trim()
+            val pass = password.trim()
+            if (url.isEmpty() || user.isEmpty() || pass.isEmpty()) {
+                loginError.value = Lang.s("all_fields_required")
+            } else {
+                loginError.value = ""
+                serverUrl.value = url
+                api = JanusApi(url)
+                imageLoader = buildImageLoader()
+                Thread {
+                    try {
+                        val result = api.login(user, pass)
+                        runOnUiThread {
+                            if (result != null) {
+                                PlayerManager.authToken = result.token
+                                getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
+                                    .putString("server_url", url)
+                                    .putString("auth_token", result.token)
+                                    .putString("username", result.username)
+                                    .apply()
+                                screen.value = Screen.MAIN
+                                loadLibrary()
+                            } else {
+                                loginError.value = Lang.s("invalid_credentials")
                             }
-                        }.start()
+                        }
+                    } catch (e: Exception) {
+                        runOnUiThread { loginError.value = "Connection failed: ${e.message}" }
                     }
-                    .padding(horizontal = 48.dp, vertical = 14.dp),
+                }.start()
+            }
+        }
+
+        Box(
+            modifier = Modifier.fillMaxSize().background(Color(0xFF0A0A1A)),
+            contentAlignment = Alignment.Center
+        ) {
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                modifier = Modifier.widthIn(max = 400.dp).padding(horizontal = 32.dp)
+            ) {
+                androidx.compose.material3.Text(
+                    Lang.s("app_name"), color = Color(0xFFBB86FC), fontSize = 42.sp, fontWeight = FontWeight.Bold
+                )
+                Spacer(Modifier.height(48.dp))
+
+                androidx.compose.material3.OutlinedTextField(
+                    value = serverInput, onValueChange = { serverInput = it },
+                    label = { androidx.compose.material3.Text(Lang.s("server")) },
+                    singleLine = true, colors = fieldColors,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Spacer(Modifier.height(16.dp))
+
+                androidx.compose.material3.OutlinedTextField(
+                    value = username, onValueChange = { username = it },
+                    label = { androidx.compose.material3.Text(Lang.s("username")) },
+                    singleLine = true, colors = fieldColors,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Spacer(Modifier.height(16.dp))
+
+                androidx.compose.material3.OutlinedTextField(
+                    value = password, onValueChange = { password = it },
+                    label = { androidx.compose.material3.Text(Lang.s("password")) },
+                    singleLine = true, colors = fieldColors,
+                    visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                if (error.isNotEmpty()) {
+                    Spacer(Modifier.height(12.dp))
+                    androidx.compose.material3.Text(error, color = Color(0xFFFF5252), fontSize = 14.sp)
+                }
+
+                Spacer(Modifier.height(32.dp))
+                Box(
+                    modifier = Modifier.fillMaxWidth()
+                        .background(Color(0xFFBB86FC), RoundedCornerShape(12.dp))
+                        .clickable { doLogin() }
+                        .padding(vertical = 16.dp),
                 contentAlignment = Alignment.Center
             ) {
-                androidx.compose.material3.Text(Lang.s("login"), color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                androidx.compose.material3.Text(Lang.s("login"), color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+            }
             }
         }
     }
@@ -700,6 +706,8 @@ class LibraryActivity : ComponentActivity() {
         library.clear()
         seriesList.clear()
         movieList.clear()
+        loading.value = false
+        isOffline.value = false
         screen.value = Screen.LOGIN
     }
 
@@ -717,18 +725,21 @@ class LibraryActivity : ComponentActivity() {
         val scrollState = rememberScrollState()
         val showPreviewState by showPreview
 
-        val epCardPositions = remember { mutableStateMapOf<Int, Pair<Int, Int>>() }
+        val epCardRefs = remember { mutableStateMapOf<Int, androidx.compose.ui.layout.LayoutCoordinates>() }
         var detailViewportHeight by remember { mutableIntStateOf(1080) }
         LaunchedEffect(focusIdx) {
             if (item.type != "MOVIE" && detailEpisodes.isNotEmpty()) {
-                val bounds = epCardPositions[focusIdx] ?: return@LaunchedEffect
-                val visibleTop = scrollState.value
-                val visibleBottom = visibleTop + detailViewportHeight
-                if (bounds.second > visibleBottom) {
-                    scrollState.animateScrollTo(bounds.second - detailViewportHeight + 32)
-                } else if (bounds.first < visibleTop) {
-                    scrollState.animateScrollTo((bounds.first - 32).coerceAtLeast(0))
+                val coords = epCardRefs[focusIdx] ?: return@LaunchedEffect
+                if (!coords.isAttached) return@LaunchedEffect
+                val cardTop = coords.positionInRoot().y.toInt()
+                val cardBottom = cardTop + coords.size.height
+                val scrollY = scrollState.value
+                val pageScrollY = when {
+                    cardBottom > detailViewportHeight -> scrollY + (cardBottom - detailViewportHeight) + 32
+                    cardTop < 0 -> (scrollY + cardTop - 32).coerceAtLeast(0)
+                    else -> null
                 }
+                if (pageScrollY != null) scrollState.animateScrollTo(pageScrollY)
             }
         }
 
@@ -908,14 +919,73 @@ class LibraryActivity : ComponentActivity() {
                 }
             }
 
-            // Episode grid (for series)
-            if (item.type != "MOVIE" && detailEpisodes.isNotEmpty()) {
+            // Season selector + Episode grid (for series)
+            if (item.type != "MOVIE" && (detailEpisodes.isNotEmpty() || detailSeasons.isNotEmpty())) {
                 Spacer(Modifier.height(8.dp))
-                androidx.compose.material3.Text(
-                    "${item.episodeCount} episodes",
-                    color = Color(0xFFCCCCCC), fontSize = 15.sp,
-                    modifier = Modifier.padding(horizontal = dimens.rowPadding, vertical = 8.dp)
-                )
+
+                val selSeason by selectedSeason
+                if (detailSeasons.size > 1) {
+                    var expanded by remember { mutableStateOf(false) }
+                    val currentSeason = detailSeasons.firstOrNull { it.season == selSeason }
+                    Box(modifier = Modifier.padding(horizontal = dimens.rowPadding, vertical = 8.dp)) {
+                        Box(
+                            modifier = Modifier
+                                .background(Color(0xFF2A2A3A), RoundedCornerShape(8.dp))
+                                .clickable { expanded = !expanded }
+                                .padding(horizontal = 16.dp, vertical = 10.dp)
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                val seasonLabel = currentSeason?.let { s ->
+                                    val prefix = "S${String.format("%02d", s.season)}"
+                                    val name = s.name()
+                                    if (name.isNotEmpty()) "$prefix · $name (${s.episodeCount})"
+                                    else "$prefix (${s.episodeCount})"
+                                } ?: "S01"
+                                androidx.compose.material3.Text(
+                                    seasonLabel,
+                                    color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.SemiBold
+                                )
+                                Spacer(Modifier.width(8.dp))
+                                androidx.compose.material3.Text(
+                                    if (expanded) "▲" else "▼",
+                                    color = Color(0xFFBB86FC), fontSize = 12.sp
+                                )
+                            }
+                        }
+                        androidx.compose.material3.DropdownMenu(
+                            expanded = expanded,
+                            onDismissRequest = { expanded = false },
+                            modifier = Modifier.background(Color(0xFF2A2A3A)),
+                        ) {
+                            for (s in detailSeasons) {
+                                androidx.compose.material3.DropdownMenuItem(
+                                    text = {
+                                        val prefix = "S${String.format("%02d", s.season)}"
+                                        val name = s.name()
+                                        val label = if (name.isNotEmpty()) "$prefix · $name (${s.episodeCount})"
+                                            else "$prefix (${s.episodeCount})"
+                                        androidx.compose.material3.Text(
+                                            label,
+                                            color = if (s.season == selSeason) Color(0xFFBB86FC) else Color.White
+                                        )
+                                    },
+                                    onClick = {
+                                        expanded = false
+                                        if (s.season != selSeason) loadSeason(item.id, s.season)
+                                    }
+                                )
+                            }
+                        }
+                    }
+                } else if (detailSeasons.size == 1) {
+                    androidx.compose.material3.Text(
+                        Lang.s("episodes", item.episodeCount),
+                        color = Color(0xFFCCCCCC), fontSize = 15.sp,
+                        modifier = Modifier.padding(horizontal = dimens.rowPadding, vertical = 8.dp)
+                    )
+                }
+
+            if (detailEpisodes.isNotEmpty()) {
                 // Use a fixed-height grid since we're inside a scrollable Column
                 val minCardWidth = dimens.gridMinCardWidth
                 val horizontalPadding = dimens.rowPadding
@@ -937,8 +1007,7 @@ class LibraryActivity : ComponentActivity() {
                 ) {
                     itemsIndexed(detailEpisodes) { idx, ep ->
                         Box(modifier = Modifier.onGloballyPositioned { coords ->
-                            val y = coords.positionInParent().y.toInt()
-                            epCardPositions[idx] = y to (y + coords.size.height)
+                            epCardRefs[idx] = coords
                         }) {
                             EpisodeGridCard(item.id, ep, focused = showCursor && detailFocus.value == DetailFocus.GRID && idx == focusIdx) {
                                 episodeFocus.intValue = idx
@@ -949,7 +1018,8 @@ class LibraryActivity : ComponentActivity() {
                     }
                 }
                 }
-            }
+            } // end episode grid
+            } // end season selector + episodes
 
             Spacer(Modifier.height(32.dp))
         }
@@ -1088,7 +1158,7 @@ class LibraryActivity : ComponentActivity() {
                     contentDescription = null,
                     imageLoader = imageLoader,
                     contentScale = androidx.compose.ui.layout.ContentScale.Crop,
-                    modifier = Modifier.fillMaxWidth().height(100.dp)
+                    modifier = Modifier.fillMaxWidth().height(130.dp)
                         .clip(RoundedCornerShape(topStart = 8.dp, topEnd = 8.dp))
                 )
             }
@@ -1108,7 +1178,7 @@ class LibraryActivity : ComponentActivity() {
                     Spacer(Modifier.height(2.dp))
                     androidx.compose.material3.Text(
                         epSynopsis, color = Color(0xFF999999), fontSize = 11.sp,
-                        maxLines = 2, overflow = TextOverflow.Ellipsis, lineHeight = 14.sp
+                        maxLines = 3, overflow = TextOverflow.Ellipsis, lineHeight = 14.sp
                     )
                 }
 
@@ -1431,6 +1501,7 @@ class LibraryActivity : ComponentActivity() {
         heroButtonFocus.intValue = 0
         detailEpisodes.clear()
         detailSeasons.clear()
+        seasonCache.clear()
         detailLoading.value = true
         AppNavigator.navigate(this, AppNavigator.Action.OPEN_ITEM)
         screen.value = Screen.ITEM_DETAIL
@@ -1448,11 +1519,16 @@ class LibraryActivity : ComponentActivity() {
                     val info = api.fetchSeriesDetail(item.id)
                     if (info != null) {
                         runOnUiThread { detailSeasons.addAll(info.seasons) }
+                        // Prefetch all seasons
+                        for (s in info.seasons) {
+                            val data = api.fetchSeason(item.id, s.season)
+                            if (data != null) seasonCache[s.season] = data.episodes
+                        }
                         val firstSeason = info.seasons.firstOrNull()?.season ?: 1
                         selectedSeason.intValue = firstSeason
-                        val seasonData = api.fetchSeason(item.id, firstSeason)
                         runOnUiThread {
-                            if (seasonData != null) detailEpisodes.addAll(seasonData.episodes)
+                            val eps = seasonCache[firstSeason]
+                            if (eps != null) detailEpisodes.addAll(eps)
                             detailLoading.value = false
                             refreshItemDetail()
                         }
@@ -1491,21 +1567,28 @@ class LibraryActivity : ComponentActivity() {
         }.start()
     }
 
-    private fun loadSeason(seriesId: String, seasonNum: Int) {
-        detailLoading.value = true
+    private fun swapEpisodes(episodes: List<JanusApi.Episode>) {
         detailEpisodes.clear()
-        episodeFocus.intValue = 0
+        detailEpisodes.addAll(episodes)
+    }
+
+    private fun loadSeason(seriesId: String, seasonNum: Int) {
         selectedSeason.intValue = seasonNum
+        episodeFocus.intValue = 0
+        val cached = seasonCache[seasonNum]
+        if (cached != null) {
+            swapEpisodes(cached)
+            return
+        }
+        swapEpisodes(emptyList())
         Thread {
             try {
                 val data = api.fetchSeason(seriesId, seasonNum)
-                runOnUiThread {
-                    if (data != null) detailEpisodes.addAll(data.episodes)
-                    detailLoading.value = false
+                if (data != null) {
+                    seasonCache[seasonNum] = data.episodes
+                    runOnUiThread { swapEpisodes(data.episodes) }
                 }
-            } catch (e: Exception) {
-                runOnUiThread { detailLoading.value = false }
-            }
+            } catch (_: Exception) {}
         }.start()
     }
 

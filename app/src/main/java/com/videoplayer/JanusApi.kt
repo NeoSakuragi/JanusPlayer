@@ -71,7 +71,12 @@ class JanusApi(private val baseUrl: String) {
         }
     }
 
-    data class SeasonInfo(val season: Int, val episodeCount: Int)
+    data class SeasonInfo(val season: Int, val episodeCount: Int, val names: Map<String, String> = emptyMap()) {
+        fun name(): String {
+            val lang = Lang.current.value
+            return names[lang] ?: names["en"] ?: ""
+        }
+    }
 
     data class SeriesDetail(
         val id: String,
@@ -179,7 +184,9 @@ class JanusApi(private val baseUrl: String) {
             episodeCount = obj.getInt("episode_count"),
             seasons = (0 until seasons.length()).map { i ->
                 val s = seasons.getJSONObject(i)
-                SeasonInfo(s.getInt("season"), s.getInt("episode_count"))
+                val namesObj = s.optJSONObject("names")
+                val names = namesObj?.keys()?.asSequence()?.associate { it to namesObj.getString(it) } ?: emptyMap()
+                SeasonInfo(s.getInt("season"), s.getInt("episode_count"), names)
             },
         )
     }

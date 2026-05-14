@@ -33,6 +33,9 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.layout.layout
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInParent
 import androidx.compose.ui.viewinterop.AndroidView
 import kotlinx.coroutines.delay
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
@@ -202,6 +205,8 @@ class ExoPlayerActivity : ComponentActivity() {
     private val dictMeanings = mutableStateOf(listOf<String>())
     private val dictFreq = mutableIntStateOf(0)
     private val dictTags = mutableStateOf("")
+    private val dictJlpt = mutableStateOf("")
+    private val dictFreqs = mutableStateOf(mapOf<String, Int>())
     private val dictVisible = mutableStateOf(false)
 
     // List select
@@ -223,9 +228,8 @@ class ExoPlayerActivity : ComponentActivity() {
     private lateinit var player: ExoPlayer
     private var subtitleCues = listOf<SrtParser.Cue>()
     private val handler = android.os.Handler(android.os.Looper.getMainLooper())
-    private lateinit var dictDb: DictionaryDatabase
     private val dictLookup = object : WordScanner.DictLookup {
-        override fun hasEntry(term: String): Boolean = dictDb.hasEntry(term)
+        override fun hasEntry(term: String): Boolean = JitendexDict.hasEntry(term)
     }
 
     @OptIn(androidx.media3.common.util.UnstableApi::class)
@@ -235,8 +239,7 @@ class ExoPlayerActivity : ComponentActivity() {
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         enterFullscreen()
 
-        dictDb = DictionaryDatabase.getInstance(this)
-        dictDb.ensureReady()
+        JitendexDict.init(this)
 
         val appSettings = AppSettings(this)
         val savedSizeIdx = FONT_SIZES.indexOf(appSettings.fontSize)
@@ -251,8 +254,11 @@ class ExoPlayerActivity : ComponentActivity() {
 
         DownloadManager.init(this)
 
-        // Own player — not shared with preview
-        val builder = ExoPlayer.Builder(this)
+        // Own player — not shared with preview, software decode fallback enabled
+        val renderersFactory = androidx.media3.exoplayer.DefaultRenderersFactory(this)
+            .setExtensionRendererMode(androidx.media3.exoplayer.DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON)
+            .setEnableDecoderFallback(true)
+        val builder = ExoPlayer.Builder(this, renderersFactory)
         val token = PlayerManager.authToken
         if (token != null) {
             val headers = mapOf("Authorization" to "Bearer $token")
@@ -397,6 +403,8 @@ class ExoPlayerActivity : ComponentActivity() {
         val dMeanV by dictMeanings
         val dFreqV by dictFreq
         val dTagsV by dictTags
+        val dJlptV by dictJlpt
+        val dFreqsV by dictFreqs
         val fSizeIdx by fontSizeIdx
         val fIdx by fontIdx
         val title by titleText
@@ -407,6 +415,8 @@ class ExoPlayerActivity : ComponentActivity() {
             try { FontFamily(Typeface.createFromAsset(assets, fontAsset)) }
             catch (_: Exception) { FontFamily.Default }
         }
+
+        var subTopY by remember { mutableStateOf(0f) }
 
         Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
             // ExoPlayer surface
@@ -531,34 +541,53 @@ class ExoPlayerActivity : ComponentActivity() {
                 visible = dVis && (scr == Screen.WORD_NAV),
                 enter = fadeIn(tween(150)),
                 exit = fadeOut(tween(100)),
-                modifier = Modifier.align(Alignment.TopCenter).padding(top = dimens.dictTopPadding)
+                modifier = Modifier.align(Alignment.TopStart)
+                    .padding(start = 24.dp, end = 24.dp)
+                    .layout { measurable, constraints ->
+                        val placeable = measurable.measure(constraints)
+                        layout(placeable.width, placeable.height) {
+                            val x = (constraints.maxWidth - placeable.width) / 2
+                            val y = (subTopY - placeable.height - 16.dp.toPx()).toInt().coerceAtLeast(0)
+                            placeable.placeRelative(x, y)
+                        }
+                    }
             ) {
                 Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
                     modifier = Modifier
-                        .padding(horizontal = 24.dp)
                         .background(Color(0xEE1E1E2E), RoundedCornerShape(10.dp))
                         .padding(16.dp)
                 ) {
-                    Row(verticalAlignment = Alignment.Bottom) {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            if (dReadV.isNotEmpty()) {
-                                androidx.compose.material3.Text(dReadV, color = Color(0xFFAAAAAA), fontSize = 14.sp)
-                            }
-                            androidx.compose.material3.Text(dTermV, color = Color.White, fontSize = dimens.dictTermSize, fontWeight = FontWeight.Bold)
-                        }
-                        Spacer(Modifier.width(14.dp))
+                    // Reading
+                    if (dReadV.isNotEmpty()) {
+                        androidx.compose.material3.Text(dReadV, color = Color(0xFFAAAAAA), fontSize = 14.sp, fontFamily = subFontFamily)
+                    }
+                    // Term
+                    androidx.compose.material3.Text(dTermV, color = Color.White, fontSize = dimens.dictTermSize, fontWeight = FontWeight.Bold, fontFamily = subFontFamily)
+                    Spacer(Modifier.height(6.dp))
+                    // Badges: tag + JLPT + frequencies
+                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
                         if (dTagsV.isNotBlank()) {
-                            androidx.compose.material3.Text(dTagsV, color = Color(0xFF7986CB), fontSize = 13.sp, modifier = Modifier.padding(bottom = 6.dp))
-                        }
-                        Spacer(Modifier.weight(1f))
-                        if (dFreqV > 0) {
                             androidx.compose.material3.Text(
-                                "#$dFreqV", color = Color(0xFF81C784), fontSize = 12.sp,
-                                modifier = Modifier.background(Color(0x33FFFFFF), RoundedCornerShape(4.dp)).padding(horizontal = 6.dp, vertical = 2.dp)
+                                dTagsV, color = Color(0xFF7986CB), fontSize = 10.sp,
+                                modifier = Modifier.background(Color(0x22FFFFFF), RoundedCornerShape(4.dp)).padding(horizontal = 5.dp, vertical = 1.dp)
+                            )
+                        }
+                        if (dJlptV.isNotEmpty()) {
+                            androidx.compose.material3.Text(
+                                dJlptV, color = Color(0xFF4FC3F7), fontSize = 10.sp, fontWeight = FontWeight.Bold,
+                                modifier = Modifier.background(Color(0x22FFFFFF), RoundedCornerShape(4.dp)).padding(horizontal = 5.dp, vertical = 1.dp)
+                            )
+                        }
+                        for ((source, rank) in dFreqsV) {
+                            androidx.compose.material3.Text(
+                                "$source #$rank", color = Color(0xFF81C784), fontSize = 9.sp,
+                                modifier = Modifier.background(Color(0x22FFFFFF), RoundedCornerShape(4.dp)).padding(horizontal = 4.dp, vertical = 1.dp)
                             )
                         }
                     }
                     Spacer(Modifier.height(8.dp))
+                    // Meanings
                     dMeanV.forEachIndexed { i, m ->
                         androidx.compose.material3.Text("${i + 1}. $m", color = Color(0xFFCCCCCC), fontSize = 14.sp, lineHeight = 18.sp)
                     }
@@ -592,6 +621,9 @@ class ExoPlayerActivity : ComponentActivity() {
                         .padding(bottom = dimens.subBottomPadding, start = dimens.rowPadding, end = dimens.rowPadding)
                         .background(Color(0x99000000), RoundedCornerShape(6.dp))
                         .padding(horizontal = 12.dp, vertical = 8.dp)
+                        .onGloballyPositioned { coords ->
+                            subTopY = coords.positionInParent().y
+                        }
                         .pointerInput(subText) {
                             detectTapGestures { pos ->
                                 val boxes = charBoxes
@@ -925,32 +957,36 @@ class ExoPlayerActivity : ComponentActivity() {
     }
 
     private fun lookupWord(word: WordScanner.ScannedWord) {
-        val results = mutableListOf<DictionaryDatabase.DictEntry>()
-        results.addAll(dictDb.lookup(word.baseForm))
-        if (word.surface != word.baseForm) results.addAll(dictDb.lookup(word.surface))
-        val unique = results.distinctBy { "${it.term}|${it.reading}" }
-        if (unique.isNotEmpty()) {
-            val best = unique.first()
-            dictTerm.value = best.term
-            dictReading.value = if (best.reading != best.term) best.reading else ""
-            dictMeanings.value = unique.flatMap { it.meanings }.filter { it.isNotBlank() }.distinct().take(5)
-            dictFreq.intValue = best.frequency ?: unique.firstNotNullOfOrNull { it.frequency } ?: 0
-            dictTags.value = formatTags(best.tags)
+        val jEntry = JitendexDict.lookup(word.baseForm)
+            ?: if (word.surface != word.baseForm) JitendexDict.lookup(word.surface) else null
+
+        if (jEntry != null) {
+            dictTerm.value = jEntry.term
+            dictReading.value = if (jEntry.reading != jEntry.term) jEntry.reading else ""
+            dictMeanings.value = jEntry.meanings
+            dictTags.value = if (jEntry.isName()) {
+                jEntry.nameType
+            } else {
+                jEntry.tagLabels().firstOrNull { it != "★" } ?: ""
+            }
+            dictJlpt.value = jEntry.jlptLabel()
+            dictFreq.intValue = jEntry.bestFreq()
+            dictFreqs.value = buildMap {
+                if (jEntry.freqBccwj > 0) put("BCCWJ", jEntry.freqBccwj)
+                if (jEntry.freqJpdb > 0) put("JPDB", jEntry.freqJpdb)
+                if (jEntry.freqInnocent > 0) put("Novels", jEntry.freqInnocent)
+                if (jEntry.freqAnime > 0) put("Anime", jEntry.freqAnime)
+            }
             dictVisible.value = true
+            return
         }
+
     }
 
     private fun clearDict() {
         dictVisible.value = false
     }
 
-    private fun formatTags(tags: String): String = tags.trim().split(" ").joinToString(" ") { tag ->
-        when (tag) {
-            "v1" -> "ichidan"; "v5" -> "godan"; "vs" -> "suru"; "vt" -> "trans."; "vi" -> "intrans."
-            "adj-i" -> "i-adj"; "adj-na" -> "na-adj"; "n" -> "noun"; "adv" -> "adv"; "exp" -> "expr"
-            else -> tag
-        }
-    }
 
     // ── Track Selection ──────────────────────────────────────────────
 
