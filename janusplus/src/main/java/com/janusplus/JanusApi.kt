@@ -197,6 +197,32 @@ class JanusApi(private val baseUrl: String) {
         )
     }
 
+    data class SeasonData(val season: Int, val episodeCount: Int, val episodes: List<Episode>)
+
+    fun fetchSeason(itemId: String, seasonNum: Int): SeasonData? {
+        val request = authRequest("$baseUrl/api/items/$itemId/season-$seasonNum.json").build()
+        val response = try { client.newCall(request).execute() } catch (_: Exception) { return null }
+        if (!response.isSuccessful) return null
+        val obj = org.json.JSONObject(response.body?.string() ?: return null)
+        val episodes = obj.getJSONArray("episodes")
+        return SeasonData(
+            season = obj.getInt("season"), episodeCount = obj.getInt("episode_count"),
+            episodes = (0 until episodes.length()).map { parseEpisode(episodes.getJSONObject(it)) },
+        )
+    }
+
+    fun fetchSeasonBlob(itemId: String, seasonNum: Int): SeasonData? {
+        val request = authRequest("$baseUrl/api/blob/$itemId/season/$seasonNum").build()
+        val response = try { client.newCall(request).execute() } catch (_: Exception) { return null }
+        if (!response.isSuccessful) return null
+        val obj = org.json.JSONObject(response.body?.string() ?: return null)
+        val episodes = obj.getJSONArray("episodes")
+        return SeasonData(
+            season = obj.getInt("season"), episodeCount = obj.getInt("episode_count"),
+            episodes = (0 until episodes.length()).map { parseEpisode(episodes.getJSONObject(it)) },
+        )
+    }
+
     fun fetchThumbsBlob(itemId: String, seasonNum: Int): List<ThumbEntry> {
         val request = authRequest("$baseUrl/api/blob/$itemId/season/$seasonNum/thumbs").build()
         val response = try { client.newCall(request).execute() } catch (_: Exception) { return emptyList() }

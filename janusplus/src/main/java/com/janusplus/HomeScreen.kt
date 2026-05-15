@@ -10,9 +10,14 @@ object HomeScreen {
         // Background
         rc.solid(0f, 0f, rc.w, rc.h, 0.039f, 0.039f, 0.102f)
 
-        // Header: "Janus+" in purple
+        // Header
         val headerY = pad * 0.5f
         rc.text("Janus+", pad, headerY + rc.dp(28f), rc.sp(28), 0.733f, 0.525f, 0.988f)
+        // Settings gear
+        val gearX = rc.w - pad - rc.dp(40f)
+        rc.solid(gearX, headerY, rc.dp(40f), rc.dp(36f), 0.165f, 0.165f, 0.227f)
+        rc.text("⚙", gearX + rc.dp(10f), headerY + rc.dp(26f), rc.sp(16), 0.8f, 0.8f, 0.8f)
+        rc.tappable(gearX, headerY, rc.dp(40f), rc.dp(36f)) { rc.state.screen = Screen.SETTINGS }
 
         var sectionY = headerY + rc.dp(56f)
 
@@ -76,8 +81,8 @@ object HomeScreen {
             // Card background
             rc.solid(x, cardsY, cardW, cardH, 0.102f, 0.102f, 0.180f)
 
-            // Cover image — drawn from atlas in cover pass below
-            // (placeholder already drawn as solid background above)
+            // Cover image — inline from cover atlas layer
+            rc.cover("cover_${item.id}", x, cardsY, cardW, cardH)
 
             // Touch target
             val tappedItem = item

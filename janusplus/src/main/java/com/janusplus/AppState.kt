@@ -1,6 +1,6 @@
 package com.janusplus
 
-enum class Screen { HOME, SERIES_DETAIL, MOVIE_DETAIL, PLAYING }
+enum class Screen { LOGIN, HOME, SERIES_DETAIL, MOVIE_DETAIL, PLAYING, SETTINGS }
 
 enum class HomeRow { SERIES, MOVIES }
 
@@ -36,6 +36,12 @@ class AppState {
     var gridColumns = 1
     val detailScroll = ScrollPhysics()
     var detailLoading = true
+    var episodeProgress = HashMap<Int, Pair<Double, Boolean>>()
+    var bannerReady = false
+    var bannerW = 0
+    var bannerH = 0
+    var showSeasonDropdown = false
+    @Volatile var pendingSeasonChange: Int? = null
 
     // Player
     var playingUrl: String? = null
@@ -52,6 +58,8 @@ class AppState {
         detailScroll.offset = 0f
         detailScroll.velocity = 0f
         detailLoading = true
+        episodeProgress.clear()
+        bannerReady = false
         screen = if (item.type.equals("MOVIE", ignoreCase = true)) Screen.MOVIE_DETAIL else Screen.SERIES_DETAIL
     }
 

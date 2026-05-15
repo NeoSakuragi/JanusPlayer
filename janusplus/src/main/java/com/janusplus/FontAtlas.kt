@@ -21,9 +21,9 @@ class FontAtlas(assets: AssetManager) {
     // Pre-baked vertex data per (text, sizePx, color) — one arraycopy per string
     data class BakedText(val floats: FloatArray, val quadCount: Int, val width: Float)
     private val bakedCache = HashMap<Long, BakedText>(128)
-    private val atlasSize = 1024
-    private val bitmap = Bitmap.createBitmap(atlasSize, atlasSize, Bitmap.Config.ARGB_8888)
-    private val canvas = Canvas(bitmap)
+    var atlasSize = 2048
+    private var bitmap = Bitmap.createBitmap(atlasSize, atlasSize, Bitmap.Config.ARGB_8888)
+    private var canvas = Canvas(bitmap)
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = 0xFFFFFFFF.toInt()
         typeface = this@FontAtlas.typeface
@@ -32,31 +32,28 @@ class FontAtlas(assets: AssetManager) {
     private var cursorX = 0
     private var cursorY = 0
     private var rowHeight = 0
-    var textureId = 0; private set
-    private var dirtyRegions = mutableListOf<IntArray>() // [x, y, w, h] regions to upload
+    private var dirtyRegions = mutableListOf<IntArray>()
+    var texArray: TextureArray? = null
+    val layer = TextureArray.LAYER_FONT
 
     var whiteU = 0f; private set
     var whiteV = 0f; private set
 
-    fun initGL() {
-        // Draw a 4x4 white block at (0,0) for solid-color quads
+    fun initGL(texArr: TextureArray) {
+        texArray = texArr
+        atlasSize = texArr.size
+        bitmap = Bitmap.createBitmap(atlasSize, atlasSize, Bitmap.Config.ARGB_8888)
+        canvas = Canvas(bitmap)
+
         val whitePaint = Paint().apply { color = 0xFFFFFFFF.toInt() }
         canvas.drawRect(0f, 0f, 4f, 4f, whitePaint)
-        whiteU = 2f / atlasSize  // center of white block
+        whiteU = 2f / atlasSize
         whiteV = 2f / atlasSize
         cursorX = 5
         cursorY = 0
         rowHeight = 4
 
-        val ids = IntArray(1)
-        GLES30.glGenTextures(1, ids, 0)
-        textureId = ids[0]
-        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, textureId)
-        GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_MIN_FILTER, GLES30.GL_LINEAR)
-        GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_MAG_FILTER, GLES30.GL_LINEAR)
-        GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_WRAP_S, GLES30.GL_CLAMP_TO_EDGE)
-        GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_WRAP_T, GLES30.GL_CLAMP_TO_EDGE)
-        GLUtils.texImage2D(GLES30.GL_TEXTURE_2D, 0, bitmap, 0)
+        texArr.uploadLayer(layer, bitmap.copy(Bitmap.Config.ARGB_8888, false))
     }
 
     fun ensureGlyphs(text: String, sizePx: Int) {
@@ -75,10 +72,20 @@ class FontAtlas(assets: AssetManager) {
         if (allCached) knownStrings.add(hash)
 
         if (dirtyRegions.isNotEmpty()) {
-            GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, textureId)
+            val ta = texArray ?: return
+            GLES30.glBindTexture(GLES30.GL_TEXTURE_2D_ARRAY, ta.textureId)
             for (region in dirtyRegions) {
-                GLUtils.texSubImage2D(GLES30.GL_TEXTURE_2D, 0, 0, region[1],
-                    Bitmap.createBitmap(bitmap, 0, region[1], atlasSize, region[3]))
+                val h = region[3].coerceAtMost(atlasSize - region[1])
+                if (h <= 0) continue
+                val sub = Bitmap.createBitmap(bitmap, 0, region[1], atlasSize, h)
+                val buf = java.nio.ByteBuffer.allocateDirect(atlasSize * h * 4)
+                    .order(java.nio.ByteOrder.nativeOrder())
+                sub.copyPixelsToBuffer(buf)
+                buf.position(0)
+                GLES30.glTexSubImage3D(GLES30.GL_TEXTURE_2D_ARRAY, 0,
+                    0, region[1], layer, atlasSize, h, 1,
+                    GLES30.GL_RGBA, GLES30.GL_UNSIGNED_BYTE, buf)
+                sub.recycle()
             }
             dirtyRegions.clear()
         }
@@ -143,33 +150,29 @@ class FontAtlas(assets: AssetManager) {
             metrics = Array(cps.size) { i -> cache[GlyphKey(cps[i], sizePx)] ?: EMPTY_GLYPH }
             metricsCache[hash] = metrics
         }
-        val floats = FloatArray(metrics.size * 32) // max 4 verts × 8 floats per glyph
+        val fpv = 9 // floats per vertex
+        val fpq = fpv * 4 // floats per quad
+        val L = TextureArray.LAYER_FONT.toFloat()
+        val floats = FloatArray(metrics.size * fpq)
         var cx = 0f
         var count = 0
         for (m in metrics) {
             if (m === EMPTY_GLYPH) continue
-            val off = count * 32
+            val off = count * fpq
             val gx = cx; val gy = -m.ascent
-            // TL
-            floats[off]    = gx;       floats[off+1]  = gy
-            floats[off+2]  = m.u0;     floats[off+3]  = m.v0
-            floats[off+4]  = 1f; floats[off+5] = 1f; floats[off+6] = 1f; floats[off+7] = 1f
-            // TR
-            floats[off+8]  = gx+m.w;   floats[off+9]  = gy
-            floats[off+10] = m.u1;     floats[off+11] = m.v0
-            floats[off+12] = 1f; floats[off+13] = 1f; floats[off+14] = 1f; floats[off+15] = 1f
-            // BR
-            floats[off+16] = gx+m.w;   floats[off+17] = gy+m.h
-            floats[off+18] = m.u1;     floats[off+19] = m.v1
-            floats[off+20] = 1f; floats[off+21] = 1f; floats[off+22] = 1f; floats[off+23] = 1f
-            // BL
-            floats[off+24] = gx;       floats[off+25] = gy+m.h
-            floats[off+26] = m.u0;     floats[off+27] = m.v1
-            floats[off+28] = 1f; floats[off+29] = 1f; floats[off+30] = 1f; floats[off+31] = 1f
+            fun v(b: Int, vx: Float, vy: Float, vu: Float, vv: Float) {
+                floats[b] = vx; floats[b+1] = vy
+                floats[b+2] = vu; floats[b+3] = vv; floats[b+4] = L
+                floats[b+5] = 1f; floats[b+6] = 1f; floats[b+7] = 1f; floats[b+8] = 1f
+            }
+            v(off,          gx,     gy,       m.u0, m.v0)
+            v(off + fpv,    gx+m.w, gy,       m.u1, m.v0)
+            v(off + fpv*2,  gx+m.w, gy+m.h,   m.u1, m.v1)
+            v(off + fpv*3,  gx,     gy+m.h,   m.u0, m.v1)
             cx += m.advance
             count++
         }
-        val trimmed = floats.copyOf(count * 32)
+        val trimmed = floats.copyOf(count * fpq)
         bakedCache[hash] = BakedText(trimmed, count, cx)
         batch.addBaked(trimmed, count, x, y, r, g, b, a)
         glyphsEmitted += count
@@ -223,7 +226,9 @@ class FontAtlas(assets: AssetManager) {
         val ellipsisMetrics = metricsCache["…".hashCode().toLong() * 31 + sizePx]
         val ellipsisW = ellipsisMetrics?.firstOrNull()?.advance ?: measureText("…", sizePx)
 
-        val floats = FloatArray((metrics.size + 1) * 32)
+        val fpv = 9; val fpq = fpv * 4
+        val L = TextureArray.LAYER_FONT.toFloat()
+        val floats = FloatArray((metrics.size + 1) * fpq)
         var cx = 0f
         var count = 0
         for ((i, m) in metrics.withIndex()) {
@@ -233,32 +238,29 @@ class FontAtlas(assets: AssetManager) {
                 val eHash = "…".hashCode().toLong() * 31 + sizePx
                 val eBaked = bakedCache[eHash]
                 if (eBaked != null) {
-                    System.arraycopy(eBaked.floats, 0, floats, count * 32, eBaked.floats.size)
+                    System.arraycopy(eBaked.floats, 0, floats, count * fpq, eBaked.floats.size)
                     for (j in 0 until eBaked.quadCount * 4) {
-                        floats[count * 32 + j * 8] += cx
+                        floats[count * fpq + j * fpv] += cx
                     }
                     count += eBaked.quadCount
                 }
                 break
             }
             if (cx + m.advance > maxWidth) break
-            val off = count * 32
-            floats[off]    = cx;      floats[off+1]  = -m.ascent
-            floats[off+2]  = m.u0;    floats[off+3]  = m.v0
-            floats[off+4]  = 1f; floats[off+5] = 1f; floats[off+6] = 1f; floats[off+7] = 1f
-            floats[off+8]  = cx+m.w;  floats[off+9]  = -m.ascent
-            floats[off+10] = m.u1;    floats[off+11] = m.v0
-            floats[off+12] = 1f; floats[off+13] = 1f; floats[off+14] = 1f; floats[off+15] = 1f
-            floats[off+16] = cx+m.w;  floats[off+17] = -m.ascent+m.h
-            floats[off+18] = m.u1;    floats[off+19] = m.v1
-            floats[off+20] = 1f; floats[off+21] = 1f; floats[off+22] = 1f; floats[off+23] = 1f
-            floats[off+24] = cx;      floats[off+25] = -m.ascent+m.h
-            floats[off+26] = m.u0;    floats[off+27] = m.v1
-            floats[off+28] = 1f; floats[off+29] = 1f; floats[off+30] = 1f; floats[off+31] = 1f
+            val off = count * fpq
+            fun v(b: Int, vx: Float, vy: Float, vu: Float, vv: Float) {
+                floats[b] = vx; floats[b+1] = vy
+                floats[b+2] = vu; floats[b+3] = vv; floats[b+4] = L
+                floats[b+5] = 1f; floats[b+6] = 1f; floats[b+7] = 1f; floats[b+8] = 1f
+            }
+            v(off,          cx,     -m.ascent,       m.u0, m.v0)
+            v(off + fpv,    cx+m.w, -m.ascent,       m.u1, m.v0)
+            v(off + fpv*2,  cx+m.w, -m.ascent+m.h,   m.u1, m.v1)
+            v(off + fpv*3,  cx,     -m.ascent+m.h,   m.u0, m.v1)
             cx += m.advance
             count++
         }
-        val trimmed = floats.copyOf(count * 32)
+        val trimmed = floats.copyOf(count * fpq)
         bakedCache[clippedHash] = BakedText(trimmed, count, cx)
         batch.addBaked(trimmed, count, x, y, r, g, b, a)
         glyphsEmitted += count
@@ -275,7 +277,7 @@ class FontAtlas(assets: AssetManager) {
         if (cached != null) {
             for (e in cached.first) {
                 batch.addQuad(x + e.dx, y + e.dy - e.m.ascent, e.m.w, e.m.h,
-                    e.m.u0, e.m.v0, e.m.u1, e.m.v1, r, g, b, a)
+                    e.m.u0, e.m.v0, e.m.u1, e.m.v1, r, g, b, a, layer = TextureArray.LAYER_FONT.toFloat())
             }
             return y + cached.second
         }

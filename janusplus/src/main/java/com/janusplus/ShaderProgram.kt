@@ -50,25 +50,25 @@ class ShaderProgram {
 
         private const val VERT_SRC = """#version 300 es
 layout(location=0) in vec2 aPos;
-layout(location=1) in vec2 aUV;
+layout(location=1) in vec3 aUVL;
 layout(location=2) in vec4 aColor;
 uniform mat4 uProj;
-out vec2 vUV;
+out vec3 vUVL;
 out vec4 vColor;
 void main() {
     gl_Position = uProj * vec4(aPos, 0.0, 1.0);
-    vUV = aUV;
+    vUVL = aUVL;
     vColor = aColor;
 }"""
 
         private const val FRAG_SRC = """#version 300 es
 precision mediump float;
-in vec2 vUV;
+in vec3 vUVL;
 in vec4 vColor;
-uniform sampler2D uTex;
+uniform mediump sampler2DArray uTex;
 out vec4 fragColor;
 void main() {
-    fragColor = texture(uTex, vUV) * vColor;
+    fragColor = texture(uTex, vUVL) * vColor;
 }"""
     }
 }

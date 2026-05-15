@@ -17,6 +17,7 @@ class GLRenderer(
     lateinit var batch: QuadBatch
     lateinit var textures: TextureManager
     lateinit var font: FontAtlas
+    lateinit var texArray: TextureArray
     lateinit var dimens: Dimens
     val thumbAtlas = ThumbnailAtlas()
 
@@ -54,8 +55,17 @@ class GLRenderer(
         textures = TextureManager()
         textures.initGL()
 
+        texArray = TextureArray(1024, 4)
+        texArray.initGL()
+
         font = FontAtlas(assets)
-        font.initGL()
+        font.initGL(texArray)
+
+        // Wire atlases to texture array
+        thumbAtlas.texArray = texArray
+        thumbAtlas.layerIndex = TextureArray.LAYER_THUMBS
+        state.coverAtlas.texArray = texArray
+        state.coverAtlas.layerIndex = TextureArray.LAYER_COVERS
 
         lastFrameTime = System.nanoTime()
     }
@@ -70,6 +80,7 @@ class GLRenderer(
 
     override fun onDrawFrame(gl: GL10?) {
         val frameStart = System.nanoTime()
+        val gapMs = (frameStart - lastFrameTime) / 1_000_000f
         val dt = ((frameStart - lastFrameTime) / 1_000_000_000f).coerceAtMost(0.05f)
         lastFrameTime = frameStart
         frameCount++
@@ -77,6 +88,7 @@ class GLRenderer(
         // Upload phase
         val uploadStart = System.nanoTime()
         textures.processUploads()
+        texArray.processUploads()
         thumbAtlas.uploadIfNeeded()
         state.coverAtlas.uploadIfNeeded()
         lastUploadMs = (System.nanoTime() - uploadStart) / 1_000_000f
@@ -91,44 +103,41 @@ class GLRenderer(
         GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
         GLES30.glUniform1i(shader.uTex, 0)
 
-        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, font.textureId)
+        texArray.bind()
 
-        if (state.screen == Screen.PLAYING) return
+        if (state.screen == Screen.PLAYING) {
+            // Transparent clear — video shows through from PlayerView underneath
+            GLES30.glClearColor(0f, 0f, 0f, 0f)
+            GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT)
+            shader.use()
+            GLES30.glUniformMatrix4fv(shader.uProj, 1, false, projMatrix, 0)
+            GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
+            GLES30.glUniform1i(shader.uTex, 0)
+            texArray.bind()
+            batch.begin()
+            val rc = ctx
+            rc.hitRects.clear()
+            PlayerScreen.render(rc)
+            batch.flush()
+            inputHandler?.hitRects?.clear()
+            inputHandler?.hitRects?.addAll(rc.hitRects)
+            GLES30.glClearColor(0.039f, 0.039f, 0.102f, 1f)
+            return
+        }
 
         val rc = ctx
         rc.hitRects.clear()
-        rc.deferredImages.clear()
 
-        // Pre-pass: draw banner image FIRST if on detail page (avoids mid-frame texture switch)
         val buildStart = System.nanoTime()
-        if ((state.screen == Screen.SERIES_DETAIL || state.screen == Screen.MOVIE_DETAIL) && state.selectedItem != null) {
-            val bannerId = textures.get("banner_${state.selectedItem!!.id}")
-            if (bannerId != 0) {
-                val info = textures.getInfo("banner_${state.selectedItem!!.id}")!!
-                GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, bannerId)
-                batch.begin()
-                val heroH = dimens.heroH
-                val heroTop = -state.detailScroll.offset
-                val srcAspect = info.width.toFloat() / info.height.toFloat()
-                val dstAspect = width / heroH
-                val u0: Float; val v0: Float; val u1: Float; val v1: Float
-                if (srcAspect > dstAspect) {
-                    val f = dstAspect / srcAspect; u0 = (1f - f) / 2f; u1 = 1f - u0; v0 = 0f; v1 = 1f
-                } else {
-                    val f = srcAspect / dstAspect; v0 = (1f - f) / 2f; v1 = 1f - v0; u0 = 0f; u1 = 1f
-                }
-                batch.addQuad(0f, heroTop, width, heroH, u0, v0, u1, v1)
-                batch.flush()
-            }
-        }
 
-        // Main build phase — font atlas bound
-        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, font.textureId)
+        texArray.bind()
         batch.begin()
 
         when (state.screen) {
+            Screen.LOGIN -> LoginScreen.render(rc)
             Screen.HOME -> HomeScreen.render(rc)
             Screen.SERIES_DETAIL, Screen.MOVIE_DETAIL -> DetailScreen.render(rc)
+            Screen.SETTINGS -> SettingsScreen.render(rc)
             Screen.PLAYING -> {}
         }
         val g = font.glyphsEmitted; val tc = font.addTextCalls
@@ -137,31 +146,9 @@ class GLRenderer(
         rc.text(perfText, rc.dp(8f), rc.dp(16f), rc.sp(10), 0.4f, 0.8f, 0.4f)
         lastBuildMs = (System.nanoTime() - buildStart) / 1_000_000f
 
-        // Flush phase — all GL calls here
+        // ONE flush — texture array already bound, all layers accessible
         val flushStart = System.nanoTime()
         batch.flush()
-
-        // Cover atlas pass (home page)
-        if (state.screen == Screen.HOME && state.coverAtlas.isReady()) {
-            GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, state.coverAtlas.textureId)
-            batch.begin()
-            HomeScreen.renderCoverPasses(rc)
-            batch.flush()
-            GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, font.textureId)
-        }
-
-        // Thumb atlas pass (detail page)
-        if ((state.screen == Screen.SERIES_DETAIL || state.screen == Screen.MOVIE_DETAIL) && thumbAtlas.isReady()) {
-            GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, thumbAtlas.textureId)
-            batch.begin()
-            val cards = state.seasonCards?.episodes ?: emptyList()
-            if (cards.isNotEmpty()) DetailScreen.renderThumbs(rc, cards, dimens.heroH - state.detailScroll.offset)
-            batch.flush()
-            GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, font.textureId)
-        }
-
-        // Deferred individual images (banner)
-        rc.flushImages()
         lastFlushMs = (System.nanoTime() - flushStart) / 1_000_000f
 
         inputHandler?.hitRects?.clear()
@@ -172,13 +159,26 @@ class GLRenderer(
             state.pendingTap = null
             onItemTapped?.invoke(tapped)
         }
+        val seasonChange = state.pendingSeasonChange
+        if (seasonChange != null) {
+            state.pendingSeasonChange = null
+            onSeasonChanged?.invoke(seasonChange)
+        }
+        if (LoginScreen.pendingLogin) {
+            LoginScreen.pendingLogin = false
+            onLogin?.invoke()
+        }
+        if (SettingsScreen.pendingLogout) {
+            SettingsScreen.pendingLogout = false
+            onLogout?.invoke()
+        }
 
         lastFrameMs = (System.nanoTime() - frameStart) / 1_000_000f
 
         // Log every second
         if (frameStart - fpsTimer > 1_000_000_000L) {
             fps = frameCount
-            android.util.Log.i("PERF", "fps=$fps frame=${lastFrameMs}ms build=${lastBuildMs}ms flush=${lastFlushMs}ms upload=${lastUploadMs}ms quads=${batch.quadCount} screen=${state.screen}")
+            android.util.Log.i("PERF", "fps=$fps frame=${lastFrameMs}ms gap=${gapMs.toInt()}ms build=${lastBuildMs}ms flush=${lastFlushMs}ms upload=${lastUploadMs}ms quads=${batch.quadCount} screen=${state.screen}")
             frameCount = 0
             fpsTimer = frameStart
         }
@@ -186,6 +186,9 @@ class GLRenderer(
 
     var inputHandler: InputHandler? = null
     var onItemTapped: ((JanusApi.LibraryItem) -> Unit)? = null
+    var onSeasonChanged: ((Int) -> Unit)? = null
+    var onLogin: (() -> Unit)? = null
+    var onLogout: (() -> Unit)? = null
 }
 
 class RenderCtx(
@@ -200,17 +203,15 @@ class RenderCtx(
     val h: Float,
     val density: Float,
 ) {
-    // Solid-color quad using the white pixel baked into the font atlas
     fun solid(x: Float, y: Float, w: Float, h: Float, r: Float, g: Float, b: Float, a: Float = 1f) {
-        val u = font.whiteU
-        val v = font.whiteV
-        batch.addQuad(x, y, w, h, u, v, u, v, r, g, b, a)
+        val u = font.whiteU; val v = font.whiteV
+        batch.addQuad(x, y, w, h, u, v, u, v, r, g, b, a, layer = TextureArray.LAYER_FONT.toFloat())
     }
 
     fun gradient(x: Float, y: Float, w: Float, h: Float,
                  tlColor: FloatArray, trColor: FloatArray,
                  brColor: FloatArray, blColor: FloatArray) {
-        batch.addGradientQuad(x, y, w, h, tlColor, trColor, brColor, blColor, font.whiteU, font.whiteV)
+        batch.addGradientQuad(x, y, w, h, tlColor, trColor, brColor, blColor, font.whiteU, font.whiteV, TextureArray.LAYER_FONT.toFloat())
     }
 
     fun border(x: Float, y: Float, w: Float, h: Float, t: Float, r: Float, g: Float, b: Float, a: Float = 1f) {
@@ -234,67 +235,40 @@ class RenderCtx(
         return font.addTextWrapped(batch, str, x, y, sizePx, maxW, maxLines, r, g, b, a)
     }
 
-    data class DeferredImage(val texId: Int, val x: Float, val y: Float, val w: Float, val h: Float,
-                             val u0: Float, val v0: Float, val u1: Float, val v1: Float)
-    val deferredImages = mutableListOf<DeferredImage>()
+    // Images are now inline via texture array layers — no deferred system needed
 
-    // Queue an image for deferred drawing — no flush, no bind, just record it
-    fun image(texKey: String, x: Float, y: Float, w: Float, h: Float) {
-        val info = tex.getInfo(texKey) ?: return
-        val srcAspect = info.width.toFloat() / info.height.toFloat()
-        val dstAspect = w / h
-        val u0: Float; val v0: Float; val u1: Float; val v1: Float
-        if (srcAspect > dstAspect) {
-            val visibleFrac = dstAspect / srcAspect
-            u0 = (1f - visibleFrac) / 2f; u1 = 1f - u0; v0 = 0f; v1 = 1f
-        } else {
-            val visibleFrac = srcAspect / dstAspect
-            v0 = (1f - visibleFrac) / 2f; v1 = 1f - v0; u0 = 0f; u1 = 1f
-        }
-        deferredImages.add(DeferredImage(info.id, x, y, w, h, u0, v0, u1, v1))
-    }
-
-    // Flush all deferred images — sorted by texture, minimal binds
-    fun flushImages() {
-        if (deferredImages.isEmpty()) return
-        deferredImages.sortBy { it.texId }
-        var currentTex = -1
-        for (img in deferredImages) {
-            if (img.texId != currentTex) {
-                batch.flush()
-                GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, img.texId)
-                batch.begin()
-                currentTex = img.texId
-            }
-            batch.addQuad(img.x, img.y, img.w, img.h, img.u0, img.v0, img.u1, img.v1)
-        }
-        batch.flush()
-        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, font.textureId)
-        batch.begin()
-        deferredImages.clear()
-    }
-
-    // Draw a thumbnail from the atlas — NO flush/bind, stays in current batch
     fun thumb(key: String, x: Float, y: Float, w: Float, h: Float): Boolean {
         val uv = thumbAtlas.getUV(key) ?: return false
         if (!thumbAtlas.isReady()) return false
-        batch.addQuad(x, y, w, h, uv.u0, uv.v0, uv.u1, uv.v1)
+        batch.addQuad(x, y, w, h, uv.u0, uv.v0, uv.u1, uv.v1, layer = thumbAtlas.layerIndex.toFloat())
         return true
     }
 
-    // Begin/end a thumb batch — binds the atlas texture once for all thumbs
-    fun beginThumbs() {
-        if (!thumbAtlas.isReady()) return
-        batch.flush()
-        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, thumbAtlas.textureId)
-        batch.begin()
+    fun cover(key: String, x: Float, y: Float, w: Float, h: Float): Boolean {
+        val uv = coverAtlas.getUV(key) ?: return false
+        if (!coverAtlas.isReady()) return false
+        batch.addQuad(x, y, w, h, uv.u0, uv.v0, uv.u1, uv.v1, layer = coverAtlas.layerIndex.toFloat())
+        return true
     }
 
-    fun endThumbs() {
-        if (!thumbAtlas.isReady()) return
-        batch.flush()
-        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, font.textureId)
-        batch.begin()
+    fun banner(x: Float, y: Float, w: Float, h: Float): Boolean {
+        if (!state.bannerReady) return false
+        val texSize = 2048f
+        val srcAspect = state.bannerW.toFloat() / state.bannerH
+        val dstAspect = w / h
+        // UVs cover the banner portion of the 2048x2048 layer
+        val maxU = state.bannerW / texSize
+        val maxV = state.bannerH / texSize
+        val cu0: Float; val cv0: Float; val cu1: Float; val cv1: Float
+        if (srcAspect < dstAspect) {
+            val f = srcAspect / dstAspect; val crop = maxV * (1f - f) / 2f
+            cu0 = 0f; cu1 = maxU; cv0 = crop; cv1 = maxV - crop
+        } else {
+            val f = dstAspect / srcAspect; val crop = maxU * (1f - f) / 2f
+            cv0 = 0f; cv1 = maxV; cu0 = crop; cu1 = maxU - crop
+        }
+        batch.addQuad(x, y, w, h, cu0, cv0, cu1, cv1, layer = 3f)
+        return true
     }
 
     fun tappable(x: Float, y: Float, w: Float, h: Float, action: () -> Unit) {

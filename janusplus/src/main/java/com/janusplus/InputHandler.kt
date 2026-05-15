@@ -30,7 +30,7 @@ class InputHandler(private val state: AppState) {
         return when (state.screen) {
             Screen.HOME -> handleHomeKey(keyCode)
             Screen.SERIES_DETAIL, Screen.MOVIE_DETAIL -> handleDetailKey(keyCode)
-            Screen.PLAYING -> false
+            Screen.PLAYING, Screen.LOGIN, Screen.SETTINGS -> false
         }
     }
 
@@ -123,7 +123,27 @@ class InputHandler(private val state: AppState) {
                 state.closeDetail()
                 true
             }
-            KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> true
+            KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> {
+                if (state.detailFocus == DetailFocus.GRID) {
+                    val card = cards.getOrNull(state.episodeFocus)
+                    if (card != null) {
+                        val itemId = state.selectedItem?.id ?: ""
+                        val season = state.selectedSeason
+                        state.playingUrl = "https://canneji.duckdns.org/janus/api/stream/$itemId/$season/${card.episode}"
+                        state.returnScreen = state.screen
+                        state.screen = Screen.PLAYING
+                    }
+                } else if (state.detailFocus == DetailFocus.HERO) {
+                    val itemId = state.selectedItem?.id ?: ""
+                    val season = state.selectedSeason
+                    val ep = if (state.screen == Screen.MOVIE_DETAIL) 1
+                             else cards.firstOrNull()?.episode ?: 1
+                    state.playingUrl = "https://canneji.duckdns.org/janus/api/stream/$itemId/$season/$ep"
+                    state.returnScreen = state.screen
+                    state.screen = Screen.PLAYING
+                }
+                true
+            }
             else -> false
         }
     }
@@ -154,7 +174,7 @@ class InputHandler(private val state: AppState) {
                                 HomeRow.MOVIES -> state.movieScroll.offset -= dx
                             }
                         }
-                        Screen.PLAYING -> {}
+                        Screen.PLAYING, Screen.LOGIN, Screen.SETTINGS -> {}
                         Screen.SERIES_DETAIL, Screen.MOVIE_DETAIL -> {
                             state.detailScroll.offset = (state.detailScroll.offset - dy).coerceAtLeast(0f)
                         }

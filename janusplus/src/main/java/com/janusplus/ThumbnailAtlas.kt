@@ -12,17 +12,23 @@ class ThumbnailAtlas {
                        val srcAspect: Float = 1f)
 
     private val uvMap = HashMap<String, ThumbUV>()
-    var textureId = 0; private set
     private var ready = false
+    var layerIndex = TextureArray.LAYER_COVERS
+    var texArray: TextureArray? = null
 
     @Volatile var pendingBitmap: Bitmap? = null
 
     fun pack(entries: List<Pair<String, Bitmap>>) {
         if (entries.isEmpty()) return
 
-        val thumbW = entries.first().second.width
-        val thumbH = entries.first().second.height
+        // Cap cell size to 150px wide to keep atlas manageable on low-end devices
+        val rawW = entries.first().second.width
+        val rawH = entries.first().second.height
+        val scale = if (rawW > 150) 150f / rawW else 1f
+        val thumbW = (rawW * scale).toInt()
+        val thumbH = (rawH * scale).toInt()
         val count = entries.size
+        android.util.Log.i("ThumbAtlas", "Packing $count entries at ${thumbW}x${thumbH}")
 
         val cols = kotlin.math.ceil(kotlin.math.sqrt(count.toDouble())).toInt()
         val rows = (count + cols - 1) / cols
@@ -54,11 +60,13 @@ class ThumbnailAtlas {
             canvas.drawBitmap(bmp, srcRect, Rect(x, y, x + thumbW, y + thumbH), null)
             bmp.recycle()
 
+            // UVs relative to the texture array layer size (2048), not the packed atlas size
+            val layerSize = texArray?.size?.toFloat() ?: atlasW.toFloat()
             uvMap[key] = ThumbUV(
-                x.toFloat() / atlasW,
-                y.toFloat() / atlasH,
-                (x + thumbW).toFloat() / atlasW,
-                (y + thumbH).toFloat() / atlasH,
+                x.toFloat() / layerSize,
+                y.toFloat() / layerSize,
+                (x + thumbW).toFloat() / layerSize,
+                (y + thumbH).toFloat() / layerSize,
                 srcAspect = bmp.width.toFloat() / bmp.height.toFloat(),
             )
         }
@@ -67,21 +75,12 @@ class ThumbnailAtlas {
     }
 
     fun uploadIfNeeded() {
+        if (needsClear) { needsClear = false; ready = false }
         val bmp = pendingBitmap ?: return
         pendingBitmap = null
-
-        if (textureId == 0) {
-            val ids = IntArray(1)
-            GLES30.glGenTextures(1, ids, 0)
-            textureId = ids[0]
-        }
-        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, textureId)
-        GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_MIN_FILTER, GLES30.GL_LINEAR)
-        GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_MAG_FILTER, GLES30.GL_LINEAR)
-        GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_WRAP_S, GLES30.GL_CLAMP_TO_EDGE)
-        GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_WRAP_T, GLES30.GL_CLAMP_TO_EDGE)
-        GLUtils.texImage2D(GLES30.GL_TEXTURE_2D, 0, bmp, 0)
-        bmp.recycle()
+        val ta = texArray ?: return
+        android.util.Log.i("ThumbAtlas", "Uploading layer $layerIndex: ${bmp.width}x${bmp.height}")
+        ta.uploadLayer(layerIndex, bmp)
         ready = true
     }
 
@@ -89,16 +88,17 @@ class ThumbnailAtlas {
 
     fun isReady(): Boolean = ready
 
+    @Volatile var needsClear = false
+
     fun clear() {
-        if (textureId != 0) {
-            GLES30.glDeleteTextures(1, intArrayOf(textureId), 0)
-            textureId = 0
-        }
         uvMap.clear()
         ready = false
+        needsClear = true
         pendingBitmap?.recycle()
         pendingBitmap = null
     }
+
+    // No GL cleanup needed — texture array layer is reused
 
     private fun nextPow2(v: Int): Int {
         var n = v - 1

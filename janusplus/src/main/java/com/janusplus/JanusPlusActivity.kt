@@ -33,6 +33,7 @@ class JanusPlusActivity : AppCompatActivity() {
     private var player: ExoPlayer? = null
     private var playerView: PlayerView? = null
     private lateinit var rootLayout: FrameLayout
+    private lateinit var keyboardRelay: EditText
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -49,22 +50,36 @@ class JanusPlusActivity : AppCompatActivity() {
         input.onBack = { finish() }
 
         initGL()
-        // Auto-login: skip dialog entirely during development
-        thread {
-            val devApi = JanusApi("https://canneji.duckdns.org/janus")
-            val result = devApi.login("bruno", "janus2026")
-            if (result != null) {
-                api = devApi
-                val library = devApi.fetchLibrary()
-                Log.i(TAG, "Library: ${library.size} items")
-                runOnUiThread {
-                    state.library = library
-                    state.loading = false
-                    loadCovers(library)
+
+        // Check saved credentials
+        val prefs = getSharedPreferences("janusplus", Context.MODE_PRIVATE)
+        val savedUrl = prefs.getString("server_url", null)
+        val savedToken = prefs.getString("token", null)
+        if (savedUrl != null && savedToken != null) {
+            LoginScreen.serverUrl = savedUrl
+            state.screen = Screen.HOME
+            state.loading = true
+            thread {
+                val testApi = JanusApi(savedUrl)
+                testApi.token = savedToken
+                try {
+                    val library = testApi.fetchLibrary()
+                    if (library.isNotEmpty()) {
+                        api = testApi
+                        runOnUiThread {
+                            state.library = library
+                            state.loading = false
+                            loadCovers(library)
+                        }
+                    } else {
+                        runOnUiThread { state.screen = Screen.LOGIN }
+                    }
+                } catch (_: Exception) {
+                    runOnUiThread { state.screen = Screen.LOGIN }
                 }
-            } else {
-                Log.e(TAG, "Dev login failed")
             }
+        } else {
+            state.screen = Screen.LOGIN
         }
     }
 
@@ -73,7 +88,10 @@ class JanusPlusActivity : AppCompatActivity() {
         val density = resources.displayMetrics.density
         renderer = GLRenderer(assets, state, density)
 
-        rootLayout = FrameLayout(this)
+        rootLayout = FrameLayout(this).apply {
+            isFocusable = true
+            isFocusableInTouchMode = true
+        }
 
         glView = GLSurfaceView(this)
         glView.setEGLContextClientVersion(3)
@@ -87,14 +105,60 @@ class JanusPlusActivity : AppCompatActivity() {
                 loadDetail(item)
             }
         }
+        renderer.onSeasonChanged = { season ->
+            runOnUiThread {
+                val item = state.selectedItem ?: return@runOnUiThread
+                state.selectedSeason = season
+                state.seasonCards = null
+                state.episodeFocus = 0
+                state.episodeProgress.clear()
+                renderer.thumbAtlas.clear()
+                loadSeasonData(item, season)
+            }
+        }
+        renderer.onLogin = {
+            runOnUiThread { doGpuLogin() }
+        }
+        renderer.onLogout = {
+            runOnUiThread {
+                getSharedPreferences("janusplus", Context.MODE_PRIVATE).edit().clear().apply()
+                api = null
+                state.screen = Screen.LOGIN
+                state.library = emptyList()
+                LoginScreen.username = ""
+                LoginScreen.password = ""
+                LoginScreen.errorMessage = ""
+            }
+        }
 
         playerView = PlayerView(this).apply {
             visibility = View.GONE
             useController = true
         }
 
+        // Hidden EditText to relay keyboard input for login/settings
+        keyboardRelay = EditText(this).apply {
+            alpha = 0f
+            layoutParams = FrameLayout.LayoutParams(1, 1)
+            isFocusable = false
+            isFocusableInTouchMode = false
+            inputType = android.text.InputType.TYPE_CLASS_TEXT
+        }
+        keyboardRelay.addTextChangedListener(object : android.text.TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
+                if (count > 0 && s != null && state.screen == Screen.LOGIN) {
+                    val newChar = s[start + count - 1]
+                    LoginScreen.onChar(newChar)
+                    keyboardRelay.post { keyboardRelay.setText(""); keyboardRelay.setSelection(0) }
+                }
+            }
+            override fun afterTextChanged(s: android.text.Editable?) {}
+        })
+
         rootLayout.addView(glView)
         rootLayout.addView(playerView)
+        rootLayout.addView(keyboardRelay)
         setContentView(rootLayout)
 
         // Poll for play requests from the GL thread
@@ -124,10 +188,77 @@ class JanusPlusActivity : AppCompatActivity() {
         exo.prepare()
         exo.play()
 
+        PlayerScreen.reset()
         playerView?.player = exo
+        playerView?.useController = false
         playerView?.visibility = View.VISIBLE
-        glView.visibility = View.GONE
+        glView.setZOrderOnTop(true)
+        glView.holder.setFormat(android.graphics.PixelFormat.TRANSLUCENT)
         player = exo
+
+        // Load subtitles
+        val item = state.selectedItem
+        val season = state.selectedSeason
+        val heroBlob = state.heroBlob
+        if (item != null) {
+            val epNum = url.substringAfterLast("/").toIntOrNull() ?: 1
+            thread {
+                try {
+                    // Use regular season endpoint which returns full episode data with subtitles
+                    val seasonData = api?.fetchSeason(item.id, season)
+                    val episode = seasonData?.episodes?.find { it.episode == epNum }
+                    if (episode != null && episode.subtitles.isNotEmpty()) {
+                        PlayerScreen.subtitleTracks = episode.subtitles
+                        val jaIdx = episode.subtitles.indexOfFirst { it.language == "ja" }
+                        val subIdx = if (jaIdx >= 0) jaIdx else 0
+                        PlayerScreen.selectedSubIdx = subIdx
+                        loadSubtitle(item.id, episode.subtitles[subIdx].srtFile)
+                    }
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to load episode data: ${e.message}")
+                }
+            }
+        }
+
+        // Position update poller
+        val updatePosition = object : Runnable {
+            override fun run() {
+                val p = player ?: return
+                PlayerScreen.positionMs = p.currentPosition
+                PlayerScreen.durationMs = p.duration.coerceAtLeast(0)
+                PlayerScreen.isPaused = !p.isPlaying
+
+                // Auto-hide controls after 4 seconds
+                if (PlayerScreen.showControls && !PlayerScreen.isPaused &&
+                    System.currentTimeMillis() - PlayerScreen.controlsTimer > 4000) {
+                    PlayerScreen.showControls = false
+                }
+
+                glView.postDelayed(this, 200)
+            }
+        }
+        glView.post(updatePosition)
+    }
+
+    private fun loadSubtitle(itemId: String, srtFile: String) {
+        val currentApi = api ?: return
+        thread {
+            try {
+                val url = "https://canneji.duckdns.org/janus/api/subs/$itemId/$srtFile"
+                val request = okhttp3.Request.Builder().url(url)
+                    .header("Authorization", "Bearer ${currentApi.token}").build()
+                val response = okhttp3.OkHttpClient().newCall(request).execute()
+                if (response.isSuccessful) {
+                    val srt = response.body?.string() ?: ""
+                    val cues = SrtParser.parse(srt)
+                    PlayerScreen.subtitleCues = cues
+                    Log.i(TAG, "Loaded ${cues.size} subtitle cues from $srtFile")
+                }
+                response.close()
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to load subtitle: ${e.message}")
+            }
+        }
     }
 
     private fun stopPlayer() {
@@ -135,7 +266,9 @@ class JanusPlusActivity : AppCompatActivity() {
         player = null
         playerView?.player = null
         playerView?.visibility = View.GONE
-        glView.visibility = View.VISIBLE
+        glView.setZOrderOnTop(false)
+        glView.holder.setFormat(android.graphics.PixelFormat.OPAQUE)
+        PlayerScreen.reset()
         state.screen = state.returnScreen
         state.playingUrl = null
     }
@@ -291,18 +424,128 @@ class JanusPlusActivity : AppCompatActivity() {
 
                 val thumbs = currentApi.fetchThumbsBlob(item.id, season)
                 Log.i(TAG, "Thumbs: ${thumbs.size}")
-                val decoded = thumbs.mapNotNull { entry ->
+                val decoded = mutableListOf<Pair<String, android.graphics.Bitmap>>()
+                // Thumbnails first to set the cell size
+                for (entry in thumbs) {
                     val bmp = BitmapFactory.decodeByteArray(entry.data, 0, entry.data.size)
-                    if (bmp != null) "thumb_${item.id}_${entry.episode}" to bmp else null
+                    if (bmp != null) decoded.add("thumb_${item.id}_${entry.episode}" to bmp)
+                }
+                // Banner gets its own texture array layer at full resolution
+                blob?.bannerBytes?.let { bytes ->
+                    val bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                    if (bmp != null) {
+                        state.bannerW = bmp.width
+                        state.bannerH = bmp.height
+                        renderer.texArray.uploadLayer(3, bmp) // queued, processed on GL thread
+                        state.bannerReady = true
+                    }
                 }
                 if (decoded.isNotEmpty()) {
                     renderer.thumbAtlas.pack(decoded)
+                }
+
+                // Fetch watch progress from full season endpoint
+                try {
+                    val fullSeason = currentApi.fetchSeason(item.id, season)
+                    if (fullSeason != null) {
+                        val progress = HashMap<Int, Pair<Double, Boolean>>()
+                        for (ep in fullSeason.episodes) {
+                            if (ep.watchProgressSec > 0 || ep.completed) {
+                                progress[ep.episode] = ep.watchProgressSec to ep.completed
+                            }
+                        }
+                        state.episodeProgress = progress
+                    }
+                } catch (_: Exception) {}
+            }
+        }
+    }
+
+    private fun doGpuLogin() {
+        val url = LoginScreen.serverUrl.trimEnd('/')
+        val user = LoginScreen.username
+        val pass = LoginScreen.password
+        if (url.isEmpty() || user.isEmpty() || pass.isEmpty()) {
+            LoginScreen.errorMessage = Lang.s("all_fields_required")
+            return
+        }
+        LoginScreen.connecting = true
+        LoginScreen.errorMessage = ""
+        thread {
+            try {
+                val loginApi = JanusApi(url)
+                val result = loginApi.login(user, pass)
+                if (result != null) {
+                    api = loginApi
+                    getSharedPreferences("janusplus", Context.MODE_PRIVATE).edit()
+                        .putString("server_url", url)
+                        .putString("token", result.token)
+                        .apply()
+                    val library = loginApi.fetchLibrary()
+                    runOnUiThread {
+                        LoginScreen.connecting = false
+                        state.library = library
+                        state.loading = false
+                        state.screen = Screen.HOME
+                        loadCovers(library)
+                    }
+                } else {
+                    runOnUiThread {
+                        LoginScreen.connecting = false
+                        LoginScreen.errorMessage = Lang.s("invalid_credentials")
+                    }
+                }
+            } catch (e: Exception) {
+                runOnUiThread {
+                    LoginScreen.connecting = false
+                    LoginScreen.errorMessage = e.message ?: "Connection failed"
                 }
             }
         }
     }
 
+    private fun loadSeasonData(item: JanusApi.LibraryItem, season: Int) {
+        val currentApi = api ?: return
+        Log.i(TAG, "Loading season $season for ${item.id}")
+        thread {
+            val cards = currentApi.fetchSeasonCards(item.id, season)
+            if (cards != null) state.seasonCards = cards
+
+            val thumbs = currentApi.fetchThumbsBlob(item.id, season)
+            val decoded = thumbs.mapNotNull { entry ->
+                val bmp = BitmapFactory.decodeByteArray(entry.data, 0, entry.data.size)
+                if (bmp != null) "thumb_${item.id}_${entry.episode}" to bmp else null
+            }
+            if (decoded.isNotEmpty()) renderer.thumbAtlas.pack(decoded)
+
+            try {
+                val fullSeason = currentApi.fetchSeason(item.id, season)
+                if (fullSeason != null) {
+                    val progress = HashMap<Int, Pair<Double, Boolean>>()
+                    for (ep in fullSeason.episodes) {
+                        if (ep.watchProgressSec > 0 || ep.completed)
+                            progress[ep.episode] = ep.watchProgressSec to ep.completed
+                    }
+                    state.episodeProgress = progress
+                }
+            } catch (_: Exception) {}
+        }
+    }
+
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        // Login screen keyboard handling
+        if (state.screen == Screen.LOGIN && event.action == KeyEvent.ACTION_DOWN) {
+            when (event.keyCode) {
+                KeyEvent.KEYCODE_DEL -> { LoginScreen.onBackspace(); return true }
+                KeyEvent.KEYCODE_TAB -> { LoginScreen.onTab(); return true }
+                KeyEvent.KEYCODE_ENTER -> { LoginScreen.pendingLogin = true; return true }
+            }
+        }
+        if (state.screen == Screen.SETTINGS && event.action == KeyEvent.ACTION_DOWN &&
+            (event.keyCode == KeyEvent.KEYCODE_BACK || event.keyCode == KeyEvent.KEYCODE_ESCAPE)) {
+            state.screen = Screen.HOME
+            return true
+        }
         if (state.screen == Screen.PLAYING && event.action == KeyEvent.ACTION_DOWN &&
             (event.keyCode == KeyEvent.KEYCODE_BACK || event.keyCode == KeyEvent.KEYCODE_ESCAPE || event.keyCode == KeyEvent.KEYCODE_DEL)) {
             stopPlayer()
@@ -312,10 +555,83 @@ class JanusPlusActivity : AppCompatActivity() {
         return super.dispatchKeyEvent(event)
     }
 
+    private fun showKeyboard() {
+        keyboardRelay.isFocusable = true
+        keyboardRelay.isFocusableInTouchMode = true
+        keyboardRelay.requestFocus()
+        val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as android.view.inputmethod.InputMethodManager
+        imm.showSoftInput(keyboardRelay, android.view.inputmethod.InputMethodManager.SHOW_IMPLICIT)
+    }
+
+    private fun hideKeyboard() {
+        val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as android.view.inputmethod.InputMethodManager
+        imm.hideSoftInputFromWindow(keyboardRelay.windowToken, 0)
+        keyboardRelay.isFocusable = false
+        keyboardRelay.isFocusableInTouchMode = false
+        keyboardRelay.clearFocus()
+    }
+
     override fun onTouchEvent(event: MotionEvent): Boolean {
-        if (state.screen == Screen.PLAYING) return super.onTouchEvent(event)
+        if (state.screen == Screen.LOGIN && event.action == MotionEvent.ACTION_UP) {
+            // Check hit rects for login field taps
+            for (hr in input.hitRects) {
+                if (event.x >= hr.x && event.x <= hr.x + hr.w &&
+                    event.y >= hr.y && event.y <= hr.y + hr.h) {
+                    hr.action()
+                    showKeyboard()
+                    return true
+                }
+            }
+        }
+        if (state.screen == Screen.SETTINGS && event.action == MotionEvent.ACTION_UP) {
+            for (hr in input.hitRects) {
+                if (event.x >= hr.x && event.x <= hr.x + hr.w &&
+                    event.y >= hr.y && event.y <= hr.y + hr.h) {
+                    hr.action()
+                    return true
+                }
+            }
+        }
+        if (state.screen == Screen.PLAYING) {
+            if (event.action == MotionEvent.ACTION_UP) {
+                // Check hit rects first (buttons, track list items, seekbar)
+                for (hr in input.hitRects) {
+                    if (event.x >= hr.x && event.x <= hr.x + hr.w &&
+                        event.y >= hr.y && event.y <= hr.y + hr.h) {
+                        hr.action()
+                        handleSubOrAudioChange()
+                        return true
+                    }
+                }
+                // Tap on track list backdrop dismisses it
+                if (PlayerScreen.showTrackList) {
+                    PlayerScreen.showTrackList = false
+                    return true
+                }
+                // Tap toggles controls / play-pause
+                if (PlayerScreen.showControls) {
+                    player?.let {
+                        if (it.isPlaying) it.pause() else it.play()
+                    }
+                } else {
+                    PlayerScreen.toggleControls()
+                }
+            }
+            return true
+        }
         if (input.handleTouch(event)) return true
         return super.onTouchEvent(event)
+    }
+
+    private fun handleSubOrAudioChange() {
+        val p = player ?: return
+        // Handle subtitle track change
+        if (PlayerScreen.subtitleTracks.isNotEmpty()) {
+            val sub = PlayerScreen.subtitleTracks.getOrNull(PlayerScreen.selectedSubIdx)
+            if (sub != null) {
+                loadSubtitle(state.selectedItem?.id ?: return, sub.srtFile)
+            }
+        }
     }
 
     override fun onResume() {
