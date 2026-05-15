@@ -24,6 +24,7 @@ object HomeScreen {
         }
 
         // Movies row
+        state.moviesRowY = sectionY
         val movies = state.movieList
         if (movies.isNotEmpty()) {
             renderRow(rc, movies, Lang.s("movies"),
@@ -75,8 +76,12 @@ object HomeScreen {
             // Card background
             rc.solid(x, cardsY, cardW, cardH, 0.102f, 0.102f, 0.180f)
 
-            // Cover image
-            rc.image("cover_${item.id}", x, cardsY, cardW, cardH)
+            // Cover image — drawn from atlas in cover pass below
+            // (placeholder already drawn as solid background above)
+
+            // Touch target
+            val tappedItem = item
+            rc.tappable(x, cardsY, cardW, cardH) { rc.state.pendingTap = tappedItem }
 
             // Title gradient overlay at bottom
             val gradH = cardH * 0.35f
@@ -95,5 +100,31 @@ object HomeScreen {
         }
 
         return cardsY + cardH + rc.dp(24f)
+    }
+
+    fun renderCoverPasses(rc: RenderCtx) {
+        val state = rc.state
+        val pad = rc.dimens.padding
+        val headerY = pad * 0.5f
+        val seriesY = headerY + rc.dp(56f) + rc.dp(30f)
+        renderCoverPass(rc, state.seriesList, state.seriesScroll, seriesY)
+        val moviesY = if (state.seriesList.isNotEmpty()) seriesY + rc.dimens.cardH + rc.dp(24f) + rc.dp(30f) else seriesY
+        renderCoverPass(rc, state.movieList, state.movieScroll, moviesY)
+    }
+
+    private fun renderCoverPass(rc: RenderCtx, items: List<JanusApi.LibraryItem>,
+                                scroll: ScrollPhysics, cardsY: Float) {
+        val d = rc.dimens
+        val pad = d.padding
+        val cardW = d.cardW
+        val cardH = d.cardH
+        val spacing = d.cardSpacing
+        val scrollOff = scroll.offset
+        for ((i, item) in items.withIndex()) {
+            val x = pad + i * (cardW + spacing) - scrollOff
+            if (x + cardW < 0 || x > rc.w) continue
+            val uv = rc.coverAtlas.getUV("cover_${item.id}") ?: continue
+            rc.batch.addQuad(x, cardsY, cardW, cardH, uv.u0, uv.v0, uv.u1, uv.v1)
+        }
     }
 }

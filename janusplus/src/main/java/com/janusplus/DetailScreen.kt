@@ -23,6 +23,35 @@ object DetailScreen {
         val cards = state.seasonCards?.episodes ?: emptyList()
         if (cards.isNotEmpty() && state.screen == Screen.SERIES_DETAIL) {
             renderEpisodeGrid(rc, cards, heroH - scrollY)
+
+            // Thumbnails drawn in post-pass by GLRenderer
+        }
+    }
+
+    fun renderThumbs(rc: RenderCtx, cards: List<JanusApi.CardEpisode>, startY: Float) {
+        val state = rc.state
+        val d = rc.dimens
+        val pad = d.padding
+        val availW = rc.w - pad * 2
+        val gridSpacing = d.gridSpacing
+        val minCardW = d.gridMinCardW
+        val cols = ((availW + gridSpacing) / (minCardW + gridSpacing)).toInt().coerceAtLeast(1)
+        val cardW = (availW - gridSpacing * (cols - 1)) / cols
+        val firstThumbKey = "thumb_${state.selectedItem?.id}_${cards.firstOrNull()?.episode}"
+        val srcAspect = rc.thumbAtlas.getUV(firstThumbKey)?.srcAspect ?: 1.33f
+        val thumbH = cardW / srcAspect
+
+        var gridY = startY + rc.dp(16f)
+        val seasons = state.heroBlob?.seasons ?: emptyList()
+        if (seasons.size > 1) gridY += rc.dp(36f)
+
+        for ((i, card) in cards.withIndex()) {
+            val col = i % cols
+            val row = i / cols
+            val x = pad + col * (cardW + gridSpacing)
+            val y = gridY + row * (thumbH + rc.dp(50f) + gridSpacing)
+            if (y + thumbH < 0 || y > rc.h) continue
+            rc.thumb("thumb_${state.selectedItem?.id}_${card.episode}", x, y, cardW, thumbH)
         }
     }
 
@@ -31,17 +60,11 @@ object DetailScreen {
         val state = rc.state
         val d = rc.dimens
 
-        // Banner image or placeholder
+        // Banner drawn in pre-pass by GLRenderer. Only draw placeholder if no banner.
         val itemId = state.selectedItem?.id
-        if (itemId != null) {
-            val bannerTex = rc.tex.get("banner_$itemId")
-            if (bannerTex != 0) {
-                rc.image("banner_$itemId", 0f, heroTop, rc.w, heroH)
-            } else {
-                val coverTex = rc.tex.get("cover_$itemId")
-                if (coverTex != 0) rc.image("cover_$itemId", 0f, heroTop, rc.w, heroH)
-                else rc.solid(0f, heroTop, rc.w, heroH, 0.102f, 0.102f, 0.180f)
-            }
+        val hasBanner = itemId != null && rc.tex.get("banner_$itemId") != 0
+        if (!hasBanner) {
+            rc.solid(0f, heroTop, rc.w, heroH, 0.102f, 0.102f, 0.180f)
         }
 
         // Gradient overlays
@@ -70,6 +93,7 @@ object DetailScreen {
 
         val titleY = heroTop + heroH - rc.dp(120f)
         rc.text("←", pad, titleY, rc.sp(22), 0.533f, 0.533f, 0.533f)
+        rc.tappable(0f, titleY - rc.dp(20f), rc.dp(60f), rc.dp(60f)) { state.closeDetail() }
         rc.textClipped(title, pad + rc.dp(34f), titleY, rc.sp(28),
             contentMaxW - rc.dp(34f), 1f, 1f, 1f)
 
@@ -84,6 +108,16 @@ object DetailScreen {
         rc.text(Lang.s("play"), pad + rc.dp(20f), btnY + btnH * 0.65f, rc.sp(16), 1f, 1f, 1f)
         if (isFocusHero && state.heroButtonFocus == 0) {
             rc.border(pad, btnY, playW, btnH, rc.dp(2f), 1f, 1f, 1f)
+        }
+        // Tap play button → play first episode or movie
+        val playItemId = state.selectedItem?.id ?: ""
+        val playSeason = state.selectedSeason
+        rc.tappable(pad, btnY, playW, btnH) {
+            val ep = if (state.screen == Screen.MOVIE_DETAIL) 1
+                     else state.seasonCards?.episodes?.firstOrNull()?.episode ?: 1
+            state.playingUrl = "https://canneji.duckdns.org/janus/api/stream/$playItemId/$playSeason/$ep"
+            state.returnScreen = state.screen
+            state.screen = Screen.PLAYING
         }
 
         // Download button (movies only)
@@ -135,7 +169,9 @@ object DetailScreen {
         val cols = ((availW + gridSpacing) / (minCardW + gridSpacing)).toInt().coerceAtLeast(1)
         state.gridColumns = cols
         val cardW = (availW - gridSpacing * (cols - 1)) / cols
-        val thumbH = rc.dp(130f)
+        val firstThumbKey = "thumb_${state.selectedItem?.id}_${cards.firstOrNull()?.episode}"
+        val srcAspect = rc.thumbAtlas.getUV(firstThumbKey)?.srcAspect ?: 1.33f
+        val thumbH = cardW / srcAspect
         val textPad = rc.dp(8f)
         val cardH = thumbH + rc.dp(50f)
 
@@ -179,14 +215,8 @@ object DetailScreen {
             // Card background
             rc.solid(x, y, cardW, cardH, bgR, bgG, bgB)
 
-            // Thumbnail
-            val thumbKey = "thumb_${state.selectedItem?.id}_${card.episode}"
-            val thumbTex = rc.tex.get(thumbKey)
-            if (thumbTex != 0) {
-                rc.image(thumbKey, x, y, cardW, thumbH)
-            } else {
-                rc.solid(x, y, cardW, thumbH, 0.133f, 0.133f, 0.200f)
-            }
+            // Thumbnail — drawn from atlas in the thumb batch pass
+            rc.solid(x, y, cardW, thumbH, 0.133f, 0.133f, 0.200f)
 
             // Title
             val titleStr = "${card.episode}. ${card.title()}"
@@ -197,6 +227,16 @@ object DetailScreen {
             val durMin = (card.durationSec / 60).toInt()
             rc.text("$durMin min", x + textPad, y + thumbH + textPad + rc.dp(30f),
                 rc.sp(10), 0.533f, 0.533f, 0.533f)
+
+            // Tap target — play episode
+            val itemId = state.selectedItem?.id ?: ""
+            val season = state.selectedSeason
+            val epNum = card.episode
+            rc.tappable(x, y, cardW, cardH) {
+                state.playingUrl = "https://canneji.duckdns.org/janus/api/stream/$itemId/$season/$epNum"
+                state.returnScreen = state.screen
+                state.screen = Screen.PLAYING
+            }
 
             // Focus border
             if (focused) {

@@ -5,9 +5,11 @@ import android.opengl.GLES30
 import android.opengl.GLUtils
 import java.util.concurrent.ConcurrentLinkedQueue
 
+data class TexInfo(val id: Int, val width: Int, val height: Int)
+
 class TextureManager {
 
-    private val textures = HashMap<String, Int>()
+    private val textures = HashMap<String, TexInfo>()
     private val uploadQueue = ConcurrentLinkedQueue<Pair<String, Bitmap>>()
     var whiteTexture = 0; private set
 
@@ -26,13 +28,15 @@ class TextureManager {
         var count = 0
         while (count < maxPerFrame) {
             val (key, bmp) = uploadQueue.poll() ?: break
-            textures[key] = uploadBitmap(bmp)
+            textures[key] = TexInfo(uploadBitmap(bmp), bmp.width, bmp.height)
             bmp.recycle()
             count++
         }
     }
 
-    fun get(key: String): Int = textures[key] ?: 0
+    fun get(key: String): Int = textures[key]?.id ?: 0
+
+    fun getInfo(key: String): TexInfo? = textures[key]
 
     fun has(key: String): Boolean = textures.containsKey(key)
 
@@ -55,12 +59,12 @@ class TextureManager {
     }
 
     fun delete(key: String) {
-        val id = textures.remove(key) ?: return
-        GLES30.glDeleteTextures(1, intArrayOf(id), 0)
+        val info = textures.remove(key) ?: return
+        GLES30.glDeleteTextures(1, intArrayOf(info.id), 0)
     }
 
     fun clear() {
-        val ids = textures.values.toIntArray()
+        val ids = textures.values.map { it.id }.toIntArray()
         if (ids.isNotEmpty()) GLES30.glDeleteTextures(ids.size, ids, 0)
         textures.clear()
     }

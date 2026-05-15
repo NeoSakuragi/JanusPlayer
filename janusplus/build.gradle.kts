@@ -11,12 +11,20 @@ android {
         applicationId = "com.janusplus"
         minSdk = 26
         targetSdk = 34
-        versionCode = 1
-        versionName = "0.1"
+        versionCode = 3
+        versionName = "0.3"
     }
 
     buildTypes {
         release { isMinifyEnabled = false }
+    }
+
+    applicationVariants.all {
+        outputs.all {
+            val abi = filters.find { it.filterType == "ABI" }?.identifier ?: "universal"
+            (this as com.android.build.gradle.internal.api.BaseVariantOutputImpl)
+                .outputFileName = "janusplus-${versionName}-${abi}.apk"
+        }
     }
 
     compileOptions {
@@ -39,4 +47,7 @@ dependencies {
     implementation("androidx.core:core-ktx:1.12.0")
     implementation("androidx.appcompat:appcompat:1.6.1")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    implementation("androidx.media3:media3-exoplayer:1.5.1")
+    implementation("androidx.media3:media3-ui:1.5.1")
+    implementation("androidx.media3:media3-common:1.5.1")
 }

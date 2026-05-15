@@ -3,6 +3,8 @@ package com.janusplus
 import android.view.KeyEvent
 import android.view.MotionEvent
 
+data class HitRect(val x: Float, val y: Float, val w: Float, val h: Float, val action: () -> Unit)
+
 class InputHandler(private val state: AppState) {
 
     private var touchDownX = 0f
@@ -15,7 +17,11 @@ class InputHandler(private val state: AppState) {
     var screenWidth = 0f
     var screenHeight = 0f
 
-    // Callbacks
+    val hitRects = mutableListOf<HitRect>()
+    private fun hitTestRow(y: Float): HomeRow {
+        return if (y < state.moviesRowY) HomeRow.SERIES else HomeRow.MOVIES
+    }
+
     var onItemSelected: ((JanusApi.LibraryItem) -> Unit)? = null
     var onBack: (() -> Unit)? = null
 
@@ -24,10 +30,14 @@ class InputHandler(private val state: AppState) {
         return when (state.screen) {
             Screen.HOME -> handleHomeKey(keyCode)
             Screen.SERIES_DETAIL, Screen.MOVIE_DETAIL -> handleDetailKey(keyCode)
+            Screen.PLAYING -> false
         }
     }
 
     private fun handleHomeKey(keyCode: Int): Boolean {
+        if (keyCode == KeyEvent.KEYCODE_BACK || keyCode == KeyEvent.KEYCODE_ESCAPE || keyCode == KeyEvent.KEYCODE_DEL) {
+            return true
+        }
         val series = state.seriesList
         val movies = state.movieList
         return when (keyCode) {
@@ -61,10 +71,6 @@ class InputHandler(private val state: AppState) {
                 if (item != null) onItemSelected?.invoke(item)
                 true
             }
-            KeyEvent.KEYCODE_BACK, KeyEvent.KEYCODE_ESCAPE -> {
-                onBack?.invoke()
-                true
-            }
             else -> false
         }
     }
@@ -75,7 +81,7 @@ class InputHandler(private val state: AppState) {
         return when (keyCode) {
             KeyEvent.KEYCODE_DPAD_UP -> {
                 when (state.detailFocus) {
-                    DetailFocus.HERO -> {} // already at top
+                    DetailFocus.HERO -> {}
                     DetailFocus.GRID -> {
                         val newIdx = state.episodeFocus - cols
                         if (newIdx < 0) state.detailFocus = DetailFocus.HERO
@@ -113,7 +119,7 @@ class InputHandler(private val state: AppState) {
                 }
                 true
             }
-            KeyEvent.KEYCODE_BACK, KeyEvent.KEYCODE_ESCAPE -> {
+            KeyEvent.KEYCODE_BACK, KeyEvent.KEYCODE_ESCAPE, KeyEvent.KEYCODE_DEL -> {
                 state.closeDetail()
                 true
             }
@@ -141,14 +147,16 @@ class InputHandler(private val state: AppState) {
                 if (scrolling) {
                     when (state.screen) {
                         Screen.HOME -> {
-                            val scroll = when (state.homeRow) {
-                                HomeRow.SERIES -> state.seriesScroll
-                                HomeRow.MOVIES -> state.movieScroll
+                            // Only scroll the row the finger is on
+                            val touchedRow = hitTestRow(touchDownY)
+                            when (touchedRow) {
+                                HomeRow.SERIES -> state.seriesScroll.offset -= dx
+                                HomeRow.MOVIES -> state.movieScroll.offset -= dx
                             }
-                            scroll.offset -= dx
                         }
+                        Screen.PLAYING -> {}
                         Screen.SERIES_DETAIL, Screen.MOVIE_DETAIL -> {
-                            state.detailScroll.offset -= dy
+                            state.detailScroll.offset = (state.detailScroll.offset - dy).coerceAtLeast(0f)
                         }
                     }
                 }
@@ -158,6 +166,12 @@ class InputHandler(private val state: AppState) {
             MotionEvent.ACTION_UP -> {
                 if (!scrolling) {
                     handleTap(touchDownX, touchDownY)
+                } else {
+                    val dt = (System.currentTimeMillis() - touchDownTime).coerceAtLeast(1)
+                    val vy = (event.y - touchDownY) / (dt / 1000f)
+                    if (state.screen != Screen.HOME && kotlin.math.abs(vy) > 500f) {
+                        state.detailScroll.fling(-vy)
+                    }
                 }
             }
         }
@@ -165,7 +179,11 @@ class InputHandler(private val state: AppState) {
     }
 
     private fun handleTap(x: Float, y: Float) {
-        // Hit testing against rendered positions will be implemented
-        // when we have the quad positions from the last frame
+        for (hr in hitRects) {
+            if (x >= hr.x && x <= hr.x + hr.w && y >= hr.y && y <= hr.y + hr.h) {
+                hr.action()
+                return
+            }
+        }
     }
 }

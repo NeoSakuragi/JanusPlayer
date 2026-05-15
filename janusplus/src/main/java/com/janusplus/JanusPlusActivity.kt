@@ -7,10 +7,17 @@ import android.opengl.GLSurfaceView
 import android.os.Bundle
 import android.view.KeyEvent
 import android.view.MotionEvent
+import android.view.View
 import android.view.WindowManager
 import android.widget.EditText
+import android.widget.FrameLayout
 import android.widget.LinearLayout
 import androidx.appcompat.app.AppCompatActivity
+import androidx.media3.common.MediaItem
+import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.ui.PlayerView
 import android.util.Log
 import kotlin.concurrent.thread
 
@@ -23,6 +30,9 @@ class JanusPlusActivity : AppCompatActivity() {
     private lateinit var state: AppState
     private lateinit var input: InputHandler
     private var api: JanusApi? = null
+    private var player: ExoPlayer? = null
+    private var playerView: PlayerView? = null
+    private lateinit var rootLayout: FrameLayout
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -38,27 +48,95 @@ class JanusPlusActivity : AppCompatActivity() {
         }
         input.onBack = { finish() }
 
-        val prefs = getSharedPreferences("janusplus", Context.MODE_PRIVATE)
-        val savedUrl = prefs.getString("server_url", null)
-        val savedToken = prefs.getString("token", null)
-
-        if (savedUrl != null && savedToken != null) {
-            initGL()
-            tryAutoLogin(savedUrl, savedToken)
-        } else {
-            showLoginDialog()
+        initGL()
+        // Auto-login: skip dialog entirely during development
+        thread {
+            val devApi = JanusApi("https://canneji.duckdns.org/janus")
+            val result = devApi.login("bruno", "janus2026")
+            if (result != null) {
+                api = devApi
+                val library = devApi.fetchLibrary()
+                Log.i(TAG, "Library: ${library.size} items")
+                runOnUiThread {
+                    state.library = library
+                    state.loading = false
+                    loadCovers(library)
+                }
+            } else {
+                Log.e(TAG, "Dev login failed")
+            }
         }
     }
 
+    @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
     private fun initGL() {
         val density = resources.displayMetrics.density
         renderer = GLRenderer(assets, state, density)
+
+        rootLayout = FrameLayout(this)
 
         glView = GLSurfaceView(this)
         glView.setEGLContextClientVersion(3)
         glView.setRenderer(renderer)
         glView.renderMode = GLSurfaceView.RENDERMODE_CONTINUOUSLY
-        setContentView(glView)
+        renderer.inputHandler = input
+        renderer.onItemTapped = { item ->
+            runOnUiThread {
+                state.openItem(item)
+                loadDetail(item)
+            }
+        }
+
+        playerView = PlayerView(this).apply {
+            visibility = View.GONE
+            useController = true
+        }
+
+        rootLayout.addView(glView)
+        rootLayout.addView(playerView)
+        setContentView(rootLayout)
+
+        // Poll for play requests from the GL thread
+        val checkPlay = object : Runnable {
+            override fun run() {
+                if (state.screen == Screen.PLAYING && player == null && state.playingUrl != null) {
+                    startPlayer(state.playingUrl!!)
+                }
+                glView.postDelayed(this, 100)
+            }
+        }
+        glView.post(checkPlay)
+    }
+
+    @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
+    private fun startPlayer(url: String) {
+        Log.i(TAG, "Playing: $url")
+        val token = api?.token ?: return
+        val httpFactory = DefaultHttpDataSource.Factory()
+            .setDefaultRequestProperties(mapOf("Authorization" to "Bearer $token"))
+        val mediaSourceFactory = DefaultMediaSourceFactory(httpFactory)
+
+        val exo = ExoPlayer.Builder(this)
+            .setMediaSourceFactory(mediaSourceFactory)
+            .build()
+        exo.setMediaItem(MediaItem.fromUri(url))
+        exo.prepare()
+        exo.play()
+
+        playerView?.player = exo
+        playerView?.visibility = View.VISIBLE
+        glView.visibility = View.GONE
+        player = exo
+    }
+
+    private fun stopPlayer() {
+        player?.release()
+        player = null
+        playerView?.player = null
+        playerView?.visibility = View.GONE
+        glView.visibility = View.VISIBLE
+        state.screen = state.returnScreen
+        state.playingUrl = null
     }
 
     private fun tryAutoLogin(url: String, token: String) {
@@ -156,24 +234,27 @@ class JanusPlusActivity : AppCompatActivity() {
     private fun loadCovers(items: List<JanusApi.LibraryItem>) {
         val currentApi = api ?: return
         Log.i(TAG, "Loading covers for ${items.size} items")
+        val client = okhttp3.OkHttpClient()
         thread {
+            val entries = mutableListOf<Pair<String, android.graphics.Bitmap>>()
             for (item in items) {
-                if (renderer.textures.has("cover_${item.id}")) continue
                 try {
-                    val url = currentApi.coverUrl(item.id)
-                    val request = okhttp3.Request.Builder().url(url)
-                        .header("Authorization", "Bearer ${currentApi.token}")
-                        .build()
-                    val response = okhttp3.OkHttpClient().newCall(request).execute()
+                    val request = okhttp3.Request.Builder().url(currentApi.coverUrl(item.id))
+                        .header("Authorization", "Bearer ${currentApi.token}").build()
+                    val response = client.newCall(request).execute()
                     if (response.isSuccessful) {
                         val bytes = response.body?.bytes()
                         if (bytes != null) {
                             val bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
-                            if (bmp != null) renderer.textures.enqueue("cover_${item.id}", bmp)
+                            if (bmp != null) entries.add("cover_${item.id}" to bmp)
                         }
                     }
                     response.close()
                 } catch (_: Exception) {}
+            }
+            if (entries.isNotEmpty()) {
+                state.coverAtlas.pack(entries)
+                Log.i(TAG, "Cover atlas packed: ${entries.size} covers")
             }
         }
     }
@@ -209,20 +290,29 @@ class JanusPlusActivity : AppCompatActivity() {
 
                 val thumbs = currentApi.fetchThumbsBlob(item.id, season)
                 Log.i(TAG, "Thumbs: ${thumbs.size}")
-                for (entry in thumbs) {
+                val decoded = thumbs.mapNotNull { entry ->
                     val bmp = BitmapFactory.decodeByteArray(entry.data, 0, entry.data.size)
-                    if (bmp != null) renderer.textures.enqueue("thumb_${item.id}_${entry.episode}", bmp)
+                    if (bmp != null) "thumb_${item.id}_${entry.episode}" to bmp else null
+                }
+                if (decoded.isNotEmpty()) {
+                    renderer.thumbAtlas.pack(decoded)
                 }
             }
         }
     }
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (state.screen == Screen.PLAYING && event.action == KeyEvent.ACTION_DOWN &&
+            (event.keyCode == KeyEvent.KEYCODE_BACK || event.keyCode == KeyEvent.KEYCODE_ESCAPE || event.keyCode == KeyEvent.KEYCODE_DEL)) {
+            stopPlayer()
+            return true
+        }
         if (input.handleKey(event.keyCode, event.action)) return true
         return super.dispatchKeyEvent(event)
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
+        if (state.screen == Screen.PLAYING) return super.onTouchEvent(event)
         if (input.handleTouch(event)) return true
         return super.onTouchEvent(event)
     }
@@ -235,5 +325,11 @@ class JanusPlusActivity : AppCompatActivity() {
     override fun onPause() {
         super.onPause()
         if (::glView.isInitialized) glView.onPause()
+    }
+
+    override fun onDestroy() {
+        player?.release()
+        player = null
+        super.onDestroy()
     }
 }
