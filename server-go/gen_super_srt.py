@@ -121,9 +121,34 @@ for block in srt.strip().split('\n\n'):
     text = '\n'.join(lines[2:]).strip()
     
     cue_words = []
-    for line in text.split('\n'):
-        for w in group_tokens(mecab_tokens(line)):
-            word = {"s": w['surface']}
+    text_lines = text.split('\n')
+    for line_idx, line in enumerate(text_lines):
+        if line_idx > 0:
+            cue_words.append({"s": "\n"})
+        # Strip spaces for MeCab, keep original for display
+        original = line
+        clean = original.replace(' ', '')
+        grouped = group_tokens(mecab_tokens(clean))
+        # Map MeCab words to character ranges in the original string
+        oi = 0
+        for w in grouped:
+            # Emit spaces from original before this word
+            space_start = oi
+            while oi < len(original) and original[oi] == ' ':
+                oi += 1
+            if oi > space_start:
+                cue_words.append({"s": original[space_start:oi]})
+            word_start = oi
+            # Match characters (skipping any embedded spaces)
+            matched = 0
+            while matched < len(w['surface']) and oi < len(original):
+                if original[oi] == ' ':
+                    oi += 1
+                    continue
+                matched += 1
+                oi += 1
+            surface = original[word_start:oi]
+            word = {"s": surface}
             if w['inflections']:
                 word["i"] = '+'.join(w['inflections'])
             stats["total"] += 1
