@@ -82,6 +82,7 @@ class JanusPlusActivity : AppCompatActivity() {
         renderer.inputHandler = input
         renderer.onItemTapped = { item ->
             runOnUiThread {
+                renderer.thumbAtlas.clear()
                 state.openItem(item)
                 loadDetail(item)
             }
