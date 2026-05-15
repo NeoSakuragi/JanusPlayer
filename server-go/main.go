@@ -56,6 +56,9 @@ func main() {
 	// Packed blob endpoints
 	mux.HandleFunc("/api/blob/", handleBlob)
 
+	// Supercharged SRT
+	mux.HandleFunc("/api/super-srt/", handleSuperSRT)
+
 	// Stream by episode ID
 	mux.HandleFunc("/api/stream/", handleStream)
 
