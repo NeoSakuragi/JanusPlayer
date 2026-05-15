@@ -127,61 +127,13 @@
                     android:layout_marginTop="2dp" />
             </LinearLayout>
 
-            <!-- Anki section -->
-            <TextView
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:id="@+id/sectionAnki"
-                android:text="ANKI CONNECT"
-                android:textColor="#7986CB"
-                android:textSize="12sp"
-                android:textStyle="bold"
-                android:layout_marginBottom="8dp"
-                android:layout_marginTop="24dp" />
-
-            <!-- Enable -->
-            <LinearLayout android:id="@+id/settingAnkiEnabled" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:padding="12dp" android:background="@drawable/focus_highlight" android:focusable="true" android:clickable="true">
-                <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="AnkiConnect" android:textColor="#EEEEEE" android:textSize="15sp" />
-                <TextView android:id="@+id/tvAnkiValue" android:layout_width="wrap_content" android:layout_height="wrap_content" android:textColor="#888888" android:textSize="13sp" android:layout_marginTop="2dp" />
-            </LinearLayout>
-
-            <!-- URL -->
-            <LinearLayout android:id="@+id/settingAnkiUrl" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:padding="12dp" android:background="@drawable/focus_highlight" android:focusable="true" android:clickable="true">
-                <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="AnkiConnect URL" android:textColor="#EEEEEE" android:textSize="15sp" />
-                <TextView android:id="@+id/tvAnkiUrlValue" android:layout_width="wrap_content" android:layout_height="wrap_content" android:textColor="#888888" android:textSize="13sp" android:layout_marginTop="2dp" />
-            </LinearLayout>
-
-            <!-- Test connection -->
-            <LinearLayout android:id="@+id/settingAnkiTest" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:padding="12dp" android:background="@drawable/focus_highlight" android:focusable="true" android:clickable="true">
-                <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Test connection" android:textColor="#7986CB" android:textSize="15sp" />
-                <TextView android:id="@+id/tvAnkiTestValue" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Tap to test" android:textColor="#888888" android:textSize="13sp" android:layout_marginTop="2dp" />
-            </LinearLayout>
-
-            <!-- Deck -->
-            <LinearLayout android:id="@+id/settingAnkiDeck" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:padding="12dp" android:background="@drawable/focus_highlight" android:focusable="true" android:clickable="true">
-                <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Deck" android:textColor="#EEEEEE" android:textSize="15sp" />
-                <TextView android:id="@+id/tvAnkiDeckValue" android:layout_width="wrap_content" android:layout_height="wrap_content" android:textColor="#888888" android:textSize="13sp" android:layout_marginTop="2dp" />
-            </LinearLayout>
-
-            <!-- Note type -->
-            <LinearLayout android:id="@+id/settingAnkiNoteType" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:padding="12dp" android:background="@drawable/focus_highlight" android:focusable="true" android:clickable="true">
-                <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Note type" android:textColor="#EEEEEE" android:textSize="15sp" />
-                <TextView android:id="@+id/tvAnkiNoteTypeValue" android:layout_width="wrap_content" android:layout_height="wrap_content" android:textColor="#888888" android:textSize="13sp" android:layout_marginTop="2dp" />
-            </LinearLayout>
-
-            <!-- Tags -->
-            <LinearLayout android:id="@+id/settingAnkiTags" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:padding="12dp" android:background="@drawable/focus_highlight" android:focusable="true" android:clickable="true">
-                <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Tags" android:textColor="#EEEEEE" android:textSize="15sp" />
-                <TextView android:id="@+id/tvAnkiTagsValue" android:layout_width="wrap_content" android:layout_height="wrap_content" android:textColor="#888888" android:textSize="13sp" android:layout_marginTop="2dp" />
-            </LinearLayout>
-
-
-            <!-- Field mappings header -->
+            <!-- Field mappings header (hidden for now) -->
             <TextView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:id="@+id/sectionFieldMappings"
-                android:text="FIELD MAPPINGS"
+                android:text=""
+                android:visibility="gone"
                 android:textColor="#7986CB"
                 android:textSize="12sp"
                 android:textStyle="bold"

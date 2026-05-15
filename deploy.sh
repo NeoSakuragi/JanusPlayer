@@ -31,14 +31,22 @@ echo "Deploying v${VERSION_NAME} (code ${VERSION_CODE})"
 mkdir -p "$UPDATES_DIR"
 cp "$APK" "$UPDATES_DIR/janus.apk"
 
+# Compute size and SHA-256
+APK_SIZE=$(wc -c < "$UPDATES_DIR/janus.apk")
+APK_SHA256=$(sha256sum "$UPDATES_DIR/janus.apk" | cut -d' ' -f1)
+
 # Update version in DB
 sqlite3 "$DATA_DIR/janus.db" "
     INSERT OR REPLACE INTO meta (key, value, updated_at) VALUES ('app_version_code', '${VERSION_CODE}', strftime('%s','now'));
     INSERT OR REPLACE INTO meta (key, value, updated_at) VALUES ('app_version_name', '${VERSION_NAME}', strftime('%s','now'));
+    INSERT OR REPLACE INTO meta (key, value, updated_at) VALUES ('app_size', '${APK_SIZE}', strftime('%s','now'));
+    INSERT OR REPLACE INTO meta (key, value, updated_at) VALUES ('app_sha256', '${APK_SHA256}', strftime('%s','now'));
 "
 
 echo "Deployed:"
 echo "  APK:     $UPDATES_DIR/janus.apk"
 echo "  Version: v${VERSION_NAME} (code ${VERSION_CODE})"
+echo "  Size:    ${APK_SIZE} bytes"
+echo "  SHA-256: ${APK_SHA256}"
 echo "  Server:  http://localhost:8900/api/version"
 curl -s http://localhost:8900/api/version 2>/dev/null || echo "(server not running)"

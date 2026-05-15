@@ -150,8 +150,8 @@ func authMiddleware(next http.Handler) http.Handler {
 		// Public endpoints — no auth required
 		path := r.URL.Path
 		if path == "/api/login" || path == "/api/health" || path == "/api/version" ||
-			strings.HasPrefix(path, "/api/update/") ||
-			strings.HasPrefix(path, "/api/covers/") {
+			strings.HasPrefix(path, "/api/covers/") ||
+			strings.HasPrefix(path, "/install") {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -166,8 +166,12 @@ func authMiddleware(next http.Handler) http.Handler {
 
 		auth := r.Header.Get("Authorization")
 		if !strings.HasPrefix(auth, "Bearer ") {
-			http.Error(w, `{"error":"unauthorized"}`, 401)
-			return
+			if qToken := r.URL.Query().Get("token"); qToken != "" {
+				auth = "Bearer " + qToken
+			} else {
+				http.Error(w, `{"error":"unauthorized"}`, 401)
+				return
+			}
 		}
 
 		tokenStr := strings.TrimPrefix(auth, "Bearer ")

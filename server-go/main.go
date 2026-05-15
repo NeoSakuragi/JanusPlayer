@@ -7,8 +7,10 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -16,12 +18,15 @@ import (
 
 var (
 	dataDir   string
+	mediaDir  string
 	db        *sql.DB
 	startTime time.Time
+	jsonCache sync.Map // path → []byte
 )
 
 func main() {
 	dataDir = envOr("JANUS_DATA", "/data/janus")
+	mediaDir = envOr("JANUS_MEDIA", dataDir)
 
 	if len(os.Args) > 1 {
 		initDB()
@@ -32,6 +37,7 @@ func main() {
 	initDB()
 	initAuth()
 	startTime = time.Now()
+	warmBlobCache()
 
 	host := envOr("JANUS_HOST", "0.0.0.0")
 	port := envOr("JANUS_PORT", "8900")
@@ -47,26 +53,33 @@ func main() {
 	mux.HandleFunc("/api/library", handleLibrary)
 	mux.HandleFunc("/api/items/", handleItems)
 
+	// Packed blob endpoints
+	mux.HandleFunc("/api/blob/", handleBlob)
+
 	// Stream by episode ID
 	mux.HandleFunc("/api/stream/", handleStream)
 
 	// User settings
 	mux.HandleFunc("/api/settings", handleUserSettings)
+	mux.HandleFunc("/api/season-settings/", handleSeasonSettings)
 
 	// Debug
 	mux.HandleFunc("/api/debug/events", handleDebugEvents)
 
 	// Static file endpoints (legacy)
 	mux.HandleFunc("/api/video/", handleVideo)
-	mux.HandleFunc("/api/subs/", serveStatic("subs"))
+	mux.HandleFunc("/api/subs/", handleSubs)
 	mux.HandleFunc("/api/covers/", serveStatic("covers"))
 	mux.HandleFunc("/api/thumbs/", serveStatic("thumbs"))
-	mux.HandleFunc("/api/update/", serveStaticAt("updates", "/api/update/"))
+	mux.HandleFunc("/api/update", handleUpdate)
+	mux.HandleFunc("/api/update/", handleUpdate)
+	mux.HandleFunc("/install", handleInstallPage)
+	mux.HandleFunc("/install/", handleInstallPage)
 
 	addr := host + ":" + port
 	fmt.Println("Janus Media Server (Go)")
-	fmt.Printf("  Data:   %s\n", dataDir)
 	fmt.Printf("  DB:     %s\n", filepath.Join(dataDir, "janus.db"))
+	fmt.Printf("  Media:  %s\n", mediaDir)
 	fmt.Printf("  Listen: http://%s\n\n", addr)
 
 	server := &http.Server{
@@ -119,6 +132,13 @@ var migrations = []struct {
 		language TEXT NOT NULL,
 		name TEXT DEFAULT '',
 		PRIMARY KEY (item_id, season, language)
+	)`},
+	{"002_season_settings", `CREATE TABLE IF NOT EXISTS season_settings (
+		item_id TEXT NOT NULL,
+		season INTEGER NOT NULL,
+		opening_sec REAL DEFAULT 0,
+		ending_sec REAL DEFAULT 0,
+		PRIMARY KEY (item_id, season)
 	)`},
 }
 
@@ -267,50 +287,55 @@ func handleHealth(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleVersion(w http.ResponseWriter, r *http.Request) {
-	var code, name string
+	var code, name, size, sha256 string
 	db.QueryRow("SELECT value FROM meta WHERE key='app_version_code'").Scan(&code)
 	db.QueryRow("SELECT value FROM meta WHERE key='app_version_name'").Scan(&name)
+	db.QueryRow("SELECT value FROM meta WHERE key='app_size'").Scan(&size)
+	db.QueryRow("SELECT value FROM meta WHERE key='app_sha256'").Scan(&sha256)
 	writeJSON(w, map[string]any{
 		"version_code": atoi(code),
 		"version_name": name,
+		"size":         atoi(size),
+		"sha256":       sha256,
 		"apk":          "janus.apk",
 	})
 }
 
 func handleLibrary(w http.ResponseWriter, r *http.Request) {
-	rows, err := db.Query("SELECT id, type, title_en, title_ja, cover, episode_count, season_count, duration_min FROM items ORDER BY title_en")
-	if err != nil {
-		http.Error(w, err.Error(), 500)
-		return
-	}
-	defer rows.Close()
-
-	var libVersion string
-	db.QueryRow("SELECT value FROM meta WHERE key='library_version'").Scan(&libVersion)
-
-	items := []map[string]any{}
-	for rows.Next() {
-		var id, typ, titleEn, titleJa, cover string
-		var epCount, seasonCount, durMin int
-		rows.Scan(&id, &typ, &titleEn, &titleJa, &cover, &epCount, &seasonCount, &durMin)
-		item := map[string]any{
-			"id": id, "type": typ,
-			"title_en": titleEn, "title_ja": titleJa,
-			"cover": cover, "episode_count": epCount,
-			"locales": queryItemLocales(id),
+	writeCachedJSON(w, "library", func() any {
+		rows, err := db.Query("SELECT id, type, title_en, title_ja, cover, episode_count, season_count, duration_min FROM items ORDER BY title_en")
+		if err != nil {
+			return map[string]any{"error": err.Error()}
 		}
-		if typ == "MOVIE" {
-			item["duration_min"] = durMin
-		} else {
-			item["season_count"] = seasonCount
-		}
-		items = append(items, item)
-	}
+		defer rows.Close()
 
-	writeJSON(w, map[string]any{
-		"version":       2,
-		"last_modified": atoi(libVersion),
-		"items":         items,
+		var libVersion string
+		db.QueryRow("SELECT value FROM meta WHERE key='library_version'").Scan(&libVersion)
+
+		items := []map[string]any{}
+		for rows.Next() {
+			var id, typ, titleEn, titleJa, cover string
+			var epCount, seasonCount, durMin int
+			rows.Scan(&id, &typ, &titleEn, &titleJa, &cover, &epCount, &seasonCount, &durMin)
+			item := map[string]any{
+				"id": id, "type": typ,
+				"title_en": titleEn, "title_ja": titleJa,
+				"cover": cover, "episode_count": epCount,
+				"locales": queryItemLocales(id),
+			}
+			if typ == "MOVIE" {
+				item["duration_min"] = durMin
+			} else {
+				item["season_count"] = seasonCount
+			}
+			items = append(items, item)
+		}
+
+		return map[string]any{
+			"version":       2,
+			"last_modified": atoi(libVersion),
+			"items":         items,
+		}
 	})
 }
 
@@ -355,29 +380,28 @@ func handleItems(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleItemDetail(w http.ResponseWriter, itemID string) {
-	var id, typ, titleEn, titleJa, cover, synEn, synFr, synJa string
-	var epCount, seasonCount, durMin int
-	err := db.QueryRow("SELECT id, type, title_en, title_ja, cover, episode_count, season_count, duration_min, synopsis_en, synopsis_fr, synopsis_ja FROM items WHERE id=?", itemID).
-		Scan(&id, &typ, &titleEn, &titleJa, &cover, &epCount, &seasonCount, &durMin, &synEn, &synFr, &synJa)
-	if err != nil {
-		http.Error(w, "not found", 404)
-		return
-	}
-
-	if typ == "MOVIE" {
-		// Return movie with its single episode
-		ep := queryEpisode(itemID, 1, 1)
-		if ep == nil {
-			ep = map[string]any{}
+	writeCachedJSON(w, "item:"+itemID, func() any {
+		var id, typ, titleEn, titleJa, cover, synEn, synFr, synJa string
+		var epCount, seasonCount, durMin int
+		err := db.QueryRow("SELECT id, type, title_en, title_ja, cover, episode_count, season_count, duration_min, synopsis_en, synopsis_fr, synopsis_ja FROM items WHERE id=?", itemID).
+			Scan(&id, &typ, &titleEn, &titleJa, &cover, &epCount, &seasonCount, &durMin, &synEn, &synFr, &synJa)
+		if err != nil {
+			return map[string]any{"error": "not found"}
 		}
-		writeJSON(w, map[string]any{
-			"id": id, "type": typ,
-			"title_en": titleEn, "title_ja": titleJa,
-			"cover": cover, "episode": ep,
-			"synopsis_en": synEn, "synopsis_fr": synFr, "synopsis_ja": synJa,
-		})
-	} else {
-		// Return series with season list
+
+		if typ == "MOVIE" {
+			ep := queryEpisode(itemID, 1, 1)
+			if ep == nil {
+				ep = map[string]any{}
+			}
+			return map[string]any{
+				"id": id, "type": typ,
+				"title_en": titleEn, "title_ja": titleJa,
+				"cover": cover, "episode": ep,
+				"synopsis_en": synEn, "synopsis_fr": synFr, "synopsis_ja": synJa,
+			}
+		}
+
 		seasons := []map[string]any{}
 		rows, _ := db.Query("SELECT season, COUNT(*) FROM episodes WHERE item_id=? GROUP BY season ORDER BY season", itemID)
 		if rows != nil {
@@ -398,50 +422,51 @@ func handleItemDetail(w http.ResponseWriter, itemID string) {
 				seasons = append(seasons, map[string]any{"season": sNum, "episode_count": sCount, "names": names})
 			}
 		}
-		writeJSON(w, map[string]any{
+		return map[string]any{
 			"id": id, "type": typ,
 			"title_en": titleEn, "title_ja": titleJa,
 			"cover": cover, "episode_count": epCount,
 			"seasons": seasons,
-		})
-	}
+		}
+	})
 }
 
 func handleSeason(w http.ResponseWriter, itemID string, seasonNum int) {
-	rows, err := db.Query(`SELECT season, episode, filename, duration_sec, title_en,
-		synopsis_en, synopsis_fr, synopsis_ja, thumb
-		FROM episodes WHERE item_id=? AND season=? ORDER BY episode`, itemID, seasonNum)
-	if err != nil {
-		http.Error(w, err.Error(), 500)
-		return
-	}
-	defer rows.Close()
+	writeCachedJSON(w, fmt.Sprintf("season:%s:%d", itemID, seasonNum), func() any {
+		rows, err := db.Query(`SELECT season, episode, filename, duration_sec, title_en,
+			synopsis_en, synopsis_fr, synopsis_ja, thumb
+			FROM episodes WHERE item_id=? AND season=? ORDER BY episode`, itemID, seasonNum)
+		if err != nil {
+			return map[string]any{"error": err.Error()}
+		}
+		defer rows.Close()
 
-	episodes := []map[string]any{}
-	for rows.Next() {
-		var season, episode int
-		var filename, titleEn, synEn, synFr, synJa, thumb string
-		var durSec float64
-		rows.Scan(&season, &episode, &filename, &durSec, &titleEn,
-			&synEn, &synFr, &synJa, &thumb)
+		episodes := []map[string]any{}
+		for rows.Next() {
+			var season, episode int
+			var filename, titleEn, synEn, synFr, synJa, thumb string
+			var durSec float64
+			rows.Scan(&season, &episode, &filename, &durSec, &titleEn,
+				&synEn, &synFr, &synJa, &thumb)
 
-		subTracks := querySubtitles(itemID, season, episode)
+			subTracks := querySubtitles(itemID, season, episode)
 
-		episodes = append(episodes, map[string]any{
-			"season": season, "episode": episode, "filename": filename,
-			"duration_sec": durSec, "title_en": titleEn,
-			"synopsis_en": synEn, "synopsis_fr": synFr, "synopsis_ja": synJa,
-			"thumb": thumb,
-			"subtitles":          subTracks,
-			"locales":            queryEpisodeLocales(itemID, season, episode),
-			"watch_progress_sec": 0, "completed": false,
-		})
-	}
+			episodes = append(episodes, map[string]any{
+				"season": season, "episode": episode, "filename": filename,
+				"duration_sec": durSec, "title_en": titleEn,
+				"synopsis_en": synEn, "synopsis_fr": synFr, "synopsis_ja": synJa,
+				"thumb": thumb,
+				"subtitles":          subTracks,
+				"locales":            queryEpisodeLocales(itemID, season, episode),
+				"watch_progress_sec": 0, "completed": false,
+			})
+		}
 
-	writeJSON(w, map[string]any{
-		"season":        seasonNum,
-		"episode_count": len(episodes),
-		"episodes":      episodes,
+		return map[string]any{
+			"season":        seasonNum,
+			"episode_count": len(episodes),
+			"episodes":      episodes,
+		}
 	})
 }
 
@@ -572,7 +597,7 @@ func handleStream(w http.ResponseWriter, r *http.Request) {
 
 	// Video stream
 	if len(parts) == 3 {
-		videoPath := filepath.Join(dataDir, "videos", itemID, filename)
+		videoPath := filepath.Join(mediaDir, "videos", itemID, filename)
 		f, err := os.Open(videoPath)
 		if err != nil {
 			http.Error(w, "not found", 404)
@@ -607,16 +632,18 @@ func handleStream(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "not found", 404)
 			return
 		}
-		srtPath := filepath.Join(dataDir, "subs", itemID, srtFile)
-		f, err := os.Open(srtPath)
+		srtPath := filepath.Join(mediaDir, "subs", itemID, srtFile)
+		data, err := os.ReadFile(srtPath)
 		if err != nil {
 			http.Error(w, "not found", 404)
 			return
 		}
-		defer f.Close()
-		stat, _ := f.Stat()
+		content := string(data)
+		if lang == "ja" && hasMecab {
+			content = segmentSRT(content)
+		}
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		http.ServeContent(w, r, stat.Name(), stat.ModTime(), f)
+		w.Write([]byte(content))
 		return
 	}
 
@@ -629,7 +656,7 @@ func handleVideo(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "not found", 404)
 		return
 	}
-	f, err := os.Open(filepath.Join(dataDir, "videos", path))
+	f, err := os.Open(filepath.Join(mediaDir, "videos", path))
 	if err != nil {
 		http.Error(w, "not found", 404)
 		return
@@ -639,6 +666,116 @@ func handleVideo(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "video/x-matroska")
 	w.Header().Set("Accept-Ranges", "bytes")
 	http.ServeContent(w, r, stat.Name(), stat.ModTime(), f)
+}
+
+func handleSubs(w http.ResponseWriter, r *http.Request) {
+	path := strings.TrimPrefix(r.URL.Path, "/api/subs/")
+	if path == "" || strings.Contains(path, "..") {
+		http.Error(w, "not found", 404)
+		return
+	}
+
+	full := filepath.Join(mediaDir, "subs", path)
+	data, err := os.ReadFile(full)
+	if err != nil {
+		http.Error(w, "not found", 404)
+		return
+	}
+
+	content := string(data)
+
+	// Segment Japanese SRTs on the fly with MeCab
+	if strings.Contains(path, "_ja") && hasMecab {
+		content = segmentSRT(content)
+	}
+
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Write([]byte(content))
+}
+
+var hasMecab bool
+
+func init() {
+	_, err := exec.LookPath("mecab")
+	hasMecab = err == nil
+}
+
+func handleInstallPage(w http.ResponseWriter, r *http.Request) {
+	if strings.HasSuffix(r.URL.Path, "/download") {
+		apkPath := filepath.Join(dataDir, "updates", "janus.apk")
+		f, err := os.Open(apkPath)
+		if err != nil {
+			http.Error(w, "no APK available", 404)
+			return
+		}
+		defer f.Close()
+		stat, _ := f.Stat()
+		w.Header().Set("Content-Type", "application/vnd.android.package-archive")
+		w.Header().Set("Content-Disposition", "attachment; filename=\"janus.apk\"")
+		http.ServeContent(w, r, "janus.apk", stat.ModTime(), f)
+		return
+	}
+
+	var name, size string
+	db.QueryRow("SELECT value FROM meta WHERE key='app_version_name'").Scan(&name)
+	db.QueryRow("SELECT value FROM meta WHERE key='app_size'").Scan(&size)
+	sizeMB := atoi(size) / (1024 * 1024)
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	fmt.Fprintf(w, installPageHTML, name, sizeMB)
+}
+
+const installPageHTML = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Janus — Install</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #0a0a0a; color: #e0e0e0; font-family: -apple-system, sans-serif;
+         display: flex; justify-content: center; align-items: center; min-height: 100vh; }
+  .card { text-align: center; max-width: 360px; padding: 48px 32px; }
+  .logo { font-size: 48px; margin-bottom: 8px; }
+  h1 { font-size: 28px; font-weight: 700; color: #fff; margin-bottom: 4px; }
+  .sub { color: #888; font-size: 14px; margin-bottom: 32px; }
+  .btn { display: inline-block; background: #7986CB; color: #fff; text-decoration: none;
+         font-size: 16px; font-weight: 600; padding: 14px 40px; border-radius: 8px;
+         transition: background 0.2s; }
+  .btn:hover { background: #5C6BC0; }
+  .meta { color: #666; font-size: 12px; margin-top: 16px; }
+  .steps { text-align: left; color: #aaa; font-size: 13px; margin-top: 32px; line-height: 1.8; }
+  .steps span { color: #7986CB; font-weight: 600; }
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="logo">ヤヌス</div>
+  <h1>Janus</h1>
+  <p class="sub">Japanese Immersion Video Player</p>
+  <a href="install/download" class="btn">Install v%s</a>
+  <p class="meta">Android · %d MB</p>
+  <div class="steps">
+    <span>1.</span> Tap Install to download the APK<br>
+    <span>2.</span> Open the file and allow installation<br>
+    <span>3.</span> Launch Janus and log in
+  </div>
+</div>
+</body>
+</html>
+`
+
+func handleUpdate(w http.ResponseWriter, r *http.Request) {
+	apkPath := filepath.Join(dataDir, "updates", "janus.apk")
+	f, err := os.Open(apkPath)
+	if err != nil {
+		http.Error(w, "no update available", 404)
+		return
+	}
+	defer f.Close()
+	stat, _ := f.Stat()
+	w.Header().Set("Content-Type", "application/vnd.android.package-archive")
+	http.ServeContent(w, r, "janus.apk", stat.ModTime(), f)
 }
 
 func serveStatic(subdir string) http.HandlerFunc {
@@ -652,7 +789,7 @@ func serveStaticAt(subdir, prefix string) http.HandlerFunc {
 			http.Error(w, "not found", 404)
 			return
 		}
-		full := filepath.Join(dataDir, subdir, path)
+		full := filepath.Join(mediaDir, subdir, path)
 		f, err := os.Open(full)
 		if err != nil {
 			http.Error(w, "not found", 404)
@@ -709,6 +846,44 @@ func handleUserSettings(w http.ResponseWriter, r *http.Request) {
 		settings[k] = v
 	}
 	writeJSON(w, settings)
+}
+
+// GET/PUT /api/season-settings/{itemId}/{season}
+func handleSeasonSettings(w http.ResponseWriter, r *http.Request) {
+	path := strings.TrimPrefix(r.URL.Path, "/api/season-settings/")
+	parts := strings.Split(path, "/")
+	if len(parts) != 2 {
+		http.Error(w, "not found", 404)
+		return
+	}
+	itemID := parts[0]
+	season := atoi(parts[1])
+
+	if r.Method == "PUT" || r.Method == "POST" {
+		var req struct {
+			OpeningSec float64 `json:"opening_sec"`
+			EndingSec  float64 `json:"ending_sec"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), 400)
+			return
+		}
+		db.Exec("INSERT OR REPLACE INTO season_settings (item_id, season, opening_sec, ending_sec) VALUES (?,?,?,?)",
+			itemID, season, req.OpeningSec, req.EndingSec)
+		clearCache()
+		writeJSON(w, map[string]any{"ok": true})
+		return
+	}
+
+	var openingSec, endingSec float64
+	db.QueryRow("SELECT opening_sec, ending_sec FROM season_settings WHERE item_id=? AND season=?", itemID, season).
+		Scan(&openingSec, &endingSec)
+	writeJSON(w, map[string]any{
+		"item_id":     itemID,
+		"season":      season,
+		"opening_sec": openingSec,
+		"ending_sec":  endingSec,
+	})
 }
 
 func handleDebugEvents(w http.ResponseWriter, r *http.Request) {
@@ -773,6 +948,28 @@ func writeJSON(w http.ResponseWriter, data any) {
 	json.NewEncoder(w).Encode(data)
 }
 
+func writeCachedJSON(w http.ResponseWriter, key string, build func() any) {
+	if cached, ok := jsonCache.Load(key); ok {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Write(cached.([]byte))
+		return
+	}
+	data := build()
+	b, _ := json.Marshal(data)
+	jsonCache.Store(key, b)
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Write(b)
+}
+
+func clearCache() {
+	jsonCache.Range(func(key, _ any) bool {
+		jsonCache.Delete(key)
+		return true
+	})
+}
+
 func atoi(s string) int {
 	n := 0
 	fmt.Sscanf(s, "%d", &n)
@@ -782,7 +979,7 @@ func atoi(s string) int {
 func cors(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "*")
 		if r.Method == "OPTIONS" {
 			w.WriteHeader(204)
@@ -801,7 +998,11 @@ func logger(next http.Handler) http.Handler {
 		start := time.Now()
 		lw := &logWriter{ResponseWriter: w, status: 200}
 		next.ServeHTTP(lw, r)
-		log.Printf("%s %s %d %s", r.Method, r.URL.Path, lw.status, time.Since(start).Round(time.Microsecond))
+		user := r.Header.Get("X-Username")
+		if user == "" { user = "-" }
+		ip := r.RemoteAddr
+		if fwd := r.Header.Get("X-Real-IP"); fwd != "" { ip = fwd }
+		log.Printf("%s %s %s %d %s %s", ip, user, r.URL.Path, lw.status, time.Since(start).Round(time.Microsecond), r.Method)
 	})
 }
 

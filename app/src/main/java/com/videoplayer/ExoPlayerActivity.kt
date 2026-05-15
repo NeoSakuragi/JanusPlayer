@@ -16,6 +16,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.ClickableText
@@ -191,13 +192,16 @@ class ExoPlayerActivity : ComponentActivity() {
 
     private val currentRubySpans = mutableStateOf<List<RubySpan>>(emptyList())
 
-    // Word navigation: cursor moves through japanesePositions, scanAt resolves the word
+    // Word navigation: words from space-delimited subs
     private val cursorIdx = mutableIntStateOf(0)
     private val hlStart = mutableIntStateOf(-1)
     private val hlEnd = mutableIntStateOf(-1)
     private var currentWord: WordScanner.ScannedWord? = null
-    private var japanesePositions = listOf<Int>()
     private var wordNavSubText = ""
+
+    // Word spans from MeCab-segmented subtitles (display text has spaces stripped)
+    data class WordSpan(val start: Int, val end: Int, val word: String)
+    private var wordSpans = listOf<WordSpan>()
 
     // Dictionary
     private val dictTerm = mutableStateOf("")
@@ -228,10 +232,6 @@ class ExoPlayerActivity : ComponentActivity() {
     private lateinit var player: ExoPlayer
     private var subtitleCues = listOf<SrtParser.Cue>()
     private val handler = android.os.Handler(android.os.Looper.getMainLooper())
-    private val dictLookup = object : WordScanner.DictLookup {
-        override fun hasEntry(term: String): Boolean = JitendexDict.hasEntry(term)
-    }
-
     @OptIn(androidx.media3.common.util.UnstableApi::class)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -251,6 +251,23 @@ class ExoPlayerActivity : ComponentActivity() {
         val subsUrl = intent.getStringExtra(EXTRA_SUBS_URL)
         titleText.value = intent.getStringExtra(EXTRA_TITLE) ?: ""
         val startPos = intent.getLongExtra(EXTRA_START_POSITION, 0L)
+        var openingMs = 0L
+        var endingMs = 0L
+
+        // Fetch season settings in background
+        val seriesId = intent.getStringExtra(EXTRA_SERIES_ID)
+        val seasonNum = intent.getIntExtra("season_num", 1)
+        if (seriesId != null) {
+            val prefs = getSharedPreferences("janus_settings", MODE_PRIVATE)
+            val baseUrl = prefs.getString("server_url", "") ?: ""
+            val token = prefs.getString("auth_token", null)
+            Thread {
+                val settings = JanusApi(baseUrl).apply { this.token = token }
+                    .fetchSeasonSettings(seriesId, seasonNum)
+                openingMs = (settings.openingSec * 1000).toLong()
+                endingMs = (settings.endingSec * 1000).toLong()
+            }.start()
+        }
 
         DownloadManager.init(this)
 
@@ -330,15 +347,32 @@ class ExoPlayerActivity : ComponentActivity() {
                     val cue = SrtParser.cueAt(subtitleCues, pos)
                     if (cue?.text != null) {
                         val (clean, rubys) = stripFurigana(cue.text)
-                        currentSubText.value = clean
+                        val (display, spans) = parseWordSpans(clean)
+                        currentSubText.value = display
                         currentRubySpans.value = rubys
+                        wordSpans = spans
                     } else {
                         currentSubText.value = null
                         currentRubySpans.value = emptyList()
+                        wordSpans = emptyList()
                     }
 
-                    // Condensed: speed up through gaps between subtitles
+                    // Auto-next episode at end
+                    if (player.isPlaying && player.duration > 0 && pos >= player.duration - 1000) {
+                        playNextEpisode()
+                    }
+
+                    // Condensed: speed up through gaps, skip opening/ending
                     if (condensedMode.value && player.isPlaying && screen.value == Screen.PLAYING) {
+                        // Skip opening
+                        if (openingMs > 0 && pos < openingMs && pos < 5000) {
+                            player.seekTo(openingMs)
+                        }
+                        // Skip ending → next episode
+                        if (endingMs > 0 && player.duration > 0 && pos >= player.duration - endingMs) {
+                            playNextEpisode()
+                        }
+
                         val midSub = cue != null
                         val prev = subtitleCues.lastOrNull { it.endMs <= pos }
                         val next = SrtParser.nextCueAfter(subtitleCues, pos)
@@ -441,24 +475,34 @@ class ExoPlayerActivity : ComponentActivity() {
             Box(
                 modifier = Modifier.fillMaxSize()
                     .pointerInput(Unit) {
+                        var lastTapTime = 0L
+                        var lastTapX = 0f
                         detectTapGestures(
-                            onDoubleTap = { offset ->
-                                val halfWidth = size.width / 2
-                                val seekMs = if (offset.x < halfWidth) -10_000L else 10_000L
-                                val newPos = (player.currentPosition + seekMs).coerceIn(0, player.duration.coerceAtLeast(0))
-                                player.seekTo(newPos)
-                                seekIndicator = if (seekMs < 0) "« 10s" else "10s »"
-                            },
-                            onTap = {
-                                when (screen.value) {
-                                    Screen.PLAYING -> {
-                                        player.pause()
-                                        if (!enterWordNav()) goto(Screen.CONTROLS, CTRL_SEEK)
+                            onTap = { offset ->
+                                val now = System.currentTimeMillis()
+                                if (now - lastTapTime < 300) {
+                                    // Double tap — seek
+                                    val halfWidth = size.width / 2
+                                    val seekMs = if (lastTapX < halfWidth) -10_000L else 10_000L
+                                    val newPos = (player.currentPosition + seekMs).coerceIn(0, player.duration.coerceAtLeast(0))
+                                    player.seekTo(newPos)
+                                    if (screen.value != Screen.PLAYING) { player.play(); goto(Screen.PLAYING) }
+                                    seekIndicator = if (seekMs < 0) "« 10s" else "10s »"
+                                    lastTapTime = 0L
+                                } else {
+                                    // Single tap — immediate
+                                    lastTapTime = now
+                                    lastTapX = offset.x
+                                    when (screen.value) {
+                                        Screen.PLAYING -> {
+                                            player.pause()
+                                            if (!enterWordNav()) goto(Screen.CONTROLS, CTRL_SEEK)
+                                        }
+                                        Screen.CONTROLS, Screen.WORD_NAV -> {
+                                            clearDict(); player.play(); goto(Screen.PLAYING)
+                                        }
+                                        else -> {}
                                     }
-                                    Screen.CONTROLS, Screen.WORD_NAV -> {
-                                        clearDict(); player.play(); goto(Screen.PLAYING)
-                                    }
-                                    else -> {}
                                 }
                             }
                         )
@@ -750,9 +794,9 @@ class ExoPlayerActivity : ComponentActivity() {
                 enter = slideInHorizontally(initialOffsetX = { it }, animationSpec = tween(200)) + fadeIn(tween(200)),
                 exit = slideOutHorizontally(targetOffsetX = { it }, animationSpec = tween(150)) + fadeOut(tween(150)),
             ) {
-                Box(Modifier.fillMaxSize().background(Color(0xAA000000)).clickable { goto(Screen.CONTROLS, listReturnFocus) }) {
+                Box(Modifier.fillMaxSize().background(Color(0x44000000)).clickable { goto(Screen.CONTROLS, listReturnFocus) }) {
                     Column(
-                        Modifier.align(Alignment.CenterEnd).width(dimens.listPanelWidth).fillMaxHeight()
+                        Modifier.align(Alignment.CenterEnd).width(IntrinsicSize.Max).widthIn(min = 160.dp, max = dimens.listPanelWidth).fillMaxHeight()
                             .background(Color(0xFF1A1A2E)).padding(vertical = 12.dp)
                     ) {
                         androidx.compose.material3.Text(
@@ -882,7 +926,7 @@ class ExoPlayerActivity : ComponentActivity() {
                         if (ci > 0) { cursorIdx.intValue = ci - 1; updateWordAtCursor() }
                     }
                     KeyEvent.KEYCODE_DPAD_RIGHT -> {
-                        if (ci < japanesePositions.size - 1) { cursorIdx.intValue = ci + 1; updateWordAtCursor() }
+                        if (ci < wordSpans.size - 1) { cursorIdx.intValue = ci + 1; updateWordAtCursor() }
                     }
                     KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> {}
                     else -> return false
@@ -916,24 +960,38 @@ class ExoPlayerActivity : ComponentActivity() {
 
     // ── Word Navigation ──────────────────────────────────────────────
 
+    private fun parseWordSpans(text: String): Pair<String, List<WordSpan>> {
+        val spans = mutableListOf<WordSpan>()
+        val display = StringBuilder()
+        for (line in text.split("\n")) {
+            if (display.isNotEmpty()) display.append("\n")
+            val lineStart = display.length
+            val words = line.split(" ").filter { it.isNotEmpty() }
+            if (words.isEmpty()) continue
+            for (w in words) {
+                val start = display.length
+                display.append(w)
+                spans.add(WordSpan(start, display.length, w))
+            }
+        }
+        return Pair(display.toString(), spans)
+    }
+
     private fun onSubtitleTap(charOffset: Int) {
         val text = currentSubText.value ?: return
-        val positions = WordScanner.findJapanesePositions(text)
-        if (positions.isEmpty()) return
-        val targetIdx = positions.indices.minByOrNull { kotlin.math.abs(positions[it] - charOffset) } ?: 0
+        if (wordSpans.isEmpty()) return
+        val spanIdx = wordSpans.indexOfFirst { charOffset in it.start until it.end }
+            .let { if (it < 0) wordSpans.indices.minByOrNull { i -> kotlin.math.abs(wordSpans[i].start - charOffset) } ?: 0 else it }
         player.pause()
-        japanesePositions = positions
         wordNavSubText = text
-        cursorIdx.intValue = targetIdx
+        cursorIdx.intValue = spanIdx
         updateWordAtCursor()
         screen.value = Screen.WORD_NAV
     }
 
     private fun enterWordNav(): Boolean {
         val text = currentSubText.value ?: return false
-        val positions = WordScanner.findJapanesePositions(text)
-        if (positions.isEmpty()) return false
-        japanesePositions = positions
+        if (wordSpans.isEmpty()) return false
         wordNavSubText = text
         cursorIdx.intValue = 0
         updateWordAtCursor()
@@ -942,23 +1000,19 @@ class ExoPlayerActivity : ComponentActivity() {
     }
 
     private fun updateWordAtCursor() {
-        val charPos = japanesePositions.getOrNull(cursorIdx.intValue) ?: return
-        val word = WordScanner.scanAt(wordNavSubText, charPos, dictLookup)
-        currentWord = word
-        if (word != null) {
-            hlStart.intValue = word.startChar
-            hlEnd.intValue = word.endChar
-            lookupWord(word)
-        } else {
-            hlStart.intValue = charPos
-            hlEnd.intValue = charPos + 1
-            dictVisible.value = false
-        }
-    }
+        val span = wordSpans.getOrNull(cursorIdx.intValue) ?: return
+        hlStart.intValue = span.start
+        hlEnd.intValue = span.end
 
-    private fun lookupWord(word: WordScanner.ScannedWord) {
-        val jEntry = JitendexDict.lookup(word.baseForm)
-            ?: if (word.surface != word.baseForm) JitendexDict.lookup(word.surface) else null
+        // Try deinflection for conjugated forms, then direct lookup
+        var jEntry: JitendexDict.Entry? = null
+        for (candidate in Deinflector.deinflect(span.word)) {
+            jEntry = JitendexDict.lookup(candidate)
+            if (jEntry != null) break
+        }
+        if (jEntry == null) jEntry = JitendexDict.lookup(span.word)
+
+        currentWord = WordScanner.ScannedWord(span.start, span.end, span.word, jEntry?.term ?: span.word, jEntry != null)
 
         if (jEntry != null) {
             dictTerm.value = jEntry.term
@@ -978,9 +1032,9 @@ class ExoPlayerActivity : ComponentActivity() {
                 if (jEntry.freqAnime > 0) put("Anime", jEntry.freqAnime)
             }
             dictVisible.value = true
-            return
+        } else {
+            dictVisible.value = false
         }
-
     }
 
     private fun clearDict() {
@@ -1138,6 +1192,44 @@ class ExoPlayerActivity : ComponentActivity() {
         }
     }
 
+
+    private fun playNextEpisode() {
+        val nextUrl = intent.getStringExtra("next_video_url") ?: return
+        val nextSubs = intent.getStringExtra("next_subs_url")
+        val nextTitle = intent.getStringExtra("next_title") ?: ""
+        val nextEpNum = intent.getIntExtra("next_episode_num", -1)
+        if (nextEpNum < 0) return
+
+        saveProgress()
+        player.setMediaItem(MediaItem.fromUri(nextUrl))
+        player.prepare()
+        player.play()
+        titleText.value = nextTitle
+        intent.putExtra(EXTRA_VIDEO_URL, nextUrl)
+        intent.putExtra(EXTRA_SUBS_URL, nextSubs)
+        intent.putExtra(EXTRA_TITLE, nextTitle)
+        intent.putExtra(EXTRA_EPISODE_NUM, nextEpNum)
+        intent.putExtra(EXTRA_START_POSITION, 0L)
+        // Clear next episode (no chain beyond one)
+        intent.removeExtra("next_video_url")
+        intent.removeExtra("next_subs_url")
+        intent.removeExtra("next_title")
+        intent.removeExtra("next_episode_num")
+
+        // Load new subtitles
+        if (nextSubs != null) {
+            Thread {
+                val srt = try {
+                    val reqBuilder = okhttp3.Request.Builder().url(nextSubs)
+                    PlayerManager.authToken?.let { reqBuilder.header("Authorization", "Bearer $it") }
+                    okhttp3.OkHttpClient().newCall(reqBuilder.build()).execute().body?.string()
+                } catch (_: Exception) { null }
+                if (srt != null) {
+                    subtitleCues = SrtParser.parse(srt)
+                }
+            }.start()
+        }
+    }
 
     private fun toggleCondensed() {
         condensedMode.value = !condensedMode.value

@@ -251,6 +251,167 @@ class JanusApi(private val baseUrl: String) {
         locales = parseLocales(obj.optJSONObject("locales")),
     )
 
+    // ── Blob endpoints ────────────────────────────────────
+
+    data class HeroBlob(
+        val id: String, val type: String,
+        val titleEn: String, val titleJa: String,
+        val episodeCount: Int, val seasonCount: Int, val durationMin: Int,
+        val seasons: List<SeasonInfo>,
+        val locales: Map<String, Locale>,
+        val synopsisEn: String, val synopsisFr: String, val synopsisJa: String,
+        val episode: Episode?,
+        val bannerBytes: ByteArray?,
+        val coverBytes: ByteArray?,
+    )
+
+    fun fetchHeroBlob(itemId: String): HeroBlob? {
+        val request = authRequest("$baseUrl/api/blob/$itemId/hero").build()
+        val response = try { client.newCall(request).execute() } catch (_: Exception) { return null }
+        if (!response.isSuccessful) return null
+        val bytes = response.body?.bytes() ?: return null
+        if (bytes.size < 4) return null
+
+        val jsonLen = (bytes[0].toInt() and 0xFF) or
+            ((bytes[1].toInt() and 0xFF) shl 8) or
+            ((bytes[2].toInt() and 0xFF) shl 16) or
+            ((bytes[3].toInt() and 0xFF) shl 24)
+        if (bytes.size < 4 + jsonLen) return null
+
+        val obj = JSONObject(String(bytes, 4, jsonLen))
+
+        // Parse: [4B json len][json][4B banner len][banner jpeg][cover jpeg]
+        var offset = 4 + jsonLen
+        var bannerBytes: ByteArray? = null
+        var coverBytes: ByteArray? = null
+        if (offset + 4 <= bytes.size) {
+            val bannerLen = (bytes[offset].toInt() and 0xFF) or
+                ((bytes[offset + 1].toInt() and 0xFF) shl 8) or
+                ((bytes[offset + 2].toInt() and 0xFF) shl 16) or
+                ((bytes[offset + 3].toInt() and 0xFF) shl 24)
+            offset += 4
+            if (bannerLen > 0 && offset + bannerLen <= bytes.size) {
+                bannerBytes = bytes.copyOfRange(offset, offset + bannerLen)
+                offset += bannerLen
+            }
+            if (offset < bytes.size) {
+                coverBytes = bytes.copyOfRange(offset, bytes.size)
+            }
+        }
+
+        val seasonsArr = obj.optJSONArray("seasons")
+        val seasons = if (seasonsArr != null) (0 until seasonsArr.length()).map { i ->
+            val s = seasonsArr.getJSONObject(i)
+            val namesObj = s.optJSONObject("names")
+            val names = namesObj?.keys()?.asSequence()?.associate { it to namesObj.getString(it) } ?: emptyMap()
+            SeasonInfo(s.getInt("season"), s.getInt("episode_count"), names)
+        } else emptyList()
+
+        val ep = obj.optJSONObject("episode")?.let { parseEpisode(it) }
+
+        return HeroBlob(
+            id = obj.getString("id"), type = obj.getString("type"),
+            titleEn = obj.optString("title_en", ""), titleJa = obj.optString("title_ja", ""),
+            episodeCount = obj.optInt("episode_count", 1),
+            seasonCount = obj.optInt("season_count", 1),
+            durationMin = obj.optInt("duration_min", 0),
+            seasons = seasons, locales = parseLocales(obj.optJSONObject("locales")),
+            synopsisEn = obj.optString("synopsis_en", ""),
+            synopsisFr = obj.optString("synopsis_fr", ""),
+            synopsisJa = obj.optString("synopsis_ja", ""),
+            episode = ep, bannerBytes = bannerBytes, coverBytes = coverBytes,
+        )
+    }
+
+    data class CardEpisode(
+        val episode: Int,
+        val titleEn: String,
+        val durationSec: Double,
+        val titles: Map<String, String> = emptyMap(),
+    ) {
+        fun title(): String {
+            val lang = Lang.current.value
+            return titles[lang]?.takeIf { it.isNotEmpty() } ?: titleEn
+        }
+    }
+
+    data class SeasonCards(val season: Int, val episodeCount: Int, val episodes: List<CardEpisode>)
+
+    fun fetchSeasonCards(itemId: String, seasonNum: Int): SeasonCards? {
+        val request = authRequest("$baseUrl/api/blob/$itemId/season/$seasonNum").build()
+        val response = try { client.newCall(request).execute() } catch (_: Exception) { return null }
+        if (!response.isSuccessful) return null
+        val obj = JSONObject(response.body?.string() ?: return null)
+        val episodes = obj.getJSONArray("episodes")
+        return SeasonCards(
+            season = obj.getInt("season"),
+            episodeCount = obj.getInt("episode_count"),
+            episodes = (0 until episodes.length()).map { i ->
+                val e = episodes.getJSONObject(i)
+                val titlesObj = e.optJSONObject("titles")
+                val titles = titlesObj?.keys()?.asSequence()?.associate { it to titlesObj.getString(it) } ?: emptyMap()
+                CardEpisode(e.getInt("episode"), e.optString("title_en", ""), e.getDouble("duration_sec"), titles)
+            },
+        )
+    }
+
+    fun fetchSeasonBlob(itemId: String, seasonNum: Int): SeasonData? {
+        val request = authRequest("$baseUrl/api/blob/$itemId/season/$seasonNum").build()
+        val response = try { client.newCall(request).execute() } catch (_: Exception) { return null }
+        if (!response.isSuccessful) return null
+        val obj = JSONObject(response.body?.string() ?: return null)
+        val episodes = obj.getJSONArray("episodes")
+        return SeasonData(
+            season = obj.getInt("season"),
+            episodeCount = obj.getInt("episode_count"),
+            episodes = (0 until episodes.length()).map { parseEpisode(episodes.getJSONObject(it)) },
+        )
+    }
+
+    data class ThumbEntry(val episode: Int, val data: ByteArray)
+
+    fun fetchThumbsBlob(itemId: String, seasonNum: Int): List<ThumbEntry> {
+        val request = authRequest("$baseUrl/api/blob/$itemId/season/$seasonNum/thumbs").build()
+        val response = try { client.newCall(request).execute() } catch (_: Exception) { return emptyList() }
+        if (!response.isSuccessful) return emptyList()
+        val bytes = response.body?.bytes() ?: return emptyList()
+        if (bytes.size < 4) return emptyList()
+
+        val count = (bytes[0].toInt() and 0xFF) or
+            ((bytes[1].toInt() and 0xFF) shl 8) or
+            ((bytes[2].toInt() and 0xFF) shl 16) or
+            ((bytes[3].toInt() and 0xFF) shl 24)
+
+        val entries = mutableListOf<ThumbEntry>()
+        var offset = 4
+        for (i in 0 until count) {
+            if (offset + 8 > bytes.size) break
+            val epNum = (bytes[offset].toInt() and 0xFF) or
+                ((bytes[offset + 1].toInt() and 0xFF) shl 8) or
+                ((bytes[offset + 2].toInt() and 0xFF) shl 16) or
+                ((bytes[offset + 3].toInt() and 0xFF) shl 24)
+            val size = (bytes[offset + 4].toInt() and 0xFF) or
+                ((bytes[offset + 5].toInt() and 0xFF) shl 8) or
+                ((bytes[offset + 6].toInt() and 0xFF) shl 16) or
+                ((bytes[offset + 7].toInt() and 0xFF) shl 24)
+            offset += 8
+            if (offset + size > bytes.size) break
+            entries.add(ThumbEntry(epNum, bytes.copyOfRange(offset, offset + size)))
+            offset += size
+        }
+        return entries
+    }
+
+    data class SeasonSettings(val openingSec: Double, val endingSec: Double)
+
+    fun fetchSeasonSettings(itemId: String, season: Int): SeasonSettings {
+        val request = authRequest("$baseUrl/api/season-settings/$itemId/$season").build()
+        val response = try { client.newCall(request).execute() } catch (_: Exception) { return SeasonSettings(0.0, 0.0) }
+        if (!response.isSuccessful) return SeasonSettings(0.0, 0.0)
+        val obj = JSONObject(response.body?.string() ?: return SeasonSettings(0.0, 0.0))
+        return SeasonSettings(obj.optDouble("opening_sec", 0.0), obj.optDouble("ending_sec", 0.0))
+    }
+
     fun fetchSettings(): Map<String, String> {
         val request = authRequest("$baseUrl/api/settings").build()
         val response = try { client.newCall(request).execute() } catch (_: Exception) { return emptyMap() }

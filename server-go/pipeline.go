@@ -129,7 +129,7 @@ func cmdAddSeries(args []string) {
 	files, _ := os.ReadDir(videoDir)
 	sort.Slice(files, func(i, j int) bool { return files[i].Name() < files[j].Name() })
 
-	subsDir := filepath.Join(dataDir, "subs", id)
+	subsDir := filepath.Join(mediaDir, "subs", id)
 	os.MkdirAll(subsDir, 0755)
 
 	var episodes []episodeInfo
@@ -177,7 +177,7 @@ func cmdAddSeries(args []string) {
 			synFr = td.synopsisFr
 			synJa = td.synopsisJa
 			if td.stillPath != "" {
-				thumbDir := filepath.Join(dataDir, "thumbs", id)
+				thumbDir := filepath.Join(mediaDir, "thumbs", id)
 				os.MkdirAll(thumbDir, 0755)
 				thumbFile := fmt.Sprintf("ep%03d.jpg", epNum)
 				downloadFile(tmdbImgBase+td.stillPath, filepath.Join(thumbDir, thumbFile))
@@ -190,7 +190,7 @@ func cmdAddSeries(args []string) {
 
 		// Fallback thumbnail from video
 		if thumbPath == "" {
-			thumbDir := filepath.Join(dataDir, "thumbs", id)
+			thumbDir := filepath.Join(mediaDir, "thumbs", id)
 			os.MkdirAll(thumbDir, 0755)
 			thumbFile := fmt.Sprintf("ep%03d.jpg", epNum)
 			tp := filepath.Join(thumbDir, thumbFile)
@@ -272,7 +272,7 @@ func cmdAddMovie(args []string) {
 		os.Exit(1)
 	}
 
-	subsDir := filepath.Join(dataDir, "subs", id)
+	subsDir := filepath.Join(mediaDir, "subs", id)
 	os.MkdirAll(subsDir, 0755)
 
 	extractMovieSubs(videoFile, subsDir, info)
@@ -291,10 +291,10 @@ func cmdAddMovie(args []string) {
 		synJa = md.synopsisJa
 		// Download backdrop
 		if md.backdrop != "" {
-			downloadFile(tmdbImgBase+md.backdrop, filepath.Join(dataDir, "covers", id+"-banner.jpg"))
+			downloadFile(tmdbImgBase+md.backdrop, filepath.Join(mediaDir, "covers", id+"-banner.jpg"))
 		}
 		if md.poster != "" {
-			downloadFile(tmdbImgBase+md.poster, filepath.Join(dataDir, "covers", id+".jpg"))
+			downloadFile(tmdbImgBase+md.poster, filepath.Join(mediaDir, "covers", id+".jpg"))
 		}
 	}
 
@@ -365,12 +365,12 @@ func cmdExtractThumbs() {
 		var epNum int
 		rows.Scan(&itemID, &epNum, &filename, &typ)
 
-		videoPath := filepath.Join(dataDir, "videos", itemID, filename)
+		videoPath := filepath.Join(mediaDir, "videos", itemID, filename)
 		if !fileExists(videoPath) {
 			continue
 		}
 
-		thumbDir := filepath.Join(dataDir, "thumbs", itemID)
+		thumbDir := filepath.Join(mediaDir, "thumbs", itemID)
 		os.MkdirAll(thumbDir, 0755)
 		thumbFile := fmt.Sprintf("ep%03d.jpg", epNum)
 		thumbPath := filepath.Join(thumbDir, thumbFile)
@@ -388,7 +388,7 @@ func cmdExtractThumbs() {
 // ── Strip Tags ────────────────────────────────────────
 
 func cmdStripTags() {
-	subsDir := filepath.Join(dataDir, "subs")
+	subsDir := filepath.Join(mediaDir, "subs")
 	count := 0
 	filepath.Walk(subsDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil || info.IsDir() || !strings.HasSuffix(path, ".srt") {
@@ -446,7 +446,7 @@ func cmdMigrateSubs() {
 	}
 
 	// Scan for extra sub files on disk (e.g. movie_ja2.srt, movie_ja3.srt)
-	subsDir := filepath.Join(dataDir, "subs")
+	subsDir := filepath.Join(mediaDir, "subs")
 	dirs, _ := os.ReadDir(subsDir)
 	for _, d := range dirs {
 		if !d.IsDir() {
@@ -511,6 +511,203 @@ func cmdMigrateSubs() {
 	var total int
 	db.QueryRow("SELECT COUNT(*) FROM subtitles").Scan(&total)
 	fmt.Printf("Total subtitles in DB: %d\n", total)
+}
+
+// ── MeCab Segmentation ───────────────────────────────
+
+func stripSegmentation(line string) string {
+	// Remove spaces between Japanese characters (undo previous segmentation)
+	var result []rune
+	runes := []rune(line)
+	for i, r := range runes {
+		if r == ' ' && i > 0 && i < len(runes)-1 {
+			prev := runes[i-1]
+			next := runes[i+1]
+			prevJa := (prev >= 0x3040 && prev <= 0x309F) || (prev >= 0x30A0 && prev <= 0x30FF) || (prev >= 0x4E00 && prev <= 0x9FFF) ||
+				prev == '！' || prev == '？' || prev == '。' || prev == '、' || prev == '…' || prev == '⸺' || prev == '）' || prev == '('
+			nextJa := (next >= 0x3040 && next <= 0x309F) || (next >= 0x30A0 && next <= 0x30FF) || (next >= 0x4E00 && next <= 0x9FFF) ||
+				next == '！' || next == '？' || next == '。' || next == '、' || next == '…' || next == '⸺' || next == '（' || next == ')'
+			if prevJa || nextJa {
+				continue
+			}
+		}
+		result = append(result, r)
+	}
+	return string(result)
+}
+
+func segmentSRT(srt string) string {
+	blocks := strings.Split(strings.TrimSpace(srt), "\n\n")
+
+	// Collect all text lines for batch MeCab processing
+	type textRef struct {
+		blockIdx, lineIdx int
+		cleaned           string
+		furiganas         []furiEntry
+	}
+	var refs []textRef
+	var mecabInput []string
+
+	parsed := make([][]string, len(blocks))
+	for bi, block := range blocks {
+		lines := strings.Split(strings.TrimSpace(block), "\n")
+		parsed[bi] = lines
+		if len(lines) < 3 {
+			continue
+		}
+		for li, textLine := range lines[2:] {
+			clean := stripSegmentation(textLine)
+			clean = strings.TrimSpace(clean)
+			if clean == "" {
+				continue
+			}
+			hasJa := false
+			for _, r := range clean {
+				if (r >= 0x3040 && r <= 0x309F) || (r >= 0x30A0 && r <= 0x30FF) || (r >= 0x4E00 && r <= 0x9FFF) {
+					hasJa = true
+					break
+				}
+			}
+			if !hasJa {
+				continue
+			}
+			var furis []furiEntry
+			stripped := furiganaRe.ReplaceAllStringFunc(clean, func(match string) string {
+				m := furiganaRe.FindStringSubmatch(match)
+				furis = append(furis, furiEntry{m[1], m[2]})
+				return m[1]
+			})
+			refs = append(refs, textRef{bi, li + 2, stripped, furis})
+			mecabInput = append(mecabInput, stripped)
+		}
+	}
+
+	// Single MeCab invocation for all lines
+	allTokens := mecabBatch(mecabInput)
+
+	// Build results
+	segmented := make(map[[2]int]string)
+	for i, ref := range refs {
+		if i >= len(allTokens) {
+			break
+		}
+		result := groupTokens(allTokens[i])
+		for _, f := range ref.furiganas {
+			result = strings.Replace(result, f.kanji, f.kanji+"("+f.reading+")", 1)
+		}
+		segmented[[2]int{ref.blockIdx, ref.lineIdx}] = result
+	}
+
+	var output []string
+	for bi, lines := range parsed {
+		if len(lines) < 3 {
+			output = append(output, strings.Join(lines, "\n"))
+			continue
+		}
+		var outLines []string
+		outLines = append(outLines, lines[0], lines[1])
+		for li := 2; li < len(lines); li++ {
+			if seg, ok := segmented[[2]int{bi, li}]; ok {
+				outLines = append(outLines, seg)
+			} else {
+				outLines = append(outLines, lines[li])
+			}
+		}
+		output = append(output, strings.Join(outLines, "\n"))
+	}
+
+	return strings.Join(output, "\n\n") + "\n"
+}
+
+type furiEntry struct {
+	kanji, reading string
+}
+
+var furiganaRe = regexp.MustCompile(`([\x{4E00}-\x{9FFF}\x{3400}-\x{4DBF}]+)\(([\x{3040}-\x{309F}\x{30A0}-\x{30FF}ー ]+)\)`)
+
+type mecabToken struct {
+	surface string
+	pos     string
+	pos2    string
+}
+
+func mecabBatch(lines []string) [][]mecabToken {
+	if len(lines) == 0 {
+		return nil
+	}
+	cmd := exec.Command("mecab")
+	cmd.Stdin = strings.NewReader(strings.Join(lines, "\n"))
+	out, err := cmd.Output()
+	if err != nil {
+		return nil
+	}
+
+	var result [][]mecabToken
+	var current []mecabToken
+	for _, line := range strings.Split(string(out), "\n") {
+		if line == "EOS" {
+			result = append(result, current)
+			current = nil
+			continue
+		}
+		if line == "" {
+			continue
+		}
+		parts := strings.SplitN(line, "\t", 2)
+		if len(parts) < 2 {
+			continue
+		}
+		info := strings.Split(parts[1], ",")
+		pos, pos2 := "", ""
+		if len(info) > 0 {
+			pos = info[0]
+		}
+		if len(info) > 1 {
+			pos2 = info[1]
+		}
+		current = append(current, mecabToken{surface: parts[0], pos: pos, pos2: pos2})
+	}
+	if len(current) > 0 {
+		result = append(result, current)
+	}
+	return result
+}
+
+func mecabTokenize(text string) []mecabToken {
+	results := mecabBatch([]string{text})
+	if len(results) == 0 {
+		return nil
+	}
+	return results[0]
+}
+
+func groupTokens(tokens []mecabToken) string {
+	var words []string
+	for i := 0; i < len(tokens); i++ {
+		t := tokens[i]
+		group := t.surface
+
+		if t.pos == "動詞" || t.pos == "形容詞" {
+			for j := i + 1; j < len(tokens); j++ {
+				nt := tokens[j]
+				if nt.pos == "助動詞" {
+					group += nt.surface
+					i = j
+				} else if nt.pos == "動詞" && (nt.pos2 == "接尾" || nt.pos2 == "非自立") {
+					group += nt.surface
+					i = j
+				} else if nt.pos == "助詞" && nt.pos2 == "接続助詞" && (nt.surface == "て" || nt.surface == "で" || nt.surface == "ば") {
+					group += nt.surface
+					i = j
+				} else {
+					break
+				}
+			}
+		}
+
+		words = append(words, group)
+	}
+	return strings.Join(words, " ")
 }
 
 // ── FFmpeg/FFprobe helpers ────────────────────────────

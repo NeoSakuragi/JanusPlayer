@@ -8,6 +8,7 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONObject
 import java.io.File
+import java.security.MessageDigest
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -21,7 +22,7 @@ class AppUpdater(private val activity: Activity, private val serverUrl: String) 
 
     private val downloading = AtomicBoolean(false)
 
-    data class UpdateInfo(val versionCode: Int, val versionName: String, val apkName: String)
+    data class UpdateInfo(val versionCode: Int, val versionName: String, val size: Long, val sha256: String)
 
     private fun authRequest(url: String): Request {
         val token = activity.getSharedPreferences("janus_settings", Activity.MODE_PRIVATE)
@@ -39,11 +40,12 @@ class AppUpdater(private val activity: Activity, private val serverUrl: String) 
                 val json = JSONObject(response.body?.string() ?: "")
                 val remoteCode = json.getInt("version_code")
                 val remoteName = json.optString("version_name", "")
-                val apkName = json.optString("apk", "janus.apk")
+                val size = json.optLong("size", 0)
+                val sha256 = json.optString("sha256", "")
                 @Suppress("DEPRECATION")
                 val localCode = activity.packageManager.getPackageInfo(activity.packageName, 0).versionCode
                 if (remoteCode > localCode) {
-                    activity.runOnUiThread { onResult(UpdateInfo(remoteCode, remoteName, apkName)) }
+                    activity.runOnUiThread { onResult(UpdateInfo(remoteCode, remoteName, size, sha256)) }
                 } else {
                     activity.runOnUiThread { onResult(null) }
                 }
@@ -54,7 +56,7 @@ class AppUpdater(private val activity: Activity, private val serverUrl: String) 
         }.start()
     }
 
-    fun downloadAndInstall(apkName: String, onProgress: ((Int) -> Unit)? = null) {
+    fun downloadAndInstall(info: UpdateInfo, onProgress: ((Int) -> Unit)? = null) {
         if (!downloading.compareAndSet(false, true)) {
             Log.d("AppUpdater", "Download already in progress")
             return
@@ -64,13 +66,14 @@ class AppUpdater(private val activity: Activity, private val serverUrl: String) 
                 val apkFile = File(activity.cacheDir, "janus-update.apk")
                 apkFile.delete()
 
-                val response = client.newCall(authRequest("$serverUrl/api/update/$apkName")).execute()
+                val response = client.newCall(authRequest("$serverUrl/api/update")).execute()
                 if (!response.isSuccessful) {
                     Log.e("AppUpdater", "Download failed: ${response.code}")
                     activity.runOnUiThread { onProgress?.invoke(-1) }
                     return@Thread
                 }
                 val totalBytes = response.body?.contentLength() ?: -1
+                val digest = MessageDigest.getInstance("SHA-256")
                 var downloaded = 0L
                 apkFile.outputStream().use { out ->
                     response.body?.byteStream()?.let { input ->
@@ -79,6 +82,7 @@ class AppUpdater(private val activity: Activity, private val serverUrl: String) 
                             val read = input.read(buffer)
                             if (read == -1) break
                             out.write(buffer, 0, read)
+                            digest.update(buffer, 0, read)
                             downloaded += read
                             if (totalBytes > 0) {
                                 val pct = ((downloaded * 100) / totalBytes).toInt()
@@ -87,14 +91,26 @@ class AppUpdater(private val activity: Activity, private val serverUrl: String) 
                         }
                     }
                 }
-                if (totalBytes > 0 && apkFile.length() != totalBytes) {
-                    Log.e("AppUpdater", "Incomplete: ${apkFile.length()}/$totalBytes")
+                if (info.size > 0 && apkFile.length() != info.size) {
+                    Log.e("AppUpdater", "Size mismatch: ${apkFile.length()} != ${info.size}")
                     apkFile.delete()
                     activity.runOnUiThread { onProgress?.invoke(-1) }
                     return@Thread
                 }
-                Log.d("AppUpdater", "Downloaded ${apkFile.length() / 1024 / 1024}MB")
-                activity.runOnUiThread { installApk(apkFile) }
+                if (info.sha256.isNotEmpty()) {
+                    val hash = digest.digest().joinToString("") { "%02x".format(it) }
+                    if (hash != info.sha256) {
+                        Log.e("AppUpdater", "SHA-256 mismatch: $hash != ${info.sha256}")
+                        apkFile.delete()
+                        activity.runOnUiThread { onProgress?.invoke(-1) }
+                        return@Thread
+                    }
+                }
+                Log.d("AppUpdater", "Downloaded ${apkFile.length() / 1024 / 1024}MB, verified")
+                activity.runOnUiThread {
+                    onProgress?.invoke(101)
+                    installApk(apkFile)
+                }
             } catch (e: Exception) {
                 Log.e("AppUpdater", "Download failed: ${e.message}")
                 activity.runOnUiThread { onProgress?.invoke(-1) }

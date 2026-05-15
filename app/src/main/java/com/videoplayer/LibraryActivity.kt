@@ -42,6 +42,8 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.foundation.Image
+import androidx.compose.ui.graphics.asImageBitmap
 import coil.ImageLoader
 import coil.request.CachePolicy
 import kotlinx.coroutines.delay
@@ -79,10 +81,13 @@ class LibraryActivity : ComponentActivity() {
     private var pendingDetailItemId: String? = null
     private val selectedLibItem = mutableStateOf<JanusApi.LibraryItem?>(null)
     private val detailEpisodes = mutableStateListOf<JanusApi.Episode>()
+    private val detailCards = mutableStateListOf<JanusApi.CardEpisode>()
     private var gridColumnCount = 4
     private val detailSeasons = mutableStateListOf<JanusApi.SeasonInfo>()
     private val selectedSeason = mutableIntStateOf(0)
     private val seasonCache = mutableMapOf<Int, List<JanusApi.Episode>>()
+    private val thumbCache = mutableStateMapOf<Int, android.graphics.Bitmap>()
+    private val detailSynopsis = mutableStateOf("")
     private val detailLoading = mutableStateOf(false)
     private val previewRequested = mutableStateOf(false)
     private val showPreview = mutableStateOf(false)
@@ -93,7 +98,10 @@ class LibraryActivity : ComponentActivity() {
     private lateinit var imageLoader: ImageLoader
 
     private fun buildImageLoader(): ImageLoader {
+        val dispatcher = okhttp3.Dispatcher().apply { maxRequestsPerHost = 20 }
         val httpClient = okhttp3.OkHttpClient.Builder()
+            .dispatcher(dispatcher)
+            .connectionPool(okhttp3.ConnectionPool(20, 2, java.util.concurrent.TimeUnit.MINUTES))
             .addInterceptor { chain ->
                 val request = api.token?.let {
                     chain.request().newBuilder()
@@ -133,7 +141,7 @@ class LibraryActivity : ComponentActivity() {
 
         val openScreen = intent.getStringExtra("open_screen")
         if (openScreen == "downloads") screen.value = Screen.DOWNLOADS
-        else if (openScreen == "login") { logout(); return }
+        else if (openScreen == "login") { logout() }
 
         // Restore state after recreation
         savedInstanceState?.let {
@@ -779,9 +787,10 @@ class LibraryActivity : ComponentActivity() {
                     enter = fadeIn(tween(1500)),
                     modifier = Modifier.fillMaxSize()
                 ) {
-                    val firstEp = detailEpisodes.firstOrNull()
-                    if (firstEp != null) {
-                        val previewUrl = remember(item.id) { api.videoUrl(item.id, firstEp.filename) }
+                    val firstCard = detailCards.firstOrNull() ?: detailEpisodes.firstOrNull()?.let { JanusApi.CardEpisode(it.episode, it.titleEn, it.durationSec) }
+                    if (firstCard != null) {
+                        val selSeason = selectedSeason.intValue.let { if (it > 0) it else 1 }
+                        val previewUrl = remember(item.id, selSeason, firstCard.episode) { api.streamUrl(item.id, selSeason, firstCard.episode) }
                         AndroidView(
                             factory = { ctx ->
                                 PlayerView(ctx).apply {
@@ -840,8 +849,8 @@ class LibraryActivity : ComponentActivity() {
                         lastWatched != null -> Lang.s("resume_ep", lastWatched.first)
                         item.type == "MOVIE" -> Lang.s("play")
                         else -> {
-                            val firstEp = detailEpisodes.firstOrNull()
-                            if (firstEp != null) Lang.s("play_ep", firstEp.episode) else Lang.s("play")
+                            val firstCard = detailCards.firstOrNull()
+                            if (firstCard != null) Lang.s("play_ep", firstCard.episode) else Lang.s("play")
                         }
                     }
                     val dFocus by detailFocus
@@ -899,8 +908,7 @@ class LibraryActivity : ComponentActivity() {
                         color = Color(0xFF888888), fontSize = 13.sp
                     )
 
-                    // Synopsis
-                    val synopsis = detailEpisodes.firstOrNull()?.synopsis() ?: ""
+                    val synopsis = detailSynopsis.value
                     if (synopsis.isNotEmpty()) {
                         Spacer(Modifier.height(10.dp))
                         androidx.compose.material3.Text(
@@ -912,7 +920,7 @@ class LibraryActivity : ComponentActivity() {
             }
 
             // Season selector + Episode grid (for series)
-            if (item.type != "MOVIE" && (detailEpisodes.isNotEmpty() || detailSeasons.isNotEmpty())) {
+            if (item.type != "MOVIE" && (detailCards.isNotEmpty() || detailSeasons.isNotEmpty())) {
                 Spacer(Modifier.height(8.dp))
 
                 val selSeason by selectedSeason
@@ -971,8 +979,7 @@ class LibraryActivity : ComponentActivity() {
                     }
                 }
 
-            if (detailEpisodes.isNotEmpty()) {
-                // Use a fixed-height grid since we're inside a scrollable Column
+            if (detailCards.isNotEmpty()) {
                 val minCardWidth = dimens.gridMinCardWidth
                 val horizontalPadding = dimens.rowPadding
                 val cardSpacing = 12.dp
@@ -982,7 +989,7 @@ class LibraryActivity : ComponentActivity() {
                     val availableWidth = maxWidth
                     val colCount = maxOf(1, ((availableWidth + cardSpacing) / (minCardWidth + cardSpacing)).toInt())
                     gridColumnCount = colCount
-                    val rows = (detailEpisodes.size + colCount - 1) / colCount
+                    val rows = (detailCards.size + colCount - 1) / colCount
                     val gridHeight = (rows * dimens.gridRowHeight).dp
                 LazyVerticalGrid(
                     columns = GridCells.Adaptive(minSize = minCardWidth),
@@ -991,14 +998,14 @@ class LibraryActivity : ComponentActivity() {
                     verticalArrangement = Arrangement.spacedBy(cardSpacing),
                     userScrollEnabled = false
                 ) {
-                    itemsIndexed(detailEpisodes) { idx, ep ->
+                    itemsIndexed(detailCards) { idx, card ->
                         Box(modifier = Modifier.onGloballyPositioned { coords ->
                             epCardRefs[idx] = coords
                         }) {
-                            EpisodeGridCard(item.id, ep, focused = showCursor && detailFocus.value == DetailFocus.GRID && idx == focusIdx) {
+                            EpisodeCardSlim(card, idx, focused = showCursor && detailFocus.value == DetailFocus.GRID && idx == focusIdx) {
                                 episodeFocus.intValue = idx
                                 releasePreviewPlayer()
-                                launchPlayer(item, ep)
+                                launchPlayerByEpisode(item, card.episode)
                             }
                         }
                     }
@@ -1137,8 +1144,16 @@ class LibraryActivity : ComponentActivity() {
                 .background(if (focused) Color(0xFF2A2A4A) else Color(0xFF1A1A2E), RoundedCornerShape(8.dp))
                 .clickable { onTap() }
         ) {
-            // Thumbnail
-            if (ep.thumb != null) {
+            val bitmap = thumbCache[ep.episode]
+            if (bitmap != null) {
+                Image(
+                    bitmap = bitmap.asImageBitmap(),
+                    contentDescription = null,
+                    contentScale = androidx.compose.ui.layout.ContentScale.Crop,
+                    modifier = Modifier.fillMaxWidth().height(130.dp)
+                        .clip(RoundedCornerShape(topStart = 8.dp, topEnd = 8.dp))
+                )
+            } else if (ep.thumb != null) {
                 coil.compose.AsyncImage(
                     model = "${serverUrl.value}/api/${ep.thumb}",
                     contentDescription = null,
@@ -1199,6 +1214,70 @@ class LibraryActivity : ComponentActivity() {
                         androidx.compose.material3.Text(Lang.s("watched"), color = Color(0xFF81C784), fontSize = 10.sp)
                     }
                 }
+            }
+        }
+    }
+
+    @Composable
+    private fun EpisodeCardSlim(card: JanusApi.CardEpisode, idx: Int, focused: Boolean, onTap: () -> Unit) {
+        val mins = (card.durationSec / 60).toInt()
+        Column(
+            modifier = Modifier.fillMaxWidth()
+                .then(if (focused) Modifier.border(2.dp, Color(0xFFBB86FC), RoundedCornerShape(8.dp)) else Modifier)
+                .background(if (focused) Color(0xFF2A2A4A) else Color(0xFF1A1A2E), RoundedCornerShape(8.dp))
+                .clickable { onTap() }
+        ) {
+            val bitmap = thumbCache[card.episode]
+            if (bitmap != null) {
+                Image(
+                    bitmap = bitmap.asImageBitmap(),
+                    contentDescription = null,
+                    contentScale = androidx.compose.ui.layout.ContentScale.Crop,
+                    modifier = Modifier.fillMaxWidth().height(130.dp)
+                        .clip(RoundedCornerShape(topStart = 8.dp, topEnd = 8.dp))
+                )
+            } else {
+                Box(Modifier.fillMaxWidth().height(130.dp)
+                    .background(Color(0xFF222233), RoundedCornerShape(topStart = 8.dp, topEnd = 8.dp)))
+            }
+            Column(modifier = Modifier.padding(8.dp)) {
+                val title = card.title().takeIf { it.isNotEmpty() }
+                    ?.let { "${card.episode}. $it" }
+                    ?: Lang.s("episode", card.episode)
+                androidx.compose.material3.Text(
+                    title, color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.SemiBold,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis
+                )
+                Spacer(Modifier.height(4.dp))
+                androidx.compose.material3.Text(
+                    "$mins min", color = Color(0xFF888888), fontSize = 10.sp
+                )
+            }
+        }
+    }
+
+    private fun launchPlayerByEpisode(item: JanusApi.LibraryItem, episodeNum: Int) {
+        releasePreviewPlayer()
+        val season = selectedSeason.intValue
+        val videoUrl = api.streamUrl(item.id, season, episodeNum)
+        val subsUrl = api.streamSubsUrl(item.id, season, episodeNum, "ja")
+        val savedPos = getWatchProgress(item.id, episodeNum)
+        val title = if (item.type == "MOVIE") item.title() else "${item.title()} - ${Lang.s("episode", episodeNum)}"
+        val nextEp = detailCards.firstOrNull { it.episode > episodeNum }
+
+        AppNavigator.navigate(this, AppNavigator.Action.PLAY_VIDEO) { intent ->
+            intent.putExtra(ExoPlayerActivity.EXTRA_VIDEO_URL, videoUrl)
+            intent.putExtra(ExoPlayerActivity.EXTRA_SUBS_URL, subsUrl)
+            intent.putExtra(ExoPlayerActivity.EXTRA_TITLE, title)
+            intent.putExtra(ExoPlayerActivity.EXTRA_START_POSITION, savedPos)
+            intent.putExtra(ExoPlayerActivity.EXTRA_SERIES_ID, item.id)
+            intent.putExtra(ExoPlayerActivity.EXTRA_EPISODE_NUM, episodeNum)
+            intent.putExtra("season_num", season)
+            if (nextEp != null) {
+                intent.putExtra("next_video_url", api.streamUrl(item.id, season, nextEp.episode))
+                intent.putExtra("next_subs_url", api.streamSubsUrl(item.id, season, nextEp.episode, "ja"))
+                intent.putExtra("next_episode_num", nextEp.episode)
+                intent.putExtra("next_title", "${item.title()} - ${Lang.s("episode", nextEp.episode)}")
             }
         }
     }
@@ -1486,41 +1565,43 @@ class LibraryActivity : ComponentActivity() {
         detailFocus.value = DetailFocus.HERO
         heroButtonFocus.intValue = 0
         detailEpisodes.clear()
+        detailCards.clear()
         detailSeasons.clear()
+        detailSynopsis.value = ""
         seasonCache.clear()
+        thumbCache.clear()
         detailLoading.value = true
         AppNavigator.navigate(this, AppNavigator.Action.OPEN_ITEM)
         screen.value = Screen.ITEM_DETAIL
 
+        // Wave 1: fetch hero blob
         Thread {
             try {
-                if (item.type == "MOVIE") {
-                    val movie = api.fetchMovieDetail(item.id)
+                val hero = api.fetchHeroBlob(item.id)
+                if (hero == null) {
+                    runOnUiThread { detailLoading.value = false }
+                    return@Thread
+                }
+                if (hero.type == "MOVIE") {
                     runOnUiThread {
-                        if (movie != null) detailEpisodes.add(movie.episode)
+                        if (hero.episode != null) detailEpisodes.add(hero.episode)
                         detailLoading.value = false
                         refreshItemDetail()
+                        previewRequested.value = true
                     }
-                } else {
-                    val info = api.fetchSeriesDetail(item.id)
-                    if (info != null) {
-                        runOnUiThread { detailSeasons.addAll(info.seasons) }
-                        // Prefetch all seasons
-                        for (s in info.seasons) {
-                            val data = api.fetchSeason(item.id, s.season)
-                            if (data != null) seasonCache[s.season] = data.episodes
-                        }
-                        val firstSeason = info.seasons.firstOrNull()?.season ?: 1
-                        selectedSeason.intValue = firstSeason
-                        runOnUiThread {
-                            val eps = seasonCache[firstSeason]
-                            if (eps != null) detailEpisodes.addAll(eps)
-                            detailLoading.value = false
-                            refreshItemDetail()
-                        }
-                    } else {
-                        runOnUiThread { detailLoading.value = false }
-                    }
+                    return@Thread
+                }
+                val firstSeason = hero.seasons.firstOrNull()?.season ?: 1
+                selectedSeason.intValue = firstSeason
+                // Render wave 1, then kick off wave 2
+                runOnUiThread {
+                    detailSeasons.addAll(hero.seasons)
+                    val lang = Lang.current.value
+                    detailSynopsis.value = hero.locales[lang]?.synopsis?.takeIf { it.isNotEmpty() }
+                        ?: hero.locales["en"]?.synopsis ?: ""
+                    detailLoading.value = false
+                    refreshItemDetail()
+                    window.decorView.post { fetchWave2(item.id, firstSeason, hero.seasons) }
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Detail fetch failed: ${e.message}")
@@ -1553,6 +1634,34 @@ class LibraryActivity : ComponentActivity() {
         }.start()
     }
 
+    private fun fetchWave2(itemId: String, seasonNum: Int, allSeasons: List<JanusApi.SeasonInfo>) {
+        Thread {
+            val cards = api.fetchSeasonCards(itemId, seasonNum)
+            if (cards != null) {
+                runOnUiThread {
+                    detailCards.clear()
+                    detailCards.addAll(cards.episodes)
+                    window.decorView.post { fetchWave3(itemId, seasonNum, allSeasons) }
+                }
+            }
+        }.start()
+    }
+
+    private fun fetchWave3(itemId: String, seasonNum: Int, allSeasons: List<JanusApi.SeasonInfo>) {
+        Thread {
+            val thumbs = api.fetchThumbsBlob(itemId, seasonNum)
+            val bitmaps = mutableMapOf<Int, android.graphics.Bitmap>()
+            for (t in thumbs) {
+                val bmp = android.graphics.BitmapFactory.decodeByteArray(t.data, 0, t.data.size)
+                if (bmp != null) bitmaps[t.episode] = bmp
+            }
+            runOnUiThread {
+                thumbCache.putAll(bitmaps)
+                previewRequested.value = true
+            }
+        }.start()
+    }
+
     private fun swapEpisodes(episodes: List<JanusApi.Episode>) {
         detailEpisodes.clear()
         detailEpisodes.addAll(episodes)
@@ -1561,26 +1670,33 @@ class LibraryActivity : ComponentActivity() {
     private fun loadSeason(seriesId: String, seasonNum: Int) {
         selectedSeason.intValue = seasonNum
         episodeFocus.intValue = 0
-        val cached = seasonCache[seasonNum]
-        if (cached != null) {
-            swapEpisodes(cached)
-            return
-        }
-        swapEpisodes(emptyList())
+        detailCards.clear()
+        thumbCache.clear()
         Thread {
-            try {
-                val data = api.fetchSeason(seriesId, seasonNum)
-                if (data != null) {
-                    seasonCache[seasonNum] = data.episodes
-                    runOnUiThread { swapEpisodes(data.episodes) }
+            val cards = api.fetchSeasonCards(seriesId, seasonNum)
+            if (cards != null) {
+                runOnUiThread {
+                    detailCards.addAll(cards.episodes)
+                    window.decorView.post {
+                        Thread {
+                            val thumbs = api.fetchThumbsBlob(seriesId, seasonNum)
+                            val bitmaps = mutableMapOf<Int, android.graphics.Bitmap>()
+                            for (t in thumbs) {
+                                val bmp = android.graphics.BitmapFactory.decodeByteArray(t.data, 0, t.data.size)
+                                if (bmp != null) bitmaps[t.episode] = bmp
+                            }
+                            if (bitmaps.isNotEmpty()) {
+                                runOnUiThread { thumbCache.putAll(bitmaps) }
+                            }
+                        }.start()
+                    }
                 }
-            } catch (_: Exception) {}
+            }
         }.start()
     }
 
     private fun refreshItemDetail() {
         releasePreviewPlayer()
-        previewRequested.value = true
     }
 
     private fun closeItemDetail() {
@@ -1592,13 +1708,15 @@ class LibraryActivity : ComponentActivity() {
     private fun playItem() {
         releasePreviewPlayer()
         val item = selectedLibItem.value ?: return
+        val season = selectedSeason.intValue.let { if (it > 0) it else 1 }
         val lastWatched = getLastWatched(item.id)
         if (lastWatched != null) {
-            val ep = detailEpisodes.firstOrNull { it.episode == lastWatched.first }
-            if (ep != null) { launchPlayer(item, ep); return }
+            launchPlayerByEpisode(item, lastWatched.first)
+            return
         }
-        val ep = detailEpisodes.firstOrNull() ?: return
-        launchPlayer(item, ep)
+        val firstEp = detailCards.firstOrNull()?.episode
+            ?: detailEpisodes.firstOrNull()?.episode ?: return
+        launchPlayerByEpisode(item, firstEp)
     }
 
     private fun launchPlayer(item: JanusApi.LibraryItem, episode: JanusApi.Episode) {
