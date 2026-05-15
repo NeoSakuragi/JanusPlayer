@@ -153,7 +153,8 @@ for block in srt.strip().split('\n\n'):
             cue_words.append(word)
     cues.append({"s": start, "e": end, "w": cue_words})
 
-output = {"dict": list(dict_table.values()), "cues": cues}
+version = int(os.environ.get('SUPER_SRT_VERSION', '1'))
+output = {"v": version, "dict": list(dict_table.values()), "cues": cues}
 json.dump(output, sys.stdout, ensure_ascii=False, separators=(',', ':'))
 print(f"\nDict: {len(dict_table)} | Cues: {len(cues)}", file=sys.stderr)
 print(f"Words: {stats['total']} | Series: {stats['series']} | Jitendex: {stats['jitendex']} | None: {stats['none']}", file=sys.stderr)

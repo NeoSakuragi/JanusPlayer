@@ -11,7 +11,9 @@ import (
 	"sync"
 )
 
-var superSRTCache sync.Map // "itemId:season:episode" → []byte (JSON)
+const superSRTVersion = 1
+
+var superSRTCache sync.Map // "v{ver}:{itemId}:{season}:{episode}" → []byte (JSON)
 
 // GET /api/super-srt/{itemId}/{season}/{episode}
 func handleSuperSRT(w http.ResponseWriter, r *http.Request) {
@@ -25,7 +27,7 @@ func handleSuperSRT(w http.ResponseWriter, r *http.Request) {
 	itemID := parts[0]
 	season := atoi(parts[1])
 	episode := atoi(parts[2])
-	key := fmt.Sprintf("%s:%d:%d", itemID, season, episode)
+	key := fmt.Sprintf("v%d:%s:%d:%d", superSRTVersion, itemID, season, episode)
 
 	// Check cache
 	if cached, ok := superSRTCache.Load(key); ok {
@@ -70,7 +72,11 @@ func handleSuperSRT(w http.ResponseWriter, r *http.Request) {
 	// Run generator
 	cmd := exec.Command("python3", args...)
 	jitendexPath := filepath.Join(dataDir, "jitendex.bin")
-	cmd.Env = append(os.Environ(), "PYTHONDONTWRITEBYTECODE=1", "JITENDEX_PATH="+jitendexPath)
+	cmd.Env = append(os.Environ(),
+		"PYTHONDONTWRITEBYTECODE=1",
+		"JITENDEX_PATH="+jitendexPath,
+		fmt.Sprintf("SUPER_SRT_VERSION=%d", superSRTVersion),
+	)
 	out, err := cmd.Output()
 	if err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {
