@@ -21,12 +21,8 @@ class ThumbnailAtlas {
     fun pack(entries: List<Pair<String, Bitmap>>) {
         if (entries.isEmpty()) return
 
-        // Cap cell size to 150px wide to keep atlas manageable on low-end devices
-        val rawW = entries.first().second.width
-        val rawH = entries.first().second.height
-        val scale = if (rawW > 150) 150f / rawW else 1f
-        val thumbW = (rawW * scale).toInt()
-        val thumbH = (rawH * scale).toInt()
+        val thumbW = entries.first().second.width
+        val thumbH = entries.first().second.height
         val count = entries.size
         android.util.Log.i("ThumbAtlas", "Packing $count entries at ${thumbW}x${thumbH}")
 
@@ -107,6 +103,7 @@ class ThumbnailAtlas {
         n = n or (n shr 4)
         n = n or (n shr 8)
         n = n or (n shr 16)
-        return (n + 1).coerceAtMost(4096)
+        val texSize = texArray?.size ?: 4096
+        return (n + 1).coerceAtMost(texSize)
     }
 }

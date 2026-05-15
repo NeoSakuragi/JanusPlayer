@@ -84,16 +84,19 @@ class QuadBatch(private val maxQuads: Int = 4096) {
         layer: Float = 0f
     ) {
         if (quadCount >= maxQuads) return
+        // Snap to whole pixels to avoid sub-pixel aliasing
+        val sx = kotlin.math.round(x); val sy = kotlin.math.round(y)
+        val sw = kotlin.math.round(x + w) - sx; val sh = kotlin.math.round(y + h) - sy
         val o = quadCount * verticesPerQuad * floatsPerVertex
         fun v(base: Int, vx: Float, vy: Float, vu: Float, vv: Float) {
             vertexData[base] = vx; vertexData[base+1] = vy
             vertexData[base+2] = vu; vertexData[base+3] = vv; vertexData[base+4] = layer
             vertexData[base+5] = r; vertexData[base+6] = g; vertexData[base+7] = b; vertexData[base+8] = a
         }
-        v(o,      x,   y,   u0, v0)
-        v(o + 9,  x+w, y,   u1, v0)
-        v(o + 18, x+w, y+h, u1, v1)
-        v(o + 27, x,   y+h, u0, v1)
+        v(o,      sx,    sy,    u0, v0)
+        v(o + 9,  sx+sw, sy,    u1, v0)
+        v(o + 18, sx+sw, sy+sh, u1, v1)
+        v(o + 27, sx,    sy+sh, u0, v1)
         quadCount++
     }
 

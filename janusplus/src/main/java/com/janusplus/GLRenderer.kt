@@ -55,7 +55,7 @@ class GLRenderer(
         textures = TextureManager()
         textures.initGL()
 
-        texArray = TextureArray(1024, 4)
+        texArray = TextureArray(4096, 4)
         texArray.initGL()
 
         font = FontAtlas(assets)
@@ -253,7 +253,7 @@ class RenderCtx(
 
     fun banner(x: Float, y: Float, w: Float, h: Float): Boolean {
         if (!state.bannerReady) return false
-        val texSize = 2048f
+        val texSize = 4096f
         val srcAspect = state.bannerW.toFloat() / state.bannerH
         val dstAspect = w / h
         // UVs cover the banner portion of the 2048x2048 layer

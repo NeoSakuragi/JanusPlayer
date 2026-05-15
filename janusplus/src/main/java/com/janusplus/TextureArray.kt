@@ -26,9 +26,10 @@ class TextureArray(val size: Int = 2048, val layerCount: Int = 4) {
         GLES30.glGenTextures(1, ids, 0)
         textureId = ids[0]
         GLES30.glBindTexture(GLES30.GL_TEXTURE_2D_ARRAY, textureId)
-        GLES30.glTexImage3D(GLES30.GL_TEXTURE_2D_ARRAY, 0, GLES30.GL_RGBA,
-            size, size, layerCount, 0, GLES30.GL_RGBA, GLES30.GL_UNSIGNED_BYTE, null)
-        GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D_ARRAY, GLES30.GL_TEXTURE_MIN_FILTER, GLES30.GL_LINEAR)
+        val mipLevels = (kotlin.math.log2(size.toFloat()) + 1).toInt()
+        GLES30.glTexStorage3D(GLES30.GL_TEXTURE_2D_ARRAY, mipLevels, GLES30.GL_RGBA8,
+            size, size, layerCount)
+        GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D_ARRAY, GLES30.GL_TEXTURE_MIN_FILTER, GLES30.GL_LINEAR_MIPMAP_LINEAR)
         GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D_ARRAY, GLES30.GL_TEXTURE_MAG_FILTER, GLES30.GL_LINEAR)
         GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D_ARRAY, GLES30.GL_TEXTURE_WRAP_S, GLES30.GL_CLAMP_TO_EDGE)
         GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D_ARRAY, GLES30.GL_TEXTURE_WRAP_T, GLES30.GL_CLAMP_TO_EDGE)
@@ -68,6 +69,7 @@ class TextureArray(val size: Int = 2048, val layerCount: Int = 4) {
             GLES30.glTexSubImage3D(GLES30.GL_TEXTURE_2D_ARRAY, 0,
                 0, 0, layer, size, size, 1,
                 GLES30.GL_RGBA, GLES30.GL_UNSIGNED_BYTE, buf)
+            GLES30.glGenerateMipmap(GLES30.GL_TEXTURE_2D_ARRAY)
             if (padded !== reusablePadBmp) padded.recycle()
             Log.i("TexArray", "Uploaded layer $layer")
         }

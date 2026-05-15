@@ -21,7 +21,7 @@ class FontAtlas(assets: AssetManager) {
     // Pre-baked vertex data per (text, sizePx, color) — one arraycopy per string
     data class BakedText(val floats: FloatArray, val quadCount: Int, val width: Float)
     private val bakedCache = HashMap<Long, BakedText>(128)
-    var atlasSize = 2048
+    var atlasSize = 4096
     private var bitmap = Bitmap.createBitmap(atlasSize, atlasSize, Bitmap.Config.ARGB_8888)
     private var canvas = Canvas(bitmap)
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -87,6 +87,7 @@ class FontAtlas(assets: AssetManager) {
                     GLES30.GL_RGBA, GLES30.GL_UNSIGNED_BYTE, buf)
                 sub.recycle()
             }
+            GLES30.glGenerateMipmap(GLES30.GL_TEXTURE_2D_ARRAY)
             dirtyRegions.clear()
         }
     }

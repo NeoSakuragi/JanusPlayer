@@ -97,12 +97,50 @@ class JanusPlusActivity : AppCompatActivity() {
 
         glView = GLSurfaceView(this)
         glView.setEGLContextClientVersion(3)
+        // 4x MSAA for smooth text and edges
+        glView.setEGLConfigChooser(object : GLSurfaceView.EGLConfigChooser {
+            override fun chooseConfig(egl: javax.microedition.khronos.egl.EGL10,
+                                      display: javax.microedition.khronos.egl.EGLDisplay): javax.microedition.khronos.egl.EGLConfig {
+                val attribs = intArrayOf(
+                    javax.microedition.khronos.egl.EGL10.EGL_RED_SIZE, 8,
+                    javax.microedition.khronos.egl.EGL10.EGL_GREEN_SIZE, 8,
+                    javax.microedition.khronos.egl.EGL10.EGL_BLUE_SIZE, 8,
+                    javax.microedition.khronos.egl.EGL10.EGL_ALPHA_SIZE, 8,
+                    javax.microedition.khronos.egl.EGL10.EGL_DEPTH_SIZE, 0,
+                    javax.microedition.khronos.egl.EGL10.EGL_SAMPLE_BUFFERS, 1,
+                    javax.microedition.khronos.egl.EGL10.EGL_SAMPLES, 4,
+                    javax.microedition.khronos.egl.EGL10.EGL_NONE
+                )
+                val configs = arrayOfNulls<javax.microedition.khronos.egl.EGLConfig>(1)
+                val numConfigs = IntArray(1)
+                if (egl.eglChooseConfig(display, attribs, configs, 1, numConfigs) && numConfigs[0] > 0) {
+                    return configs[0]!!
+                }
+                // Fallback: no MSAA
+                val fallback = intArrayOf(
+                    javax.microedition.khronos.egl.EGL10.EGL_RED_SIZE, 8,
+                    javax.microedition.khronos.egl.EGL10.EGL_GREEN_SIZE, 8,
+                    javax.microedition.khronos.egl.EGL10.EGL_BLUE_SIZE, 8,
+                    javax.microedition.khronos.egl.EGL10.EGL_ALPHA_SIZE, 8,
+                    javax.microedition.khronos.egl.EGL10.EGL_DEPTH_SIZE, 0,
+                    javax.microedition.khronos.egl.EGL10.EGL_NONE
+                )
+                egl.eglChooseConfig(display, fallback, configs, 1, numConfigs)
+                return configs[0]!!
+            }
+        })
         glView.setRenderer(renderer)
         glView.renderMode = GLSurfaceView.RENDERMODE_CONTINUOUSLY
         renderer.inputHandler = input
         renderer.onItemTapped = { item ->
             runOnUiThread {
                 renderer.thumbAtlas.clear()
+                state.bannerReady = false
+                // Clear thumb+banner layers to black so stale pixels don't flash
+                val black = android.graphics.Bitmap.createBitmap(1, 1, android.graphics.Bitmap.Config.ARGB_8888)
+                black.setPixel(0, 0, 0xFF000000.toInt())
+                renderer.texArray.uploadLayer(TextureArray.LAYER_THUMBS, black.copy(android.graphics.Bitmap.Config.ARGB_8888, false))
+                renderer.texArray.uploadLayer(TextureArray.LAYER_BANNER, black)
                 state.openItem(item)
                 loadDetail(item)
             }
