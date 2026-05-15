@@ -54,6 +54,7 @@ object LoginScreen {
         val btnH = rc.dp(48f)
         val btnX = centerX - btnW / 2f
         rc.solid(btnX, y, btnW, btnH, 0.733f, 0.525f, 0.988f)
+        if (focusedField == 3) rc.border(btnX, y, btnW, btnH, rc.dp(2f), 1f, 1f, 1f)
         val btnLabel = if (connecting) Lang.s("loading") else Lang.s("connect")
         val btnLabelW = rc.font.measureText(btnLabel, rc.sp(16))
         rc.text(btnLabel, centerX - btnLabelW / 2f, y + btnH * 0.65f, rc.sp(16), 1f, 1f, 1f)
@@ -99,6 +100,14 @@ object LoginScreen {
     }
 
     fun onTab() {
-        focusedField = (focusedField + 1) % 3
+        focusedField = (focusedField + 1) % 4 // 0=server, 1=user, 2=pass, 3=button
+    }
+
+    fun onUp() {
+        if (focusedField > 0) focusedField--
+    }
+
+    fun onDown() {
+        if (focusedField < 3) focusedField++
     }
 }

@@ -11,8 +11,8 @@ android {
         applicationId = "com.janusplus"
         minSdk = 26
         targetSdk = 34
-        versionCode = 3
-        versionName = "0.3"
+        versionCode = 4
+        versionName = "0.4"
     }
 
     buildTypes {
@@ -23,7 +23,7 @@ android {
         outputs.all {
             val abi = filters.find { it.filterType == "ABI" }?.identifier ?: "universal"
             (this as com.android.build.gradle.internal.api.BaseVariantOutputImpl)
-                .outputFileName = "janusplus-${versionName}-${abi}.apk"
+                .outputFileName = "janusplus-$versionName-${abi}.apk"
         }
     }
 

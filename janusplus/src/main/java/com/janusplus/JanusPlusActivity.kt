@@ -30,6 +30,7 @@ class JanusPlusActivity : AppCompatActivity() {
     private lateinit var state: AppState
     private lateinit var input: InputHandler
     private var api: JanusApi? = null
+    private var updater: AppUpdater? = null
     private var player: ExoPlayer? = null
     private var playerView: PlayerView? = null
     private lateinit var rootLayout: FrameLayout
@@ -70,6 +71,7 @@ class JanusPlusActivity : AppCompatActivity() {
                             state.library = library
                             state.loading = false
                             loadCovers(library)
+                            checkForAppUpdate(savedUrl, savedToken)
                         }
                     } else {
                         runOnUiThread { state.screen = Screen.LOGIN }
@@ -461,6 +463,26 @@ class JanusPlusActivity : AppCompatActivity() {
         }
     }
 
+    private fun checkForAppUpdate(serverUrl: String, token: String) {
+        val u = AppUpdater(this, serverUrl)
+        u.token = token
+        updater = u
+        u.checkForUpdate { info ->
+            if (info != null) {
+                Log.i(TAG, "Update available: v${info.versionName} (code ${info.versionCode})")
+                u.downloadAndInstall(info) { progress ->
+                    when (progress) {
+                        101 -> Log.i(TAG, "Update downloaded, installing...")
+                        -1 -> Log.e(TAG, "Update failed")
+                        else -> if (progress % 25 == 0) Log.i(TAG, "Downloading update: $progress%")
+                    }
+                }
+            } else {
+                Log.i(TAG, "App is up to date")
+            }
+        }
+    }
+
     private fun doGpuLogin() {
         val url = LoginScreen.serverUrl.trimEnd('/')
         val user = LoginScreen.username
@@ -537,8 +559,14 @@ class JanusPlusActivity : AppCompatActivity() {
         if (state.screen == Screen.LOGIN && event.action == KeyEvent.ACTION_DOWN) {
             when (event.keyCode) {
                 KeyEvent.KEYCODE_DEL -> { LoginScreen.onBackspace(); return true }
-                KeyEvent.KEYCODE_TAB -> { LoginScreen.onTab(); return true }
-                KeyEvent.KEYCODE_ENTER -> { LoginScreen.pendingLogin = true; return true }
+                KeyEvent.KEYCODE_TAB, KeyEvent.KEYCODE_DPAD_DOWN -> { LoginScreen.onDown(); return true }
+                KeyEvent.KEYCODE_DPAD_UP -> { LoginScreen.onUp(); return true }
+                KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_DPAD_CENTER -> {
+                    if (LoginScreen.focusedField == 3) LoginScreen.pendingLogin = true
+                    else showKeyboard()
+                    return true
+                }
+                KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT -> return true
             }
         }
         if (state.screen == Screen.SETTINGS && event.action == KeyEvent.ACTION_DOWN &&

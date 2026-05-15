@@ -76,6 +76,8 @@ func main() {
 	mux.HandleFunc("/api/thumbs/", serveStatic("thumbs"))
 	mux.HandleFunc("/api/update", handleUpdate)
 	mux.HandleFunc("/api/update/", handleUpdate)
+	mux.HandleFunc("/api/version/plus", handleVersionPlus)
+	mux.HandleFunc("/api/update/plus", handleUpdatePlus)
 	mux.HandleFunc("/install", handleInstallPage)
 	mux.HandleFunc("/install/", handleInstallPage)
 
@@ -302,6 +304,34 @@ func handleVersion(w http.ResponseWriter, r *http.Request) {
 		"sha256":       sha256,
 		"apk":          "janus.apk",
 	})
+}
+
+func handleVersionPlus(w http.ResponseWriter, r *http.Request) {
+	var code, name, size, sha256 string
+	db.QueryRow("SELECT value FROM meta WHERE key='plus_version_code'").Scan(&code)
+	db.QueryRow("SELECT value FROM meta WHERE key='plus_version_name'").Scan(&name)
+	db.QueryRow("SELECT value FROM meta WHERE key='plus_size'").Scan(&size)
+	db.QueryRow("SELECT value FROM meta WHERE key='plus_sha256'").Scan(&sha256)
+	writeJSON(w, map[string]any{
+		"version_code": atoi(code),
+		"version_name": name,
+		"size":         atoi(size),
+		"sha256":       sha256,
+		"apk":          "janusplus.apk",
+	})
+}
+
+func handleUpdatePlus(w http.ResponseWriter, r *http.Request) {
+	apkPath := filepath.Join(dataDir, "updates", "janusplus.apk")
+	f, err := os.Open(apkPath)
+	if err != nil {
+		http.Error(w, "no update available", 404)
+		return
+	}
+	defer f.Close()
+	stat, _ := f.Stat()
+	w.Header().Set("Content-Type", "application/vnd.android.package-archive")
+	http.ServeContent(w, r, "janusplus.apk", stat.ModTime(), f)
 }
 
 func handleLibrary(w http.ResponseWriter, r *http.Request) {
@@ -1005,7 +1035,9 @@ func logger(next http.Handler) http.Handler {
 		if user == "" { user = "-" }
 		ip := r.RemoteAddr
 		if fwd := r.Header.Get("X-Real-IP"); fwd != "" { ip = fwd }
-		log.Printf("%s %s %s %d %s %s", ip, user, r.URL.Path, lw.status, time.Since(start).Round(time.Microsecond), r.Method)
+		appVer := r.Header.Get("X-App-Version")
+		if appVer == "" { appVer = "-" }
+		log.Printf("%s %s v%s %s %d %s %s", ip, user, appVer, r.URL.Path, lw.status, time.Since(start).Round(time.Microsecond), r.Method)
 	})
 }
 
