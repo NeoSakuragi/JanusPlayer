@@ -1004,13 +1004,22 @@ class ExoPlayerActivity : ComponentActivity() {
         hlStart.intValue = span.start
         hlEnd.intValue = span.end
 
-        // Try deinflection for conjugated forms, then direct lookup
+        // Try deinflection, then progressively shorter prefixes for compound verbs
         var jEntry: JitendexDict.Entry? = null
         for (candidate in Deinflector.deinflect(span.word)) {
             jEntry = JitendexDict.lookup(candidate)
             if (jEntry != null) break
         }
-        if (jEntry == null) jEntry = JitendexDict.lookup(span.word)
+        if (jEntry == null) {
+            for (len in span.word.length - 1 downTo 2) {
+                val prefix = span.word.substring(0, len)
+                for (candidate in Deinflector.deinflect(prefix)) {
+                    jEntry = JitendexDict.lookup(candidate)
+                    if (jEntry != null) break
+                }
+                if (jEntry != null) break
+            }
+        }
 
         currentWord = WordScanner.ScannedWord(span.start, span.end, span.word, jEntry?.term ?: span.word, jEntry != null)
 
