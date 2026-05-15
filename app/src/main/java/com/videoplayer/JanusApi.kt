@@ -412,6 +412,40 @@ class JanusApi(private val baseUrl: String) {
         return SeasonSettings(obj.optDouble("opening_sec", 0.0), obj.optDouble("ending_sec", 0.0))
     }
 
+    // ── Supercharged SRT ──────────────────────────────────
+
+    data class DictEntry(val term: String, val reading: String, val meanings: List<String>, val jlpt: String, val freq: Int)
+    data class SuperWord(val surface: String, val dictIdx: Int, val inflection: String)
+    data class SuperCue(val startMs: Long, val endMs: Long, val words: List<SuperWord>)
+    data class SuperSRT(val version: Int, val dict: List<DictEntry>, val cues: List<SuperCue>)
+
+    fun fetchSuperSRT(itemId: String, season: Int, episode: Int): SuperSRT? {
+        val request = authRequest("$baseUrl/api/super-srt/$itemId/$season/$episode").build()
+        val response = try { client.newCall(request).execute() } catch (_: Exception) { return null }
+        if (!response.isSuccessful) return null
+        val obj = JSONObject(response.body?.string() ?: return null)
+
+        val dictArr = obj.getJSONArray("dict")
+        val dict = (0 until dictArr.length()).map { i ->
+            val d = dictArr.getJSONObject(i)
+            val meanings = d.optJSONArray("m")?.let { arr -> (0 until arr.length()).map { arr.getString(it) } } ?: emptyList()
+            DictEntry(d.getString("t"), d.optString("r", ""), meanings, d.optString("jlpt", ""), d.optInt("freq", 0))
+        }
+
+        val cuesArr = obj.getJSONArray("cues")
+        val cues = (0 until cuesArr.length()).map { i ->
+            val c = cuesArr.getJSONObject(i)
+            val wordsArr = c.getJSONArray("w")
+            val words = (0 until wordsArr.length()).map { j ->
+                val w = wordsArr.getJSONObject(j)
+                SuperWord(w.getString("s"), w.optInt("d", -1), w.optString("i", ""))
+            }
+            SuperCue(c.getLong("s"), c.getLong("e"), words)
+        }
+
+        return SuperSRT(obj.optInt("v", 1), dict, cues)
+    }
+
     fun fetchSettings(): Map<String, String> {
         val request = authRequest("$baseUrl/api/settings").build()
         val response = try { client.newCall(request).execute() } catch (_: Exception) { return emptyMap() }

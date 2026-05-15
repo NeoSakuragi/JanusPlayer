@@ -192,16 +192,17 @@ class ExoPlayerActivity : ComponentActivity() {
 
     private val currentRubySpans = mutableStateOf<List<RubySpan>>(emptyList())
 
-    // Word navigation: words from space-delimited subs
+    // Word navigation
     private val cursorIdx = mutableIntStateOf(0)
     private val hlStart = mutableIntStateOf(-1)
     private val hlEnd = mutableIntStateOf(-1)
-    private var currentWord: WordScanner.ScannedWord? = null
     private var wordNavSubText = ""
 
-    // Word spans from MeCab-segmented subtitles (display text has spaces stripped)
-    data class WordSpan(val start: Int, val end: Int, val word: String)
+    // Supercharged SRT
+    data class WordSpan(val start: Int, val end: Int, val word: String, val dictIdx: Int, val inflection: String)
     private var wordSpans = listOf<WordSpan>()
+    private var superSRT: JanusApi.SuperSRT? = null
+    private var superCues = listOf<JanusApi.SuperCue>()
 
     // Dictionary
     private val dictTerm = mutableStateOf("")
@@ -230,7 +231,8 @@ class ExoPlayerActivity : ComponentActivity() {
 
     // Backend
     private lateinit var player: ExoPlayer
-    private var subtitleCues = listOf<SrtParser.Cue>()
+    private var subtitleCues = listOf<SrtParser.Cue>()  // legacy fallback
+    private var currentSuperCue: JanusApi.SuperCue? = null
     private val handler = android.os.Handler(android.os.Looper.getMainLooper())
     @OptIn(androidx.media3.common.util.UnstableApi::class)
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -238,8 +240,6 @@ class ExoPlayerActivity : ComponentActivity() {
         AppNavigator.onActivityResumed(AppNavigator.Screen.VIDEO_PLAYER)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         enterFullscreen()
-
-        JitendexDict.init(this)
 
         val appSettings = AppSettings(this)
         val savedSizeIdx = FONT_SIZES.indexOf(appSettings.fontSize)
@@ -257,15 +257,23 @@ class ExoPlayerActivity : ComponentActivity() {
         // Fetch season settings in background
         val seriesId = intent.getStringExtra(EXTRA_SERIES_ID)
         val seasonNum = intent.getIntExtra("season_num", 1)
+        val episodeNum = intent.getIntExtra(EXTRA_EPISODE_NUM, 1)
         if (seriesId != null) {
             val prefs = getSharedPreferences("janus_settings", MODE_PRIVATE)
             val baseUrl = prefs.getString("server_url", "") ?: ""
-            val token = prefs.getString("auth_token", null)
+            val authToken = prefs.getString("auth_token", null)
             Thread {
-                val settings = JanusApi(baseUrl).apply { this.token = token }
-                    .fetchSeasonSettings(seriesId, seasonNum)
+                val api = JanusApi(baseUrl).apply { this.token = authToken }
+                val settings = api.fetchSeasonSettings(seriesId, seasonNum)
                 openingMs = (settings.openingSec * 1000).toLong()
                 endingMs = (settings.endingSec * 1000).toLong()
+                // Load supercharged SRT
+                val data = api.fetchSuperSRT(seriesId, seasonNum, episodeNum)
+                if (data != null) {
+                    superSRT = data
+                    superCues = data.cues
+                    Log.d(TAG, "Super-SRT: ${data.dict.size} dict, ${data.cues.size} cues")
+                }
             }.start()
         }
 
@@ -344,17 +352,34 @@ class ExoPlayerActivity : ComponentActivity() {
                     updateDlLabel()
                     durationMs.longValue = player.duration.coerceAtLeast(0)
                     if (lastCondensedSpeed <= 1f) isPaused.value = !player.isPlaying
-                    val cue = SrtParser.cueAt(subtitleCues, pos)
-                    if (cue?.text != null) {
-                        val (clean, rubys) = stripFurigana(cue.text)
-                        val (display, spans) = parseWordSpans(clean)
-                        currentSubText.value = display
-                        currentRubySpans.value = rubys
-                        wordSpans = spans
-                    } else {
-                        currentSubText.value = null
+                    // Super-SRT cue lookup
+                    val sCue = superCues.firstOrNull { pos >= it.startMs && pos < it.endMs }
+                    if (sCue != null && sCue != currentSuperCue) {
+                        currentSuperCue = sCue
+                        val display = StringBuilder()
+                        val spans = mutableListOf<WordSpan>()
+                        for (w in sCue.words) {
+                            val start = display.length
+                            display.append(w.surface)
+                            spans.add(WordSpan(start, display.length, w.surface, w.dictIdx, w.inflection))
+                        }
+                        currentSubText.value = display.toString()
                         currentRubySpans.value = emptyList()
-                        wordSpans = emptyList()
+                        wordSpans = spans
+                    } else if (sCue == null) {
+                        // Fallback to legacy SRT
+                        val cue = SrtParser.cueAt(subtitleCues, pos)
+                        if (cue?.text != null) {
+                            val (clean, rubys) = stripFurigana(cue.text)
+                            currentSubText.value = clean
+                            currentRubySpans.value = rubys
+                            wordSpans = emptyList()
+                        } else {
+                            currentSubText.value = null
+                            currentRubySpans.value = emptyList()
+                            wordSpans = emptyList()
+                        }
+                        currentSuperCue = null
                     }
 
                     // Auto-next episode at end
@@ -373,9 +398,10 @@ class ExoPlayerActivity : ComponentActivity() {
                             playNextEpisode()
                         }
 
-                        val midSub = cue != null
-                        val prev = subtitleCues.lastOrNull { it.endMs <= pos }
-                        val next = SrtParser.nextCueAfter(subtitleCues, pos)
+                        val midSub = sCue != null
+                        val allCues = if (superCues.isNotEmpty()) superCues.map { SrtParser.Cue(0, it.startMs, it.endMs, "") } else subtitleCues
+                        val prev = allCues.lastOrNull { it.endMs <= pos }
+                        val next = allCues.firstOrNull { it.startMs > pos }
                         val deltaBefore = if (prev != null) pos - prev.endMs else Long.MAX_VALUE
                         val deltaAfter = if (next != null) next.startMs - pos else Long.MAX_VALUE
 
@@ -866,12 +892,16 @@ class ExoPlayerActivity : ComponentActivity() {
             Screen.PLAYING -> when (key) {
                 KeyEvent.KEYCODE_BACK -> { saveProgress(); finish(); return true }
                 KeyEvent.KEYCODE_DPAD_LEFT -> {
-                    val prev = SrtParser.prevCueBefore(subtitleCues, player.currentPosition)
-                    if (prev != null) player.seekTo(prev.startMs) else player.seekTo((player.currentPosition - 10000).coerceAtLeast(0))
+                    val pos = player.currentPosition
+                    val prev = superCues.lastOrNull { it.startMs < pos - 300 }
+                        ?: subtitleCues.lastOrNull { it.startMs < pos - 300 }?.let { JanusApi.SuperCue(it.startMs, it.endMs, emptyList()) }
+                    if (prev != null) player.seekTo(prev.startMs) else player.seekTo((pos - 10000).coerceAtLeast(0))
                 }
                 KeyEvent.KEYCODE_DPAD_RIGHT -> {
-                    val next = SrtParser.nextCueAfter(subtitleCues, player.currentPosition)
-                    if (next != null) player.seekTo(next.startMs) else player.seekTo(player.currentPosition + 10000)
+                    val pos = player.currentPosition
+                    val next = superCues.firstOrNull { it.startMs > pos }
+                        ?: subtitleCues.firstOrNull { it.startMs > pos }?.let { JanusApi.SuperCue(it.startMs, it.endMs, emptyList()) }
+                    if (next != null) player.seekTo(next.startMs) else player.seekTo(pos + 10000)
                 }
                 KeyEvent.KEYCODE_DPAD_UP -> { player.pause(); goto(Screen.CONTROLS, CTRL_AUDIO) }
                 KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE -> { if (player.isPlaying) player.pause() else player.play() }
@@ -960,23 +990,6 @@ class ExoPlayerActivity : ComponentActivity() {
 
     // ── Word Navigation ──────────────────────────────────────────────
 
-    private fun parseWordSpans(text: String): Pair<String, List<WordSpan>> {
-        val spans = mutableListOf<WordSpan>()
-        val display = StringBuilder()
-        for (line in text.split("\n")) {
-            if (display.isNotEmpty()) display.append("\n")
-            val lineStart = display.length
-            val words = line.split(" ").filter { it.isNotEmpty() }
-            if (words.isEmpty()) continue
-            for (w in words) {
-                val start = display.length
-                display.append(w)
-                spans.add(WordSpan(start, display.length, w))
-            }
-        }
-        return Pair(display.toString(), spans)
-    }
-
     private fun onSubtitleTap(charOffset: Int) {
         val text = currentSubText.value ?: return
         if (wordSpans.isEmpty()) return
@@ -1004,42 +1017,17 @@ class ExoPlayerActivity : ComponentActivity() {
         hlStart.intValue = span.start
         hlEnd.intValue = span.end
 
-        // Try deinflection, then progressively shorter prefixes for compound verbs
-        var jEntry: JitendexDict.Entry? = null
-        for (candidate in Deinflector.deinflect(span.word)) {
-            jEntry = JitendexDict.lookup(candidate)
-            if (jEntry != null) break
-        }
-        if (jEntry == null) {
-            for (len in span.word.length - 1 downTo 2) {
-                val prefix = span.word.substring(0, len)
-                for (candidate in Deinflector.deinflect(prefix)) {
-                    jEntry = JitendexDict.lookup(candidate)
-                    if (jEntry != null) break
-                }
-                if (jEntry != null) break
-            }
-        }
+        val dict = superSRT?.dict
+        val entry = if (dict != null && span.dictIdx >= 0 && span.dictIdx < dict.size) dict[span.dictIdx] else null
 
-        currentWord = WordScanner.ScannedWord(span.start, span.end, span.word, jEntry?.term ?: span.word, jEntry != null)
-
-        if (jEntry != null) {
-            dictTerm.value = jEntry.term
-            dictReading.value = if (jEntry.reading != jEntry.term) jEntry.reading else ""
-            dictMeanings.value = jEntry.meanings
-            dictTags.value = if (jEntry.isName()) {
-                jEntry.nameType
-            } else {
-                jEntry.tagLabels().firstOrNull { it != "★" } ?: ""
-            }
-            dictJlpt.value = jEntry.jlptLabel()
-            dictFreq.intValue = jEntry.bestFreq()
-            dictFreqs.value = buildMap {
-                if (jEntry.freqBccwj > 0) put("BCCWJ", jEntry.freqBccwj)
-                if (jEntry.freqJpdb > 0) put("JPDB", jEntry.freqJpdb)
-                if (jEntry.freqInnocent > 0) put("Novels", jEntry.freqInnocent)
-                if (jEntry.freqAnime > 0) put("Anime", jEntry.freqAnime)
-            }
+        if (entry != null) {
+            dictTerm.value = entry.term
+            dictReading.value = if (entry.reading != entry.term) entry.reading else ""
+            dictMeanings.value = entry.meanings
+            dictTags.value = span.inflection
+            dictJlpt.value = entry.jlpt
+            dictFreq.intValue = entry.freq
+            dictFreqs.value = emptyMap()
             dictVisible.value = true
         } else {
             dictVisible.value = false
@@ -1225,16 +1213,20 @@ class ExoPlayerActivity : ComponentActivity() {
         intent.removeExtra("next_title")
         intent.removeExtra("next_episode_num")
 
-        // Load new subtitles
-        if (nextSubs != null) {
+        // Load new super-SRT
+        val seriesId = intent.getStringExtra(EXTRA_SERIES_ID)
+        val seasonNum = intent.getIntExtra("season_num", 1)
+        if (seriesId != null && nextEpNum > 0) {
             Thread {
-                val srt = try {
-                    val reqBuilder = okhttp3.Request.Builder().url(nextSubs)
-                    PlayerManager.authToken?.let { reqBuilder.header("Authorization", "Bearer $it") }
-                    okhttp3.OkHttpClient().newCall(reqBuilder.build()).execute().body?.string()
-                } catch (_: Exception) { null }
-                if (srt != null) {
-                    subtitleCues = SrtParser.parse(srt)
+                val prefs = getSharedPreferences("janus_settings", MODE_PRIVATE)
+                val baseUrl = prefs.getString("server_url", "") ?: ""
+                val authToken = prefs.getString("auth_token", null)
+                val data = JanusApi(baseUrl).apply { this.token = authToken }
+                    .fetchSuperSRT(seriesId, seasonNum, nextEpNum)
+                if (data != null) {
+                    superSRT = data
+                    superCues = data.cues
+                    currentSuperCue = null
                 }
             }.start()
         }
