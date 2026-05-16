@@ -31,7 +31,7 @@ class ThumbnailAtlas {
         val atlasW = nextPow2(cols * thumbW)
         val atlasH = nextPow2(rows * thumbH)
 
-        val atlas = Bitmap.createBitmap(atlasW, atlasH, Bitmap.Config.RGB_565)
+        val atlas = Bitmap.createBitmap(atlasW, atlasH, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(atlas)
 
         for ((i, pair) in entries.withIndex()) {
@@ -56,8 +56,7 @@ class ThumbnailAtlas {
             canvas.drawBitmap(bmp, srcRect, Rect(x, y, x + thumbW, y + thumbH), null)
             bmp.recycle()
 
-            // UVs relative to the texture array layer size (2048), not the packed atlas size
-            val layerSize = texArray?.size?.toFloat() ?: atlasW.toFloat()
+            val layerSize = texArray?.size?.toFloat() ?: 4096f
             uvMap[key] = ThumbUV(
                 x.toFloat() / layerSize,
                 y.toFloat() / layerSize,

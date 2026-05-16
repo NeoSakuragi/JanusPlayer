@@ -55,7 +55,7 @@ class GLRenderer(
         textures = TextureManager()
         textures.initGL()
 
-        texArray = TextureArray(4096, 4)
+        texArray = TextureArray(4096, 10) // 5 font pages + covers + thumbs + banner + spare
         texArray.initGL()
 
         font = FontAtlas(assets)
@@ -205,13 +205,13 @@ class RenderCtx(
 ) {
     fun solid(x: Float, y: Float, w: Float, h: Float, r: Float, g: Float, b: Float, a: Float = 1f) {
         val u = font.whiteU; val v = font.whiteV
-        batch.addQuad(x, y, w, h, u, v, u, v, r, g, b, a, layer = TextureArray.LAYER_FONT.toFloat())
+        batch.addQuad(x, y, w, h, u, v, u, v, r, g, b, a, layer = TextureArray.LAYER_FONT_BASE.toFloat())
     }
 
     fun gradient(x: Float, y: Float, w: Float, h: Float,
                  tlColor: FloatArray, trColor: FloatArray,
                  brColor: FloatArray, blColor: FloatArray) {
-        batch.addGradientQuad(x, y, w, h, tlColor, trColor, brColor, blColor, font.whiteU, font.whiteV, TextureArray.LAYER_FONT.toFloat())
+        batch.addGradientQuad(x, y, w, h, tlColor, trColor, brColor, blColor, font.whiteU, font.whiteV, TextureArray.LAYER_FONT_BASE.toFloat())
     }
 
     fun border(x: Float, y: Float, w: Float, h: Float, t: Float, r: Float, g: Float, b: Float, a: Float = 1f) {
@@ -277,6 +277,11 @@ class RenderCtx(
 
     var hitRects = mutableListOf<HitRect>()
 
-    fun sp(value: Int): Int = (value * density).toInt()
+    private val bakedSizes = intArrayOf(20, 28, 36)
+    fun sp(value: Int): Int {
+        val raw = (value * density).toInt()
+        // Snap to nearest baked font size
+        return bakedSizes.minByOrNull { kotlin.math.abs(it - raw) } ?: raw
+    }
     fun dp(value: Float): Float = value * density
 }

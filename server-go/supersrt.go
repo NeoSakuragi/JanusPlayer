@@ -11,7 +11,7 @@ import (
 	"sync"
 )
 
-const superSRTVersion = 5
+const superSRTVersion = 6
 
 var superSRTCache sync.Map // "v{ver}:{itemId}:{season}:{episode}" → []byte (JSON)
 

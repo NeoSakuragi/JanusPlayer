@@ -198,8 +198,10 @@ class ExoPlayerActivity : ComponentActivity() {
     private val hlEnd = mutableIntStateOf(-1)
     private var wordNavSubText = ""
 
-    // Subtitle rendering state — screen-space bounding boxes
+    // Subtitle rendering state
     private var subCharBoxes = emptyArray<androidx.compose.ui.geometry.Rect>()
+    private var subTextOffsetX = 0f
+    private var subTextOffsetY = 0f
 
     // Supercharged SRT
     data class WordSpan(val start: Int, val end: Int, val word: String, val dictIdx: Int, val inflection: String)
@@ -716,10 +718,10 @@ class ExoPlayerActivity : ComponentActivity() {
                 ) {
                     if (rubySpans.isNotEmpty()) Spacer(Modifier.height(rubyTopPad))
                     Box(modifier = Modifier.onGloballyPositioned { textCoords ->
-                        val origin = textCoords.localToWindow(androidx.compose.ui.geometry.Offset.Zero)
-                        subCharBoxes = charBoxes.map { r ->
-                            androidx.compose.ui.geometry.Rect(r.left + origin.x, r.top + origin.y, r.right + origin.x, r.bottom + origin.y)
-                        }.toTypedArray()
+                        subCharBoxes = charBoxes
+                        val pos = textCoords.positionInParent()
+                        subTextOffsetX = pos.x
+                        subTextOffsetY = subTopY + pos.y
                     }) {
                         androidx.compose.material3.Text(
                             text = annotated, color = Color.Black, fontSize = subFontSize, fontFamily = subFontFamily,
@@ -1005,11 +1007,14 @@ class ExoPlayerActivity : ComponentActivity() {
 
     // ── Word Navigation ──────────────────────────────────────────────
 
-    private fun onSubtitleTapAt(globalOffset: androidx.compose.ui.geometry.Offset) {
+    private fun onSubtitleTapAt(tapOffset: androidx.compose.ui.geometry.Offset) {
         val boxes = subCharBoxes
         if (boxes.isEmpty()) return
+        val localX = tapOffset.x - subTextOffsetX
+        val localY = tapOffset.y - subTextOffsetY
+        val local = androidx.compose.ui.geometry.Offset(localX, localY)
         for (i in boxes.indices) {
-            if (boxes[i].contains(globalOffset)) {
+            if (boxes[i].contains(local)) {
                 onSubtitleTap(i)
                 return
             }
@@ -1029,6 +1034,24 @@ class ExoPlayerActivity : ComponentActivity() {
     }
 
     private fun enterWordNav(): Boolean {
+        // Force-update cue from current position in case tick hasn't run yet
+        if (wordSpans.isEmpty() && superCues.isNotEmpty()) {
+            val pos = player.currentPosition
+            val sCue = superCues.firstOrNull { pos >= it.startMs && pos < it.endMs }
+            if (sCue != null) {
+                currentSuperCue = sCue
+                val display = StringBuilder()
+                val spans = mutableListOf<WordSpan>()
+                for (w in sCue.words) {
+                    if (w.surface.isBlank() || w.surface == "\n") { display.append(w.surface); continue }
+                    val start = display.length
+                    display.append(w.surface)
+                    spans.add(WordSpan(start, display.length, w.surface, w.dictIdx, w.inflection))
+                }
+                currentSubText.value = display.toString()
+                wordSpans = spans
+            }
+        }
         val text = currentSubText.value ?: return false
         if (wordSpans.isEmpty()) return false
         wordNavSubText = text

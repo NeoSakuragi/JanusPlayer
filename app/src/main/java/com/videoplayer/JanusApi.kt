@@ -25,9 +25,14 @@ class JanusApi(private val baseUrl: String) {
             .url("$baseUrl/api/login")
             .post(okhttp3.RequestBody.create("application/json".toMediaTypeOrNull(), body))
             .build()
+        Log.d("JanusApi", "Login POST to $baseUrl/api/login")
         val response = client.newCall(request).execute()
-        if (!response.isSuccessful) return null
-        val json = JSONObject(response.body?.string() ?: return null)
+        Log.d("JanusApi", "Login response: ${response.code}")
+        if (!response.isSuccessful) { Log.e("JanusApi", "Login failed: ${response.code}"); return null }
+        val bodyStr = response.body?.string()
+        Log.d("JanusApi", "Login body: ${bodyStr?.take(100)}")
+        if (bodyStr == null) return null
+        val json = JSONObject(bodyStr)
         val result = LoginResult(
             token = json.getString("token"),
             username = json.getString("username"),
@@ -37,9 +42,14 @@ class JanusApi(private val baseUrl: String) {
         return result
     }
 
+    var appVersion: String = ""
+
     private fun authRequest(url: String): Request.Builder {
-        val builder = Request.Builder().url(url)
+        val bustUrl = if (url.contains('?')) "$url&_=${System.currentTimeMillis()}" else "$url?_=${System.currentTimeMillis()}"
+        val builder = Request.Builder().url(bustUrl)
+            .header("Cache-Control", "no-cache")
         if (token != null) builder.header("Authorization", "Bearer $token")
+        if (appVersion.isNotEmpty()) builder.header("X-App-Version", appVersion)
         return builder
     }
 

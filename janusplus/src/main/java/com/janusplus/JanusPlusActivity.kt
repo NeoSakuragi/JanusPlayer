@@ -460,7 +460,16 @@ class JanusPlusActivity : AppCompatActivity() {
                 val season = state.selectedSeason
                 val cards = currentApi.fetchSeasonCards(item.id, season)
                 Log.i(TAG, "Season cards: ${cards?.episodes?.size ?: "null"}")
-                if (cards != null) state.seasonCards = cards
+                if (cards != null) {
+                    state.seasonCards = cards
+                    // Pre-cache all episode title glyphs so scrolling never triggers glyph uploads
+                    val density = resources.displayMetrics.density
+                    for (card in cards.episodes) {
+                        val title = "${card.episode}. ${card.title()}"
+                        renderer.font.ensureGlyphs(title, (13 * density).toInt())
+                        renderer.font.ensureGlyphs("${(card.durationSec / 60).toInt()} min", (10 * density).toInt())
+                    }
+                }
 
                 val thumbs = currentApi.fetchThumbsBlob(item.id, season)
                 Log.i(TAG, "Thumbs: ${thumbs.size}")

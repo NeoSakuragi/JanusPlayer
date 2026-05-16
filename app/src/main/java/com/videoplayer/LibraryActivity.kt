@@ -62,7 +62,7 @@ class LibraryActivity : ComponentActivity() {
 
     enum class Screen { LOGIN, MAIN, ITEM_DETAIL, DOWNLOADS }
     enum class LibraryRow { HEADER, CONTINUE, SERIES, MOVIES }
-    enum class DetailFocus { HERO, GRID }
+    enum class DetailFocus { HERO, SEASON, GRID }
 
     private val screen = mutableStateOf(Screen.MAIN)
     private val currentRow = mutableStateOf(LibraryRow.SERIES)
@@ -122,6 +122,8 @@ class LibraryActivity : ComponentActivity() {
         val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
         serverUrl.value = prefs.getString("server_url", DEFAULT_SERVER_URL) ?: DEFAULT_SERVER_URL
         api = JanusApi(serverUrl.value)
+        @Suppress("DEPRECATION")
+        api.appVersion = packageManager.getPackageInfo(packageName, 0).versionName ?: ""
         imageLoader = buildImageLoader()
         DownloadManager.init(this)
 
@@ -728,7 +730,7 @@ class LibraryActivity : ComponentActivity() {
         val epCardRefs = remember { mutableStateMapOf<Int, androidx.compose.ui.layout.LayoutCoordinates>() }
         var detailViewportHeight by remember { mutableIntStateOf(1080) }
         LaunchedEffect(focusIdx) {
-            if (item.type != "MOVIE" && detailEpisodes.isNotEmpty()) {
+            if (item.type != "MOVIE" && detailCards.isNotEmpty()) {
                 val coords = epCardRefs[focusIdx] ?: return@LaunchedEffect
                 if (!coords.isAttached) return@LaunchedEffect
                 val cardTop = coords.positionInRoot().y.toInt()
@@ -928,9 +930,11 @@ class LibraryActivity : ComponentActivity() {
                     var expanded by remember { mutableStateOf(false) }
                     val currentSeason = detailSeasons.firstOrNull { it.season == selSeason }
                     Box(modifier = Modifier.padding(horizontal = dimens.rowPadding, vertical = 8.dp)) {
+                        val seasonFocused = showCursor && detailFocus.value == DetailFocus.SEASON
                         Box(
                             modifier = Modifier
-                                .background(Color(0xFF2A2A3A), RoundedCornerShape(8.dp))
+                                .then(if (seasonFocused) Modifier.border(2.dp, Color(0xFFBB86FC), RoundedCornerShape(8.dp)) else Modifier)
+                                .background(if (seasonFocused) Color(0xFF3A3A5A) else Color(0xFF2A2A3A), RoundedCornerShape(8.dp))
                                 .clickable { expanded = !expanded }
                                 .padding(horizontal = 16.dp, vertical = 10.dp)
                         ) {
@@ -990,7 +994,7 @@ class LibraryActivity : ComponentActivity() {
                     val colCount = maxOf(1, ((availableWidth + cardSpacing) / (minCardWidth + cardSpacing)).toInt())
                     gridColumnCount = colCount
                     val rows = (detailCards.size + colCount - 1) / colCount
-                    val gridHeight = (rows * dimens.gridRowHeight).dp
+                    val gridHeight = (rows * dimens.gridRowHeight + (rows - 1) * 12).dp
                 LazyVerticalGrid(
                     columns = GridCells.Adaptive(minSize = minCardWidth),
                     modifier = Modifier.fillMaxWidth().height(gridHeight),
@@ -1418,15 +1422,21 @@ class LibraryActivity : ComponentActivity() {
             Screen.ITEM_DETAIL -> {
                 val item = selectedLibItem.value ?: return false
                 val cols = gridColumnCount
-                val maxIdx = detailEpisodes.size - 1
+                val maxIdx = detailCards.size - 1
                 when (event.keyCode) {
                     KeyEvent.KEYCODE_BACK -> { closeItemDetail(); return true }
                     KeyEvent.KEYCODE_DPAD_DOWN -> {
+                        val hasSeasons = detailSeasons.size > 1
                         when (detailFocus.value) {
                             DetailFocus.HERO -> {
-                                if (item.type != "MOVIE" && detailEpisodes.isNotEmpty()) {
+                                if (item.type != "MOVIE" && hasSeasons) {
+                                    detailFocus.value = DetailFocus.SEASON
+                                } else if (item.type != "MOVIE" && detailCards.isNotEmpty()) {
                                     detailFocus.value = DetailFocus.GRID
                                 }
+                            }
+                            DetailFocus.SEASON -> {
+                                if (detailCards.isNotEmpty()) detailFocus.value = DetailFocus.GRID
                             }
                             DetailFocus.GRID -> {
                                 val next = episodeFocus.intValue + cols
@@ -1437,22 +1447,31 @@ class LibraryActivity : ComponentActivity() {
                     KeyEvent.KEYCODE_DPAD_UP -> {
                         when (detailFocus.value) {
                             DetailFocus.HERO -> {}
+                            DetailFocus.SEASON -> detailFocus.value = DetailFocus.HERO
                             DetailFocus.GRID -> {
                                 val prev = episodeFocus.intValue - cols
                                 if (prev >= 0) episodeFocus.intValue = prev
-                                else detailFocus.value = DetailFocus.HERO
+                                else detailFocus.value = if (detailSeasons.size > 1) DetailFocus.SEASON else DetailFocus.HERO
                             }
                         }
                     }
                     KeyEvent.KEYCODE_DPAD_LEFT -> {
                         when (detailFocus.value) {
                             DetailFocus.HERO -> { if (heroButtonFocus.intValue > 0) heroButtonFocus.intValue-- }
+                            DetailFocus.SEASON -> {
+                                val idx = detailSeasons.indexOfFirst { it.season == selectedSeason.intValue }
+                                if (idx > 0) loadSeason(item.id, detailSeasons[idx - 1].season)
+                            }
                             DetailFocus.GRID -> { if (episodeFocus.intValue > 0) episodeFocus.intValue-- }
                         }
                     }
                     KeyEvent.KEYCODE_DPAD_RIGHT -> {
                         when (detailFocus.value) {
                             DetailFocus.HERO -> { val max = if (item.type == "MOVIE") 1 else 0; if (heroButtonFocus.intValue < max) heroButtonFocus.intValue++ }
+                            DetailFocus.SEASON -> {
+                                val idx = detailSeasons.indexOfFirst { it.season == selectedSeason.intValue }
+                                if (idx < detailSeasons.size - 1) loadSeason(item.id, detailSeasons[idx + 1].season)
+                            }
                             DetailFocus.GRID -> { if (episodeFocus.intValue < maxIdx) episodeFocus.intValue++ }
                         }
                     }
@@ -1464,9 +1483,10 @@ class LibraryActivity : ComponentActivity() {
                                     1 -> if (item.type == "MOVIE") startDownload()
                                 }
                             }
+                            DetailFocus.SEASON -> {} // left/right already switches seasons
                             DetailFocus.GRID -> {
-                                val ep = detailEpisodes.getOrNull(episodeFocus.intValue)
-                                if (ep != null) { releasePreviewPlayer(); launchPlayer(item, ep) }
+                                val card = detailCards.getOrNull(episodeFocus.intValue)
+                                if (card != null) { releasePreviewPlayer(); launchPlayerByEpisode(item, card.episode) }
                             }
                         }
                     }
@@ -1601,7 +1621,7 @@ class LibraryActivity : ComponentActivity() {
                         ?: hero.locales["en"]?.synopsis ?: ""
                     detailLoading.value = false
                     refreshItemDetail()
-                    window.decorView.post { fetchWave2(item.id, firstSeason, hero.seasons) }
+                    fetchWave2(item.id, firstSeason, hero.seasons)
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Detail fetch failed: ${e.message}")
@@ -1641,7 +1661,7 @@ class LibraryActivity : ComponentActivity() {
                 runOnUiThread {
                     detailCards.clear()
                     detailCards.addAll(cards.episodes)
-                    window.decorView.post { fetchWave3(itemId, seasonNum, allSeasons) }
+                    fetchWave3(itemId, seasonNum, allSeasons)
                 }
             }
         }.start()
