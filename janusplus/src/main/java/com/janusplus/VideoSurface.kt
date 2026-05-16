@@ -4,12 +4,14 @@ import android.graphics.SurfaceTexture
 import android.opengl.GLES11Ext
 import android.opengl.GLES30
 import android.view.Surface
+import java.util.concurrent.atomic.AtomicBoolean
 
 class VideoSurface {
     var textureId = 0; private set
     var surfaceTexture: SurfaceTexture? = null; private set
     var surface: Surface? = null; private set
-    var frameAvailable = false; private set
+    private val newFrame = AtomicBoolean(false)
+    val transformMatrix = FloatArray(16)
 
     fun initGL() {
         val ids = IntArray(1)
@@ -22,14 +24,14 @@ class VideoSurface {
         GLES30.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES30.GL_TEXTURE_WRAP_T, GLES30.GL_CLAMP_TO_EDGE)
 
         surfaceTexture = SurfaceTexture(textureId)
-        surfaceTexture!!.setOnFrameAvailableListener { frameAvailable = true }
+        surfaceTexture!!.setOnFrameAvailableListener { newFrame.set(true) }
         surface = Surface(surfaceTexture!!)
     }
 
     fun updateTexture() {
-        if (frameAvailable) {
+        if (newFrame.getAndSet(false)) {
             surfaceTexture?.updateTexImage()
-            frameAvailable = false
+            surfaceTexture?.getTransformMatrix(transformMatrix)
         }
     }
 

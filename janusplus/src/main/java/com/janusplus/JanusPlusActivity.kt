@@ -7,6 +7,7 @@ import android.opengl.GLSurfaceView
 import android.os.Bundle
 import android.view.KeyEvent
 import android.view.MotionEvent
+import android.view.View
 import android.view.WindowManager
 import android.widget.EditText
 import android.widget.FrameLayout
@@ -16,6 +17,7 @@ import androidx.media3.common.MediaItem
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.ui.PlayerView
 import android.util.Log
 import kotlin.concurrent.thread
 
@@ -30,7 +32,7 @@ class JanusPlusActivity : AppCompatActivity() {
     private var api: JanusApi? = null
     private var updater: AppUpdater? = null
     private var player: ExoPlayer? = null
-    private var lastTapTime = 0L
+    private var playerView: PlayerView? = null
     private lateinit var rootLayout: FrameLayout
     private lateinit var keyboardRelay: EditText
 
@@ -157,16 +159,6 @@ class JanusPlusActivity : AppCompatActivity() {
         renderer.onLogin = {
             runOnUiThread { doGpuLogin() }
         }
-        renderer.onPlayerBack = { runOnUiThread { stopPlayer() } }
-        renderer.onPlayerSeek = { ms -> player?.seekTo(ms) }
-        renderer.onPlayerPause = { pause ->
-            if (pause) player?.pause() else player?.play()
-        }
-        renderer.onSubChange = { idx ->
-            val sub = PlayerScreen.subtitleTracks.getOrNull(idx)
-            val itemId = state.selectedItem?.id
-            if (sub != null && itemId != null) loadSubtitle(itemId, sub.srtFile)
-        }
         renderer.onLogout = {
             runOnUiThread {
                 getSharedPreferences("janusplus", Context.MODE_PRIVATE).edit().clear().apply()
@@ -179,7 +171,10 @@ class JanusPlusActivity : AppCompatActivity() {
             }
         }
 
-        // No PlayerView — video renders as a GL quad via SurfaceTexture
+        playerView = PlayerView(this).apply {
+            visibility = View.GONE
+            useController = true
+        }
 
         // Hidden EditText to relay keyboard input for login/settings
         keyboardRelay = EditText(this).apply {
@@ -202,6 +197,7 @@ class JanusPlusActivity : AppCompatActivity() {
         })
 
         rootLayout.addView(glView)
+        rootLayout.addView(playerView)
         rootLayout.addView(keyboardRelay)
         setContentView(rootLayout)
 
@@ -233,8 +229,11 @@ class JanusPlusActivity : AppCompatActivity() {
         exo.play()
 
         PlayerScreen.reset()
-        PlayerScreen.episodeTitle = state.selectedItem?.title() ?: ""
-        exo.setVideoSurface(renderer.videoSurface.surface)
+        playerView?.player = exo
+        playerView?.useController = false
+        playerView?.visibility = View.VISIBLE
+        glView.setZOrderOnTop(true)
+        glView.holder.setFormat(android.graphics.PixelFormat.TRANSLUCENT)
         player = exo
 
         // Load subtitles
@@ -303,9 +302,12 @@ class JanusPlusActivity : AppCompatActivity() {
     }
 
     private fun stopPlayer() {
-        player?.setVideoSurface(null)
         player?.release()
         player = null
+        playerView?.player = null
+        playerView?.visibility = View.GONE
+        glView.setZOrderOnTop(false)
+        glView.holder.setFormat(android.graphics.PixelFormat.OPAQUE)
         PlayerScreen.reset()
         state.screen = state.returnScreen
         state.playingUrl = null
@@ -610,34 +612,10 @@ class JanusPlusActivity : AppCompatActivity() {
             state.screen = Screen.HOME
             return true
         }
-        if (state.screen == Screen.PLAYING && event.action == KeyEvent.ACTION_DOWN) {
-            when (event.keyCode) {
-                KeyEvent.KEYCODE_BACK, KeyEvent.KEYCODE_ESCAPE, KeyEvent.KEYCODE_DEL -> {
-                    if (PlayerScreen.showTrackList) { PlayerScreen.showTrackList = false; return true }
-                    stopPlayer(); return true
-                }
-                KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE -> {
-                    player?.let { if (it.isPlaying) it.pause() else it.play() }
-                    if (!PlayerScreen.showControls) PlayerScreen.toggleControls()
-                    return true
-                }
-                KeyEvent.KEYCODE_DPAD_LEFT -> {
-                    player?.let { it.seekTo((it.currentPosition - 10000).coerceAtLeast(0)) }
-                    PlayerScreen.showSeekIndicator("« 10s")
-                    return true
-                }
-                KeyEvent.KEYCODE_DPAD_RIGHT -> {
-                    player?.let { it.seekTo(it.currentPosition + 10000) }
-                    PlayerScreen.showSeekIndicator("10s »")
-                    return true
-                }
-                KeyEvent.KEYCODE_DPAD_UP -> {
-                    PlayerScreen.toggleControls(); return true
-                }
-                KeyEvent.KEYCODE_DPAD_DOWN -> {
-                    PlayerScreen.toggleControls(); return true
-                }
-            }
+        if (state.screen == Screen.PLAYING && event.action == KeyEvent.ACTION_DOWN &&
+            (event.keyCode == KeyEvent.KEYCODE_BACK || event.keyCode == KeyEvent.KEYCODE_ESCAPE || event.keyCode == KeyEvent.KEYCODE_DEL)) {
+            stopPlayer()
+            return true
         }
         if (input.handleKey(event.keyCode, event.action)) return true
         return super.dispatchKeyEvent(event)
@@ -682,46 +660,25 @@ class JanusPlusActivity : AppCompatActivity() {
         }
         if (state.screen == Screen.PLAYING) {
             if (event.action == MotionEvent.ACTION_UP) {
-                // Hit rects (buttons, track list items)
+                // Check hit rects first (buttons, track list items, seekbar)
                 for (hr in input.hitRects) {
                     if (event.x >= hr.x && event.x <= hr.x + hr.w &&
                         event.y >= hr.y && event.y <= hr.y + hr.h) {
                         hr.action()
+                        handleSubOrAudioChange()
                         return true
                     }
                 }
+                // Tap on track list backdrop dismisses it
                 if (PlayerScreen.showTrackList) {
                     PlayerScreen.showTrackList = false
                     return true
                 }
-                // Seekbar tap
-                val density = resources.displayMetrics.density
-                val pad = density * 32f
-                val seekY = resources.displayMetrics.heightPixels - density * 44f
-                if (PlayerScreen.showControls && event.y > seekY - density * 24f && event.y < seekY + density * 24f) {
-                    val seekW = resources.displayMetrics.widthPixels - pad * 2
-                    val frac = ((event.x - pad) / seekW).coerceIn(0f, 1f)
-                    player?.seekTo((frac * PlayerScreen.durationMs).toLong())
-                    return true
-                }
-                // Double-tap detection
-                val now = System.currentTimeMillis()
-                if (now - lastTapTime < 300) {
-                    // Double tap — seek ±10s based on which half
-                    if (event.x < resources.displayMetrics.widthPixels / 2f) {
-                        player?.let { it.seekTo((it.currentPosition - 10000).coerceAtLeast(0)) }
-                        PlayerScreen.showSeekIndicator("« 10s")
-                    } else {
-                        player?.let { it.seekTo(it.currentPosition + 10000) }
-                        PlayerScreen.showSeekIndicator("10s »")
-                    }
-                    lastTapTime = 0L
-                    return true
-                }
-                lastTapTime = now
-                // Single tap — toggle controls or play/pause
+                // Tap toggles controls / play-pause
                 if (PlayerScreen.showControls) {
-                    player?.let { if (it.isPlaying) it.pause() else it.play() }
+                    player?.let {
+                        if (it.isPlaying) it.pause() else it.play()
+                    }
                 } else {
                     PlayerScreen.toggleControls()
                 }
@@ -732,6 +689,16 @@ class JanusPlusActivity : AppCompatActivity() {
         return super.onTouchEvent(event)
     }
 
+    private fun handleSubOrAudioChange() {
+        val p = player ?: return
+        // Handle subtitle track change
+        if (PlayerScreen.subtitleTracks.isNotEmpty()) {
+            val sub = PlayerScreen.subtitleTracks.getOrNull(PlayerScreen.selectedSubIdx)
+            if (sub != null) {
+                loadSubtitle(state.selectedItem?.id ?: return, sub.srtFile)
+            }
+        }
+    }
 
     override fun onResume() {
         super.onResume()
