@@ -120,7 +120,19 @@ class GLRenderer(
             GLES30.glUniform1i(shader.uTexExt, 0)
             videoSurface.bind()
             batch.begin()
-            batch.addQuad(0f, 0f, width, height, 1f, 1f, 0f, 0f)
+            val vw = PlayerScreen.videoWidth.toFloat()
+            val vh = PlayerScreen.videoHeight.toFloat()
+            val qx: Float; val qy: Float; val qw: Float; val qh: Float
+            if (vw > 0 && vh > 0) {
+                val videoAspect = vw / vh
+                val screenAspect = width / height
+                if (videoAspect > screenAspect) {
+                    qw = width; qh = width / videoAspect; qx = 0f; qy = (height - qh) / 2f
+                } else {
+                    qh = height; qw = height * videoAspect; qy = 0f; qx = (width - qw) / 2f
+                }
+            } else { qx = 0f; qy = 0f; qw = width; qh = height }
+            batch.addQuad(qx, qy, qw, qh, 0f, 1f, 1f, 0f)
             // Debug: log first frame orientation
             batch.flush()
 
@@ -136,6 +148,13 @@ class GLRenderer(
             batch.flush()
             inputHandler?.hitRects?.clear()
             inputHandler?.hitRects?.addAll(rc.hitRects)
+
+            // Process pending player actions
+            if (PlayerScreen.pendingBack) { PlayerScreen.pendingBack = false; onPlayerBack?.invoke() }
+            val seek = PlayerScreen.pendingSeek
+            if (seek != null) { PlayerScreen.pendingSeek = null; onPlayerSeek?.invoke(seek) }
+            val subIdx = PlayerScreen.pendingSubChange
+            if (subIdx != null) { PlayerScreen.pendingSubChange = null; onSubChange?.invoke(subIdx) }
             return
         }
 

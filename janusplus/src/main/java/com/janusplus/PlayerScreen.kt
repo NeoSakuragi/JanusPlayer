@@ -24,6 +24,11 @@ object PlayerScreen {
     @Volatile var pendingBack = false
     @Volatile var pendingSeek: Long? = null
     var lastTapX = 0f
+    var seekBarX = 0f
+    var seekBarW = 0f
+    var seekBarY = 0f
+    var videoWidth = 0
+    var videoHeight = 0
     @Volatile var pendingPause: Boolean? = null
     @Volatile var pendingSubChange: Int? = null
 
@@ -147,10 +152,12 @@ object PlayerScreen {
         val durW = rc.font.measureText(durText, rc.sp(12))
         rc.text(durText, rc.w - pad - durW, seekY - rc.dp(16f), rc.sp(12), 0.8f, 0.8f, 0.8f)
 
-        // Seekbar tap → seek
-        val sbX = pad; val sbW = seekW
+        // Seekbar — store geometry for direct seek in Activity
+        seekBarX = pad
+        seekBarW = seekW
+        seekBarY = seekY
         rc.tappable(pad, seekY - rc.dp(20f), seekW, rc.dp(40f)) {
-            val frac = ((lastTapX - sbX) / sbW).coerceIn(0f, 1f)
+            val frac = ((lastTapX - seekBarX) / seekBarW).coerceIn(0f, 1f)
             pendingSeek = (frac * durationMs).toLong()
         }
     }

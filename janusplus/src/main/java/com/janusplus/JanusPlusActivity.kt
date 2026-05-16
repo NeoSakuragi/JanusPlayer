@@ -160,16 +160,27 @@ class JanusPlusActivity : AppCompatActivity() {
             .setDefaultRequestProperties(mapOf("Authorization" to "Bearer $token"))
         val mediaSourceFactory = DefaultMediaSourceFactory(httpFactory)
 
+        @Suppress("DEPRECATION")
+        val audioAttrs = androidx.media3.common.AudioAttributes.Builder()
+            .setUsage(androidx.media3.common.C.USAGE_MEDIA)
+            .setContentType(androidx.media3.common.C.AUDIO_CONTENT_TYPE_MOVIE)
+            .build()
         val exo = ExoPlayer.Builder(this)
             .setMediaSourceFactory(mediaSourceFactory)
+            .setAudioAttributes(audioAttrs, false) // false = don't manage audio focus = no system media controls
             .build()
         exo.setMediaItem(MediaItem.fromUri(url))
         exo.prepare()
         exo.play()
 
         PlayerScreen.reset()
-        // Render video to our GL SurfaceTexture — no PlayerView needed
         exo.setVideoSurface(renderer.videoSurface.surface)
+        exo.addListener(object : androidx.media3.common.Player.Listener {
+            override fun onVideoSizeChanged(size: androidx.media3.common.VideoSize) {
+                PlayerScreen.videoWidth = size.width
+                PlayerScreen.videoHeight = size.height
+            }
+        })
         player = exo
 
         // Load subtitles
@@ -582,11 +593,25 @@ class JanusPlusActivity : AppCompatActivity() {
         }
         if (state.screen == Screen.PLAYING) {
             if (event.action == MotionEvent.ACTION_UP) {
-                PlayerScreen.lastTapX = event.x
+                val tx = event.x
+                val ty = event.y
+                PlayerScreen.lastTapX = tx
+
+                // Direct seekbar: check if tap Y is near the seekbar Y (±40px)
+                if (PlayerScreen.showControls && PlayerScreen.seekBarW > 0) {
+                    val sy = PlayerScreen.seekBarY
+                    if (ty > sy - 60f && ty < sy + 60f) {
+                        val frac = ((tx - PlayerScreen.seekBarX) / PlayerScreen.seekBarW).coerceIn(0f, 1f)
+                        player?.seekTo((frac * PlayerScreen.durationMs).toLong())
+                        return true
+                    }
+                }
+
+                // Hit rects for buttons
                 for (hr in input.hitRects) {
-                    if (event.x >= hr.x && event.x <= hr.x + hr.w &&
-                        event.y >= hr.y && event.y <= hr.y + hr.h) {
+                    if (tx >= hr.x && tx <= hr.x + hr.w && ty >= hr.y && ty <= hr.y + hr.h) {
                         hr.action()
+                        if (PlayerScreen.pendingBack) { PlayerScreen.pendingBack = false; stopPlayer() }
                         return true
                     }
                 }
