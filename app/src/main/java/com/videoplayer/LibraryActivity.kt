@@ -372,6 +372,7 @@ class LibraryActivity : ComponentActivity() {
     data class ContinueItem(
         val libItem: JanusApi.LibraryItem,
         val episodeNum: Int,
+        val season: Int,
         val positionMs: Long,
         val durationMs: Long,
     )
@@ -385,7 +386,8 @@ class LibraryActivity : ComponentActivity() {
             if (pos < 5000) return@mapNotNull null
             val dur = prefs.getLong("${item.id}_ep${lastEp}_dur", 0L)
             if (dur > 0 && pos.toFloat() / dur > 0.95f) return@mapNotNull null
-            ContinueItem(item, lastEp, pos, dur)
+            val season = prefs.getInt("${item.id}_last_season", 1)
+            ContinueItem(item, lastEp, season, pos, dur)
         }
     }
 
@@ -1767,31 +1769,8 @@ class LibraryActivity : ComponentActivity() {
     }
 
     private fun playContinueItem(item: ContinueItem) {
-        Thread {
-            try {
-                val realEp = if (item.libItem.type == "MOVIE") {
-                    api.fetchMovieDetail(item.libItem.id)?.episode
-                } else {
-                    var found: JanusApi.Episode? = null
-                    val info = api.fetchSeriesDetail(item.libItem.id)
-                    if (info != null) {
-                        for (s in info.seasons) {
-                            val season = api.fetchSeason(item.libItem.id, s.season)
-                            found = season?.episodes?.firstOrNull { it.episode == item.episodeNum }
-                            if (found != null) break
-                        }
-                    }
-                    found
-                }
-                if (realEp != null) {
-                    runOnUiThread { launchPlayer(item.libItem, realEp) }
-                } else {
-                    Log.e(TAG, "Could not find episode ${item.episodeNum} for ${item.libItem.id}")
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "Continue item failed: ${e.message}")
-            }
-        }.start()
+        selectedSeason.intValue = item.season
+        launchPlayerByEpisode(item.libItem, item.episodeNum)
     }
 
     private fun playDownloadedItem(item: DownloadManager.DownloadItem) {

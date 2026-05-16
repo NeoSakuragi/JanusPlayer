@@ -51,6 +51,8 @@ class GLRenderer(
         shader.compile()
         shader.compileExternal()
         videoSurface.initGL()
+        android.util.Log.i("GLRenderer", "GL_EXTENSIONS: ${GLES30.glGetString(GLES30.GL_EXTENSIONS)?.contains("OES_EGL_image_external")}")
+        android.util.Log.i("GLRenderer", "Video texture: ${videoSurface.textureId}, surface: ${videoSurface.surface}")
 
         batch = QuadBatch()
         batch.initGL()
@@ -112,6 +114,7 @@ class GLRenderer(
             GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT)
 
             // Pass 1: video quad (external OES texture)
+            if (videoSurface.frameAvailable) android.util.Log.i("GLRenderer", "Video frame available")
             videoSurface.updateTexture()
             shader.useExternal()
             GLES30.glUniformMatrix4fv(shader.uProjExt, 1, false, projMatrix, 0)
@@ -193,11 +196,6 @@ class GLRenderer(
         if (seek != null) {
             PlayerScreen.pendingSeek = null
             onPlayerSeek?.invoke(seek)
-        }
-        val pause = PlayerScreen.pendingPause
-        if (pause != null) {
-            PlayerScreen.pendingPause = null
-            onPlayerPause?.invoke(pause)
         }
         val subIdx = PlayerScreen.pendingSubChange
         if (subIdx != null) {

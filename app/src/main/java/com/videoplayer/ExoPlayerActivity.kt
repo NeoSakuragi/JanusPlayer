@@ -37,6 +37,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.layout.layout
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInParent
+import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.viewinterop.AndroidView
 import kotlinx.coroutines.delay
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
@@ -52,6 +53,9 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
 
 class ExoPlayerActivity : ComponentActivity() {
+
+    enum class ReadingMode { PRO, ADVANCED, INTERMEDIATE, NOVICE }
+    private val readingMode = mutableStateOf(ReadingMode.PRO)
 
     companion object {
         private const val TAG = "ExoPlayer"
@@ -113,7 +117,8 @@ class ExoPlayerActivity : ComponentActivity() {
         "fonts/KosugiMaru-Regular.ttf", "fonts/ShipporiMincho-Regular.ttf"
     )
 
-    private val CTRL_CONDENSED = 5
+    private val CTRL_READING = 5
+    private val CTRL_CONDENSED = 6
     private val condensedMode = mutableStateOf(false)
     private val condensedSpeedLabel = mutableStateOf<String?>(null)
     private var lastCondensedSpeed = 1f
@@ -204,7 +209,9 @@ class ExoPlayerActivity : ComponentActivity() {
     private var subTextOffsetY = 0f
 
     // Supercharged SRT
-    data class WordSpan(val start: Int, val end: Int, val word: String, val dictIdx: Int, val inflection: String)
+    data class WordSpan(val start: Int, val end: Int, val word: String, val dictIdx: Int, val inflection: String,
+                        val reading: String = "", val subReadings: List<String> = emptyList(),
+                        val furigana: List<JanusApi.FuriganaSpan> = emptyList())
     private var wordSpans = listOf<WordSpan>()
     private var superSRT: JanusApi.SuperSRT? = null
     private var superCues = listOf<JanusApi.SuperCue>()
@@ -363,17 +370,52 @@ class ExoPlayerActivity : ComponentActivity() {
                         currentSuperCue = sCue
                         val display = StringBuilder()
                         val spans = mutableListOf<WordSpan>()
+                        val mode = readingMode.value
                         for (w in sCue.words) {
                             if (w.surface.isBlank() || w.surface == "\n") {
-                                display.append(w.surface)
+                                if (mode == ReadingMode.PRO) display.append(w.surface)
+                                else if (w.surface == "\n") display.append("\n")
+                                // Skip original spaces in non-PRO modes — words already have trailing spaces
                                 continue
                             }
                             val start = display.length
-                            display.append(w.surface)
-                            spans.add(WordSpan(start, display.length, w.surface, w.dictIdx, w.inflection))
+                            when (mode) {
+                                ReadingMode.PRO -> display.append(w.surface)
+                                ReadingMode.ADVANCED -> {
+                                    display.append(w.surface)
+                                    if (display.length > start) display.append(" ")
+                                }
+                                ReadingMode.INTERMEDIATE -> {
+                                    val hira = kata2hira(w.reading.ifEmpty { w.surface })
+                                    display.append(hira)
+                                    display.append(" ")
+                                }
+                                ReadingMode.NOVICE -> {
+                                    display.append(kata2romaji(w.reading.ifEmpty { w.surface }))
+                                    display.append(" ")
+                                }
+                            }
+                            spans.add(WordSpan(start, display.length.let { if (mode != ReadingMode.PRO && it > start + 1) it - 1 else it }, w.surface, w.dictIdx, w.inflection, w.reading, w.subReadings, w.furigana))
                         }
-                        currentSubText.value = display.toString()
-                        currentRubySpans.value = emptyList()
+                        currentSubText.value = display.toString().trimEnd()
+                        // Generate furigana for Advanced mode using per-kanji spans
+                        if (mode == ReadingMode.ADVANCED) {
+                            val rubys = mutableListOf<RubySpan>()
+                            for (span in spans) {
+                                if (span.furigana.isEmpty()) continue
+                                if (span.furigana.size == 1 && span.word.length > 1 && span.word.all { it.code in 0x4E00..0x9FFF || it.code in 0x3400..0x4DBF }) {
+                                    // Ateji: one reading spans all kanji in the word
+                                    rubys.add(RubySpan(span.start, span.word.length, span.furigana[0].reading))
+                                } else {
+                                    for (f in span.furigana) {
+                                        rubys.add(RubySpan(span.start + f.charIdx, 1, f.reading))
+                                    }
+                                }
+                            }
+                            currentRubySpans.value = rubys
+                        } else {
+                            currentRubySpans.value = emptyList()
+                        }
                         wordSpans = spans
                     } else if (sCue == null) {
                         // Fallback to legacy SRT
@@ -602,6 +644,10 @@ class ExoPlayerActivity : ComponentActivity() {
                     Spacer(Modifier.width(8.dp))
                     CtrlBtn("F", FONT_NAMES[fIdx].take(8), CTRL_FONT, cFocus) { cycleFont() }
                     Spacer(Modifier.width(8.dp))
+                    val rMode by readingMode
+                    val rLabel = when (rMode) { ReadingMode.PRO -> "PRO"; ReadingMode.ADVANCED -> "ADV"; ReadingMode.INTERMEDIATE -> "INT"; ReadingMode.NOVICE -> "NOV" }
+                    CtrlBtn("読", rLabel, CTRL_READING, cFocus) { cycleReadingMode() }
+                    Spacer(Modifier.width(8.dp))
                     val condOn by condensedMode
                     CtrlBtn("⏩", if (condOn) Lang.s("cond_on") else Lang.s("cond_off"), CTRL_CONDENSED, cFocus) { toggleCondensed() }
                     Spacer(Modifier.width(8.dp))
@@ -705,7 +751,7 @@ class ExoPlayerActivity : ComponentActivity() {
                 var charBoxes by remember(subText) { mutableStateOf(subCharBoxes) }
                 val rubySpans by currentRubySpans
                 val rubyFontSize = subFontSize * 0.45f
-                val rubyTopPad = rubyFontSize.value.dp
+                val hasFurigana = rubySpans.isNotEmpty()
                 Box(
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
@@ -716,52 +762,61 @@ class ExoPlayerActivity : ComponentActivity() {
                             subTopY = coords.positionInParent().y
                         }
                 ) {
-                    if (rubySpans.isNotEmpty()) Spacer(Modifier.height(rubyTopPad))
+                    val subLineHeight = if (hasFurigana) (subFontSize.value * 1.6f).sp else subFontSize
+
+                    // Text layer
                     Box(modifier = Modifier.onGloballyPositioned { textCoords ->
-                        subCharBoxes = charBoxes
-                        val pos = textCoords.positionInParent()
-                        subTextOffsetX = pos.x
-                        subTextOffsetY = subTopY + pos.y
+                        val rootPos = textCoords.positionInRoot()
+                        subTextOffsetX = rootPos.x
+                        subTextOffsetY = rootPos.y
                     }) {
                         androidx.compose.material3.Text(
                             text = annotated, color = Color.Black, fontSize = subFontSize, fontFamily = subFontFamily,
                             textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                            lineHeight = subLineHeight,
                             modifier = Modifier.fillMaxWidth(),
                             style = androidx.compose.ui.text.TextStyle(drawStyle = androidx.compose.ui.graphics.drawscope.Stroke(width = 6f))
                         )
                         androidx.compose.material3.Text(
                             text = annotated, color = Color.White, fontSize = subFontSize, fontFamily = subFontFamily,
                             textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                            lineHeight = subLineHeight,
                             modifier = Modifier.fillMaxWidth(),
                             onTextLayout = { layout ->
                                 charBoxes = Array(subText.length) { i -> layout.getBoundingBox(i) }
+                                subCharBoxes = charBoxes
                             }
                         )
-                        val boxes = charBoxes
-                        if (boxes.isNotEmpty() && rubySpans.isNotEmpty()) {
-                            val textMeasurer = androidx.compose.ui.text.rememberTextMeasurer()
-                            androidx.compose.foundation.Canvas(modifier = Modifier.matchParentSize()) {
-                                for (ruby in rubySpans) {
-                                    if (ruby.start >= boxes.size || ruby.start + ruby.length - 1 >= boxes.size) continue
-                                    val left = boxes[ruby.start].left
-                                    val right = boxes[ruby.start + ruby.length - 1].right
-                                    val top = boxes[ruby.start].top
-                                    val kanjiWidth = right - left
-                                    val measured = textMeasurer.measure(
-                                        ruby.reading,
-                                        style = androidx.compose.ui.text.TextStyle(
-                                            fontSize = rubyFontSize,
-                                            fontFamily = subFontFamily,
-                                            color = Color(0xFFDDDDDD),
-                                        )
+                    }
+
+                    // Furigana overlay — separate Canvas layer on top
+                    val boxes = charBoxes
+                    val rubys = rubySpans
+                    if (boxes.isNotEmpty() && rubys.isNotEmpty()) {
+                        val textMeasurer = androidx.compose.ui.text.rememberTextMeasurer()
+                        androidx.compose.foundation.Canvas(
+                            modifier = Modifier.matchParentSize()
+                        ) {
+                            for (ruby in rubys) {
+                                if (ruby.start >= boxes.size || ruby.start + ruby.length - 1 >= boxes.size) continue
+                                val left = boxes[ruby.start].left
+                                val right = boxes[ruby.start + ruby.length - 1].right
+                                val top = boxes[ruby.start].top
+                                val kanjiWidth = right - left
+                                val measured = textMeasurer.measure(
+                                    ruby.reading,
+                                    style = androidx.compose.ui.text.TextStyle(
+                                        fontSize = rubyFontSize,
+                                        fontFamily = subFontFamily,
+                                        color = Color(0xFFDDDDDD),
                                     )
-                                    val rubyX = left + (kanjiWidth - measured.size.width) / 2f
-                                    val rubyY = top - measured.size.height + 4f
-                                    drawContext.canvas.save()
-                                    drawContext.canvas.translate(rubyX, rubyY)
-                                    measured.multiParagraph.paint(drawContext.canvas)
-                                    drawContext.canvas.restore()
-                                }
+                                )
+                                val rubyX = left + (kanjiWidth - measured.size.width) / 2f
+                                val rubyY = top - measured.firstBaseline
+                                drawContext.canvas.save()
+                                drawContext.canvas.translate(rubyX, rubyY)
+                                measured.multiParagraph.paint(drawContext.canvas)
+                                drawContext.canvas.restore()
                             }
                         }
                     }
@@ -1005,6 +1060,90 @@ class ExoPlayerActivity : ComponentActivity() {
         if (focus >= 0) controlFocus.intValue = focus
     }
 
+    // ── Reading mode converters ────────────────────────────────────
+
+    private fun kata2hira(s: String): String = buildString {
+        for (c in s) {
+            if (c in 'ァ'..'ヶ') append(c - 0x60)
+            else append(c)
+        }
+    }
+
+    private val romajiMap = mapOf(
+        'ア' to "a", 'イ' to "i", 'ウ' to "u", 'エ' to "e", 'オ' to "o",
+        'カ' to "ka", 'キ' to "ki", 'ク' to "ku", 'ケ' to "ke", 'コ' to "ko",
+        'サ' to "sa", 'シ' to "shi", 'ス' to "su", 'セ' to "se", 'ソ' to "so",
+        'タ' to "ta", 'チ' to "chi", 'ツ' to "tsu", 'テ' to "te", 'ト' to "to",
+        'ナ' to "na", 'ニ' to "ni", 'ヌ' to "nu", 'ネ' to "ne", 'ノ' to "no",
+        'ハ' to "ha", 'ヒ' to "hi", 'フ' to "fu", 'ヘ' to "he", 'ホ' to "ho",
+        'マ' to "ma", 'ミ' to "mi", 'ム' to "mu", 'メ' to "me", 'モ' to "mo",
+        'ヤ' to "ya", 'ユ' to "yu", 'ヨ' to "yo",
+        'ラ' to "ra", 'リ' to "ri", 'ル' to "ru", 'レ' to "re", 'ロ' to "ro",
+        'ワ' to "wa", 'ヲ' to "wo", 'ン' to "n",
+        'ガ' to "ga", 'ギ' to "gi", 'グ' to "gu", 'ゲ' to "ge", 'ゴ' to "go",
+        'ザ' to "za", 'ジ' to "ji", 'ズ' to "zu", 'ゼ' to "ze", 'ゾ' to "zo",
+        'ダ' to "da", 'ヂ' to "di", 'ヅ' to "du", 'デ' to "de", 'ド' to "do",
+        'バ' to "ba", 'ビ' to "bi", 'ブ' to "bu", 'ベ' to "be", 'ボ' to "bo",
+        'パ' to "pa", 'ピ' to "pi", 'プ' to "pu", 'ペ' to "pe", 'ポ' to "po",
+        'ッ' to "q", 'ー' to "-",
+        'ャ' to "ya", 'ュ' to "yu", 'ョ' to "yo",
+        'ァ' to "a", 'ィ' to "i", 'ゥ' to "u", 'ェ' to "e", 'ォ' to "o",
+    )
+
+    private fun kata2romaji(s: String): String = buildString {
+        val chars = s.toList()
+        var i = 0
+        while (i < chars.size) {
+            val c = chars[i]
+            // Small tsu: double the next consonant
+            if (c == 'ッ' || c == 'っ') {
+                if (i + 1 < chars.size) {
+                    val next = romajiMap[chars[i + 1]]
+                    if (next != null && next.isNotEmpty()) append(next[0]) else append("t")
+                }
+                i++
+                continue
+            }
+            // Small kana combos: キャ→kya, シュ→shu, チョ→cho, etc.
+            if (i + 1 < chars.size && chars[i + 1] in "ャュョァィゥェォ") {
+                val base = romajiMap[c]
+                val mod = romajiMap[chars[i + 1]]
+                if (base != null && mod != null) {
+                    append(base.dropLast(1))
+                    append(mod)
+                    i += 2
+                    continue
+                }
+            }
+            val r = romajiMap[c]
+            if (r != null) append(r) else append(c)
+            i++
+        }
+    }
+
+    private fun cycleReadingMode() {
+        val wasInWordNav = screen.value == Screen.WORD_NAV
+        val savedCursorIdx = cursorIdx.intValue
+        readingMode.value = when (readingMode.value) {
+            ReadingMode.NOVICE -> ReadingMode.INTERMEDIATE
+            ReadingMode.INTERMEDIATE -> ReadingMode.ADVANCED
+            ReadingMode.ADVANCED -> ReadingMode.PRO
+            ReadingMode.PRO -> ReadingMode.NOVICE
+        }
+        currentSuperCue = null  // force re-render on next tick
+        // Restore highlight after re-render
+        if (wasInWordNav) {
+            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                if (wordSpans.isNotEmpty()) {
+                    cursorIdx.intValue = savedCursorIdx.coerceIn(0, wordSpans.size - 1)
+                    val span = wordSpans[cursorIdx.intValue]
+                    hlStart.intValue = span.start
+                    hlEnd.intValue = span.end
+                }
+            }, 250)
+        }
+    }
+
     // ── Word Navigation ──────────────────────────────────────────────
 
     private fun onSubtitleTapAt(tapOffset: androidx.compose.ui.geometry.Offset) {
@@ -1046,7 +1185,7 @@ class ExoPlayerActivity : ComponentActivity() {
                     if (w.surface.isBlank() || w.surface == "\n") { display.append(w.surface); continue }
                     val start = display.length
                     display.append(w.surface)
-                    spans.add(WordSpan(start, display.length, w.surface, w.dictIdx, w.inflection))
+                    spans.add(WordSpan(start, display.length, w.surface, w.dictIdx, w.inflection, w.reading, w.subReadings))
                 }
                 currentSubText.value = display.toString()
                 wordSpans = spans
@@ -1332,12 +1471,14 @@ class ExoPlayerActivity : ComponentActivity() {
         val prefs = getSharedPreferences("watch_progress", MODE_PRIVATE)
         val videoUrl = intent.getStringExtra(EXTRA_VIDEO_URL) ?: ""
         val filename = videoUrl.substringAfterLast("/")
+        val seasonNum = intent.getIntExtra("season_num", 1)
         prefs.edit()
             .putLong("${seriesId}_ep${epNum}_pos", pos)
             .putLong("${seriesId}_ep${epNum}_dur", dur)
             .putString("${seriesId}_ep${epNum}_filename", filename)
             .putString("${seriesId}_last_ep", "$epNum")
             .putLong("${seriesId}_last_pos", pos)
+            .putInt("${seriesId}_last_season", seasonNum)
             .apply()
     }
 

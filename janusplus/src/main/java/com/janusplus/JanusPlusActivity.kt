@@ -30,6 +30,7 @@ class JanusPlusActivity : AppCompatActivity() {
     private var api: JanusApi? = null
     private var updater: AppUpdater? = null
     private var player: ExoPlayer? = null
+    private var lastTapTime = 0L
     private lateinit var rootLayout: FrameLayout
     private lateinit var keyboardRelay: EditText
 
@@ -232,7 +233,7 @@ class JanusPlusActivity : AppCompatActivity() {
         exo.play()
 
         PlayerScreen.reset()
-        // Render video to our GL SurfaceTexture — no PlayerView needed
+        PlayerScreen.episodeTitle = state.selectedItem?.title() ?: ""
         exo.setVideoSurface(renderer.videoSurface.surface)
         player = exo
 
@@ -609,10 +610,34 @@ class JanusPlusActivity : AppCompatActivity() {
             state.screen = Screen.HOME
             return true
         }
-        if (state.screen == Screen.PLAYING && event.action == KeyEvent.ACTION_DOWN &&
-            (event.keyCode == KeyEvent.KEYCODE_BACK || event.keyCode == KeyEvent.KEYCODE_ESCAPE || event.keyCode == KeyEvent.KEYCODE_DEL)) {
-            stopPlayer()
-            return true
+        if (state.screen == Screen.PLAYING && event.action == KeyEvent.ACTION_DOWN) {
+            when (event.keyCode) {
+                KeyEvent.KEYCODE_BACK, KeyEvent.KEYCODE_ESCAPE, KeyEvent.KEYCODE_DEL -> {
+                    if (PlayerScreen.showTrackList) { PlayerScreen.showTrackList = false; return true }
+                    stopPlayer(); return true
+                }
+                KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE -> {
+                    player?.let { if (it.isPlaying) it.pause() else it.play() }
+                    if (!PlayerScreen.showControls) PlayerScreen.toggleControls()
+                    return true
+                }
+                KeyEvent.KEYCODE_DPAD_LEFT -> {
+                    player?.let { it.seekTo((it.currentPosition - 10000).coerceAtLeast(0)) }
+                    PlayerScreen.showSeekIndicator("« 10s")
+                    return true
+                }
+                KeyEvent.KEYCODE_DPAD_RIGHT -> {
+                    player?.let { it.seekTo(it.currentPosition + 10000) }
+                    PlayerScreen.showSeekIndicator("10s »")
+                    return true
+                }
+                KeyEvent.KEYCODE_DPAD_UP -> {
+                    PlayerScreen.toggleControls(); return true
+                }
+                KeyEvent.KEYCODE_DPAD_DOWN -> {
+                    PlayerScreen.toggleControls(); return true
+                }
+            }
         }
         if (input.handleKey(event.keyCode, event.action)) return true
         return super.dispatchKeyEvent(event)
@@ -657,6 +682,7 @@ class JanusPlusActivity : AppCompatActivity() {
         }
         if (state.screen == Screen.PLAYING) {
             if (event.action == MotionEvent.ACTION_UP) {
+                // Hit rects (buttons, track list items)
                 for (hr in input.hitRects) {
                     if (event.x >= hr.x && event.x <= hr.x + hr.w &&
                         event.y >= hr.y && event.y <= hr.y + hr.h) {
@@ -668,6 +694,32 @@ class JanusPlusActivity : AppCompatActivity() {
                     PlayerScreen.showTrackList = false
                     return true
                 }
+                // Seekbar tap
+                val density = resources.displayMetrics.density
+                val pad = density * 32f
+                val seekY = resources.displayMetrics.heightPixels - density * 44f
+                if (PlayerScreen.showControls && event.y > seekY - density * 24f && event.y < seekY + density * 24f) {
+                    val seekW = resources.displayMetrics.widthPixels - pad * 2
+                    val frac = ((event.x - pad) / seekW).coerceIn(0f, 1f)
+                    player?.seekTo((frac * PlayerScreen.durationMs).toLong())
+                    return true
+                }
+                // Double-tap detection
+                val now = System.currentTimeMillis()
+                if (now - lastTapTime < 300) {
+                    // Double tap — seek ±10s based on which half
+                    if (event.x < resources.displayMetrics.widthPixels / 2f) {
+                        player?.let { it.seekTo((it.currentPosition - 10000).coerceAtLeast(0)) }
+                        PlayerScreen.showSeekIndicator("« 10s")
+                    } else {
+                        player?.let { it.seekTo(it.currentPosition + 10000) }
+                        PlayerScreen.showSeekIndicator("10s »")
+                    }
+                    lastTapTime = 0L
+                    return true
+                }
+                lastTapTime = now
+                // Single tap — toggle controls or play/pause
                 if (PlayerScreen.showControls) {
                     player?.let { if (it.isPlaying) it.pause() else it.play() }
                 } else {

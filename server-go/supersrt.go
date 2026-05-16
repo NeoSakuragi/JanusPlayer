@@ -11,7 +11,7 @@ import (
 	"sync"
 )
 
-const superSRTVersion = 6
+const superSRTVersion = 10
 
 var superSRTCache sync.Map // "v{ver}:{itemId}:{season}:{episode}" → []byte (JSON)
 
@@ -72,9 +72,13 @@ func handleSuperSRT(w http.ResponseWriter, r *http.Request) {
 	// Run generator
 	cmd := exec.Command("python3", args...)
 	jitendexPath := filepath.Join(dataDir, "jitendex.bin")
+	kanjiReadingsPath := filepath.Join(dataDir, "kanji_readings.json")
+	commonDicPath := filepath.Join(dataDir, "dicts", "common.dic")
 	cmd.Env = append(os.Environ(),
 		"PYTHONDONTWRITEBYTECODE=1",
 		"JITENDEX_PATH="+jitendexPath,
+		"KANJI_READINGS_PATH="+kanjiReadingsPath,
+		"COMMON_DIC_PATH="+commonDicPath,
 		fmt.Sprintf("SUPER_SRT_VERSION=%d", superSRTVersion),
 	)
 	out, err := cmd.Output()

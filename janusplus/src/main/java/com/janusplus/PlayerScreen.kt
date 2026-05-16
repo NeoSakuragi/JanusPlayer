@@ -15,15 +15,22 @@ object PlayerScreen {
     var isPaused = false
     var showControls = false
     var controlsTimer = 0L
+    var controlsAlpha = 0f
 
     var showTrackList = false
     var trackListType = ""
     var trackListItems: List<String> = emptyList()
     var trackListFocus = 0
 
+    // Seek indicator
+    var seekIndicator: String? = null
+    var seekIndicatorTimer = 0L
+
+    // Episode info
+    var episodeTitle = ""
+
     @Volatile var pendingBack = false
     @Volatile var pendingSeek: Long? = null
-    @Volatile var pendingPause: Boolean? = null
     @Volatile var pendingSubChange: Int? = null
 
     fun reset() {
@@ -37,10 +44,12 @@ object PlayerScreen {
         durationMs = 0L
         isPaused = false
         showControls = false
+        controlsAlpha = 0f
         showTrackList = false
+        seekIndicator = null
+        episodeTitle = ""
         pendingBack = false
         pendingSeek = null
-        pendingPause = null
         pendingSubChange = null
     }
 
@@ -49,13 +58,46 @@ object PlayerScreen {
             currentCueText = SrtParser.cueAt(subtitleCues, positionMs)?.text
         }
 
-        // Subtitle
+        // Animate controls alpha
+        val target = if (showControls || isPaused) 1f else 0f
+        controlsAlpha += (target - controlsAlpha) * 0.15f
+        if (controlsAlpha < 0.01f) controlsAlpha = 0f
+        if (controlsAlpha > 0.99f) controlsAlpha = 1f
+
+        // Auto-hide controls after 5s
+        if (showControls && !isPaused && System.currentTimeMillis() - controlsTimer > 5000) {
+            showControls = false
+        }
+
+        // Seek indicator timeout
+        if (seekIndicator != null && System.currentTimeMillis() - seekIndicatorTimer > 600) {
+            seekIndicator = null
+        }
+
+        // Subtitle (always visible when cue active)
         currentCueText?.let { renderSubtitle(rc, it) }
 
-        // Controls overlay
-        if (showControls || isPaused) renderControls(rc)
+        // Controls overlay with alpha
+        if (controlsAlpha > 0f) renderControls(rc, controlsAlpha)
 
-        // Track list
+        // Pause icon (center)
+        if (isPaused && controlsAlpha > 0.5f) {
+            val a = controlsAlpha
+            val cx = rc.w / 2f; val cy = rc.h / 2f
+            // Dark circle behind pause
+            rc.solid(cx - rc.dp(40f), cy - rc.dp(40f), rc.dp(80f), rc.dp(80f), 0f, 0f, 0f, 0.4f * a)
+            rc.solid(cx - rc.dp(16f), cy - rc.dp(24f), rc.dp(10f), rc.dp(48f), 1f, 1f, 1f, 0.9f * a)
+            rc.solid(cx + rc.dp(6f), cy - rc.dp(24f), rc.dp(10f), rc.dp(48f), 1f, 1f, 1f, 0.9f * a)
+        }
+
+        // Seek indicator
+        seekIndicator?.let { text ->
+            val a = ((600 - (System.currentTimeMillis() - seekIndicatorTimer)) / 600f).coerceIn(0f, 1f)
+            val tw = rc.font.measureText(text, rc.sp(22))
+            rc.text(text, (rc.w - tw) / 2f, rc.h / 2f + rc.dp(60f), rc.sp(22), 1f, 1f, 1f, a)
+        }
+
+        // Track list overlay
         if (showTrackList) renderTrackList(rc)
     }
 
@@ -64,119 +106,145 @@ object PlayerScreen {
         val lines = text.split("\n")
         val lineH = rc.font.textHeight(sizePx)
         val totalH = lines.size * lineH * 1.2f
-        val baseY = rc.h - rc.dp(60f) - totalH
+        val baseY = rc.h - rc.dp(80f) - totalH
 
         for ((i, line) in lines.withIndex()) {
             val textW = rc.font.measureText(line, sizePx)
             val x = (rc.w - textW) / 2f
             val y = baseY + i * lineH * 1.2f
-            rc.solid(x - rc.dp(8f), y - rc.dp(4f), textW + rc.dp(16f), lineH + rc.dp(8f), 0f, 0f, 0f, 0.7f)
+            // Rounded backdrop
+            rc.solid(x - rc.dp(12f), y - rc.dp(6f), textW + rc.dp(24f), lineH + rc.dp(12f),
+                0f, 0f, 0f, 0.65f)
             rc.text(line, x, y + lineH * 0.8f, sizePx, 1f, 1f, 1f)
         }
     }
 
-    private fun renderControls(rc: RenderCtx) {
-        val pad = rc.dp(24f)
+    private fun renderControls(rc: RenderCtx, alpha: Float) {
+        val pad = rc.dp(32f)
+        val a = alpha
 
-        // Top dimming
-        rc.gradient(0f, 0f, rc.w, rc.dp(80f),
-            floatArrayOf(0f, 0f, 0f, 0.6f), floatArrayOf(0f, 0f, 0f, 0.6f),
+        // Top gradient
+        rc.gradient(0f, 0f, rc.w, rc.dp(100f),
+            floatArrayOf(0f, 0f, 0f, 0.7f * a), floatArrayOf(0f, 0f, 0f, 0.7f * a),
             floatArrayOf(0f, 0f, 0f, 0f), floatArrayOf(0f, 0f, 0f, 0f))
 
-        // Bottom dimming
-        rc.gradient(0f, rc.h - rc.dp(120f), rc.w, rc.dp(120f),
+        // Bottom gradient
+        rc.gradient(0f, rc.h - rc.dp(140f), rc.w, rc.dp(140f),
             floatArrayOf(0f, 0f, 0f, 0f), floatArrayOf(0f, 0f, 0f, 0f),
-            floatArrayOf(0f, 0f, 0f, 0.7f), floatArrayOf(0f, 0f, 0f, 0.7f))
+            floatArrayOf(0f, 0f, 0f, 0.8f * a), floatArrayOf(0f, 0f, 0f, 0.8f * a))
 
-        // Pause icon
-        if (isPaused) {
-            val cx = rc.w / 2f; val cy = rc.h / 2f
-            rc.solid(cx - rc.dp(20f), cy - rc.dp(30f), rc.dp(12f), rc.dp(60f), 1f, 1f, 1f, 0.8f)
-            rc.solid(cx + rc.dp(8f), cy - rc.dp(30f), rc.dp(12f), rc.dp(60f), 1f, 1f, 1f, 0.8f)
-        }
-
-        // Top row: ← back ... ♪ CC ⚙
-        val btnY = rc.dp(16f)
+        // Top row
         val btnH = rc.dp(40f)
-        val btnW = rc.dp(56f)
-        val btnSpacing = rc.dp(12f)
+        val btnW = rc.dp(50f)
+        val btnY = rc.dp(20f)
+        val btnSpacing = rc.dp(8f)
+        val btnR = 0.165f; val btnG = 0.165f; val btnB = 0.227f
 
         // Back button (top left)
-        rc.solid(pad, btnY, btnW, btnH, 0.2f, 0.2f, 0.2f, 0.7f)
-        rc.text("←", pad + rc.dp(18f), btnY + btnH * 0.7f, rc.sp(18), 1f, 1f, 1f)
+        rc.solid(pad, btnY, btnW, btnH, btnR, btnG, btnB, 0.8f * a)
+        rc.text("←", pad + rc.dp(16f), btnY + btnH * 0.7f, rc.sp(18), 1f, 1f, 1f, a)
         rc.tappable(pad, btnY, btnW, btnH) { pendingBack = true }
 
-        // Right-side buttons
-        var rx = rc.w - pad - btnW
+        // Title
+        if (episodeTitle.isNotEmpty()) {
+            rc.textClipped(episodeTitle, pad + btnW + rc.dp(12f), btnY + btnH * 0.65f,
+                rc.sp(14), rc.w * 0.4f, 1f, 1f, 1f, a)
+        }
 
-        // Audio
-        rc.solid(rx, btnY, btnW, btnH, 0.2f, 0.2f, 0.2f, 0.7f)
-        rc.text("♪", rx + rc.dp(18f), btnY + btnH * 0.7f, rc.sp(16), 1f, 1f, 1f)
+        // Right buttons: ♪ CC
+        var rx = rc.w - pad
+
+        // CC (subtitle track)
+        rx -= btnW
+        rc.solid(rx, btnY, btnW, btnH, btnR, btnG, btnB, 0.8f * a)
+        rc.text("CC", rx + rc.dp(12f), btnY + btnH * 0.7f, rc.sp(13), 1f, 1f, 1f, a)
+        rc.tappable(rx, btnY, btnW, btnH) {
+            showTrackList = true
+            trackListType = "subs"
+            trackListItems = subtitleTracks.map { "${it.language} · ${it.label}" }.ifEmpty { listOf("None") }
+            trackListFocus = selectedSubIdx
+        }
+        rx -= btnSpacing
+
+        // ♪ (audio track)
+        rx -= btnW
+        rc.solid(rx, btnY, btnW, btnH, btnR, btnG, btnB, 0.8f * a)
+        rc.text("♪", rx + rc.dp(16f), btnY + btnH * 0.7f, rc.sp(16), 1f, 1f, 1f, a)
         rc.tappable(rx, btnY, btnW, btnH) {
             showTrackList = true
             trackListType = "audio"
             trackListItems = audioTrackNames.ifEmpty { listOf("Track 1") }
             trackListFocus = selectedAudioIdx
         }
-        rx -= btnW + btnSpacing
-
-        // Subtitles
-        rc.solid(rx, btnY, btnW, btnH, 0.2f, 0.2f, 0.2f, 0.7f)
-        rc.text("CC", rx + rc.dp(12f), btnY + btnH * 0.7f, rc.sp(14), 1f, 1f, 1f)
-        rc.tappable(rx, btnY, btnW, btnH) {
-            showTrackList = true
-            trackListType = "subs"
-            trackListItems = subtitleTracks.map { "${it.language} - ${it.label}" }.ifEmpty { listOf("None") }
-            trackListFocus = selectedSubIdx
-        }
 
         // Seekbar
-        val seekY = rc.h - rc.dp(40f)
+        val seekY = rc.h - rc.dp(44f)
+        val seekX = pad
         val seekW = rc.w - pad * 2
+        val barH = rc.dp(6f)
         val progress = if (durationMs > 0) positionMs.toFloat() / durationMs else 0f
 
-        rc.solid(pad, seekY, seekW, rc.dp(4f), 0.3f, 0.3f, 0.3f, 0.8f)
-        rc.solid(pad, seekY, seekW * progress, rc.dp(4f), 0.733f, 0.525f, 0.988f)
-        rc.solid(pad + seekW * progress - rc.dp(6f), seekY - rc.dp(4f), rc.dp(12f), rc.dp(12f), 1f, 1f, 1f)
+        // Track
+        rc.solid(seekX, seekY, seekW, barH, 0.27f, 0.27f, 0.27f, 0.8f * a)
+        // Fill
+        rc.solid(seekX, seekY, seekW * progress, barH, 0.733f, 0.525f, 0.988f, a)
 
         // Time labels
         val posText = formatTime(positionMs)
         val durText = formatTime(durationMs)
-        rc.text(posText, pad, seekY - rc.dp(16f), rc.sp(12), 0.8f, 0.8f, 0.8f)
+        rc.text(posText, seekX, seekY - rc.dp(18f), rc.sp(12), 1f, 1f, 1f, 0.8f * a)
         val durW = rc.font.measureText(durText, rc.sp(12))
-        rc.text(durText, rc.w - pad - durW, seekY - rc.dp(16f), rc.sp(12), 0.8f, 0.8f, 0.8f)
+        rc.text(durText, seekX + seekW - durW, seekY - rc.dp(18f), rc.sp(12), 0.67f, 0.67f, 0.67f, 0.8f * a)
 
-        // Seekbar tap → seek to position
-        rc.tappable(pad, seekY - rc.dp(20f), seekW, rc.dp(40f)) {
-            // Handled via touch in Activity
+        // Seekbar tap target
+        rc.tappable(seekX, seekY - rc.dp(24f), seekW, rc.dp(48f)) {
+            // Seek handled in Activity via touch x position
         }
     }
 
     private fun renderTrackList(rc: RenderCtx) {
-        val panelW = rc.dp(300f)
+        val panelW = rc.dp(320f)
         val panelX = rc.w - panelW
         val itemH = rc.dp(48f)
 
-        rc.solid(0f, 0f, rc.w, rc.h, 0f, 0f, 0f, 0.5f)
-        rc.solid(panelX, 0f, panelW, rc.h, 0.1f, 0.1f, 0.15f)
+        // Backdrop
+        rc.solid(0f, 0f, rc.w, rc.h, 0f, 0f, 0f, 0.4f)
 
-        val title = if (trackListType == "audio") Lang.s("audio") else Lang.s("subs")
-        rc.text(title, panelX + rc.dp(16f), rc.dp(40f), rc.sp(18), 0.733f, 0.525f, 0.988f)
+        // Panel
+        rc.solid(panelX, 0f, panelW, rc.h, 0.063f, 0.063f, 0.110f)
 
+        // Title
+        val title = if (trackListType == "audio") "Audio" else "Subtitles"
+        rc.text(title, panelX + rc.dp(20f), rc.dp(44f), rc.sp(18), 0.733f, 0.525f, 0.988f)
+
+        // Divider
+        rc.solid(panelX + rc.dp(16f), rc.dp(56f), panelW - rc.dp(32f), rc.dp(1f), 0.2f, 0.2f, 0.2f)
+
+        // Items
         for ((i, item) in trackListItems.withIndex()) {
-            val y = rc.dp(60f) + i * itemH
+            val y = rc.dp(68f) + i * itemH
             val focused = i == trackListFocus
-            if (focused) rc.solid(panelX, y, panelW, itemH, 0.2f, 0.2f, 0.3f)
             val selected = when (trackListType) {
                 "audio" -> i == selectedAudioIdx
                 "subs" -> i == selectedSubIdx
                 else -> false
             }
-            val prefix = if (selected) "● " else "  "
-            rc.text(prefix + item, panelX + rc.dp(16f), y + itemH * 0.65f, rc.sp(14),
+
+            if (focused) {
+                rc.solid(panelX + rc.dp(8f), y, panelW - rc.dp(16f), itemH, 0.15f, 0.15f, 0.22f)
+            }
+
+            // Selected bullet
+            if (selected) {
+                rc.text("●", panelX + rc.dp(20f), y + itemH * 0.6f, rc.sp(10), 0.506f, 0.780f, 0.518f)
+            }
+
+            val textX = panelX + rc.dp(if (selected) 38f else 20f)
+            rc.textClipped(item, textX, y + itemH * 0.65f, rc.sp(14), panelW - rc.dp(48f),
                 if (selected) 0.733f else 0.8f,
                 if (selected) 0.525f else 0.8f,
                 if (selected) 0.988f else 0.8f)
+
             rc.tappable(panelX, y, panelW, itemH) {
                 when (trackListType) {
                     "audio" -> selectedAudioIdx = i
@@ -190,6 +258,11 @@ object PlayerScreen {
     fun toggleControls() {
         showControls = !showControls
         controlsTimer = System.currentTimeMillis()
+    }
+
+    fun showSeekIndicator(text: String) {
+        seekIndicator = text
+        seekIndicatorTimer = System.currentTimeMillis()
     }
 
     private fun formatTime(ms: Long): String {
