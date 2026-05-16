@@ -20,6 +20,7 @@ class GLRenderer(
     lateinit var texArray: TextureArray
     lateinit var dimens: Dimens
     val thumbAtlas = ThumbnailAtlas()
+    val videoSurface = VideoSurface()
 
     private val projMatrix = FloatArray(16)
     var width = 0f; private set
@@ -48,6 +49,8 @@ class GLRenderer(
 
         shader = ShaderProgram()
         shader.compile()
+        shader.compileExternal()
+        videoSurface.initGL()
 
         batch = QuadBatch()
         batch.initGL()
@@ -106,12 +109,24 @@ class GLRenderer(
         texArray.bind()
 
         if (state.screen == Screen.PLAYING) {
-            // Transparent clear — video shows through from PlayerView underneath
-            GLES30.glClearColor(0f, 0f, 0f, 0f)
             GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT)
+
+            // Pass 1: video quad (external OES texture)
+            videoSurface.updateTexture()
+            shader.useExternal()
+            GLES30.glUniformMatrix4fv(shader.uProjExt, 1, false, projMatrix, 0)
+            GLES30.glUniformMatrix4fv(shader.uTexMatExt, 1, false, videoSurface.transformMatrix, 0)
+            GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
+            GLES30.glUniform1i(shader.uTexExt, 0)
+            videoSurface.bind()
+            batch.begin()
+            batch.addQuad(0f, 0f, width, height, 1f, 1f, 0f, 0f)
+            // Debug: log first frame orientation
+            batch.flush()
+
+            // Pass 2: UI overlay (texture array)
             shader.use()
             GLES30.glUniformMatrix4fv(shader.uProj, 1, false, projMatrix, 0)
-            GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
             GLES30.glUniform1i(shader.uTex, 0)
             texArray.bind()
             batch.begin()
@@ -121,7 +136,6 @@ class GLRenderer(
             batch.flush()
             inputHandler?.hitRects?.clear()
             inputHandler?.hitRects?.addAll(rc.hitRects)
-            GLES30.glClearColor(0.039f, 0.039f, 0.102f, 1f)
             return
         }
 
@@ -172,6 +186,25 @@ class GLRenderer(
             SettingsScreen.pendingLogout = false
             onLogout?.invoke()
         }
+        if (PlayerScreen.pendingBack) {
+            PlayerScreen.pendingBack = false
+            onPlayerBack?.invoke()
+        }
+        val seek = PlayerScreen.pendingSeek
+        if (seek != null) {
+            PlayerScreen.pendingSeek = null
+            onPlayerSeek?.invoke(seek)
+        }
+        val pause = PlayerScreen.pendingPause
+        if (pause != null) {
+            PlayerScreen.pendingPause = null
+            onPlayerPause?.invoke(pause)
+        }
+        val subIdx = PlayerScreen.pendingSubChange
+        if (subIdx != null) {
+            PlayerScreen.pendingSubChange = null
+            onSubChange?.invoke(subIdx)
+        }
 
         lastFrameMs = (System.nanoTime() - frameStart) / 1_000_000f
 
@@ -189,6 +222,10 @@ class GLRenderer(
     var onSeasonChanged: ((Int) -> Unit)? = null
     var onLogin: (() -> Unit)? = null
     var onLogout: (() -> Unit)? = null
+    var onPlayerBack: (() -> Unit)? = null
+    var onPlayerSeek: ((Long) -> Unit)? = null
+    var onPlayerPause: ((Boolean) -> Unit)? = null
+    var onSubChange: ((Int) -> Unit)? = null
 }
 
 class RenderCtx(

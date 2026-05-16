@@ -11,7 +11,12 @@ class VideoSurface {
     var surfaceTexture: SurfaceTexture? = null; private set
     var surface: Surface? = null; private set
     private val newFrame = AtomicBoolean(false)
-    val transformMatrix = FloatArray(16)
+    val transformMatrix = floatArrayOf(
+        1f, 0f, 0f, 0f,
+        0f, 1f, 0f, 0f,
+        0f, 0f, 1f, 0f,
+        0f, 0f, 0f, 1f
+    )
 
     fun initGL() {
         val ids = IntArray(1)
@@ -28,10 +33,16 @@ class VideoSurface {
         surface = Surface(surfaceTexture!!)
     }
 
+    private var loggedMatrix = false
+
     fun updateTexture() {
         if (newFrame.getAndSet(false)) {
             surfaceTexture?.updateTexImage()
             surfaceTexture?.getTransformMatrix(transformMatrix)
+            if (!loggedMatrix) {
+                android.util.Log.e("VideoSurface", "Transform: [${transformMatrix.take(4).map { "%.2f".format(it) }}] [${transformMatrix.drop(4).take(4).map { "%.2f".format(it) }}] [${transformMatrix.drop(8).take(4).map { "%.2f".format(it) }}] [${transformMatrix.drop(12).map { "%.2f".format(it) }}]")
+                loggedMatrix = true
+            }
         }
     }
 

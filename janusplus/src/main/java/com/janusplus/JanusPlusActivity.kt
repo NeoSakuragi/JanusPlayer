@@ -7,17 +7,14 @@ import android.opengl.GLSurfaceView
 import android.os.Bundle
 import android.view.KeyEvent
 import android.view.MotionEvent
-import android.view.View
 import android.view.WindowManager
 import android.widget.EditText
-import android.widget.FrameLayout
 import android.widget.LinearLayout
 import androidx.appcompat.app.AppCompatActivity
 import androidx.media3.common.MediaItem
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
-import androidx.media3.ui.PlayerView
 import android.util.Log
 import kotlin.concurrent.thread
 
@@ -32,9 +29,6 @@ class JanusPlusActivity : AppCompatActivity() {
     private var api: JanusApi? = null
     private var updater: AppUpdater? = null
     private var player: ExoPlayer? = null
-    private var playerView: PlayerView? = null
-    private lateinit var rootLayout: FrameLayout
-    private lateinit var keyboardRelay: EditText
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -90,45 +84,8 @@ class JanusPlusActivity : AppCompatActivity() {
         val density = resources.displayMetrics.density
         renderer = GLRenderer(assets, state, density)
 
-        rootLayout = FrameLayout(this).apply {
-            isFocusable = true
-            isFocusableInTouchMode = true
-        }
-
         glView = GLSurfaceView(this)
         glView.setEGLContextClientVersion(3)
-        // 4x MSAA for smooth text and edges
-        glView.setEGLConfigChooser(object : GLSurfaceView.EGLConfigChooser {
-            override fun chooseConfig(egl: javax.microedition.khronos.egl.EGL10,
-                                      display: javax.microedition.khronos.egl.EGLDisplay): javax.microedition.khronos.egl.EGLConfig {
-                val attribs = intArrayOf(
-                    javax.microedition.khronos.egl.EGL10.EGL_RED_SIZE, 8,
-                    javax.microedition.khronos.egl.EGL10.EGL_GREEN_SIZE, 8,
-                    javax.microedition.khronos.egl.EGL10.EGL_BLUE_SIZE, 8,
-                    javax.microedition.khronos.egl.EGL10.EGL_ALPHA_SIZE, 8,
-                    javax.microedition.khronos.egl.EGL10.EGL_DEPTH_SIZE, 0,
-                    javax.microedition.khronos.egl.EGL10.EGL_SAMPLE_BUFFERS, 1,
-                    javax.microedition.khronos.egl.EGL10.EGL_SAMPLES, 4,
-                    javax.microedition.khronos.egl.EGL10.EGL_NONE
-                )
-                val configs = arrayOfNulls<javax.microedition.khronos.egl.EGLConfig>(1)
-                val numConfigs = IntArray(1)
-                if (egl.eglChooseConfig(display, attribs, configs, 1, numConfigs) && numConfigs[0] > 0) {
-                    return configs[0]!!
-                }
-                // Fallback: no MSAA
-                val fallback = intArrayOf(
-                    javax.microedition.khronos.egl.EGL10.EGL_RED_SIZE, 8,
-                    javax.microedition.khronos.egl.EGL10.EGL_GREEN_SIZE, 8,
-                    javax.microedition.khronos.egl.EGL10.EGL_BLUE_SIZE, 8,
-                    javax.microedition.khronos.egl.EGL10.EGL_ALPHA_SIZE, 8,
-                    javax.microedition.khronos.egl.EGL10.EGL_DEPTH_SIZE, 0,
-                    javax.microedition.khronos.egl.EGL10.EGL_NONE
-                )
-                egl.eglChooseConfig(display, fallback, configs, 1, numConfigs)
-                return configs[0]!!
-            }
-        })
         glView.setRenderer(renderer)
         glView.renderMode = GLSurfaceView.RENDERMODE_CONTINUOUSLY
         renderer.inputHandler = input
@@ -159,6 +116,16 @@ class JanusPlusActivity : AppCompatActivity() {
         renderer.onLogin = {
             runOnUiThread { doGpuLogin() }
         }
+        renderer.onPlayerBack = { runOnUiThread { stopPlayer() } }
+        renderer.onPlayerSeek = { ms -> player?.seekTo(ms) }
+        renderer.onPlayerPause = { pause ->
+            if (pause) player?.pause() else player?.play()
+        }
+        renderer.onSubChange = { idx ->
+            val sub = PlayerScreen.subtitleTracks.getOrNull(idx)
+            val itemId = state.selectedItem?.id
+            if (sub != null && itemId != null) loadSubtitle(itemId, sub.srtFile)
+        }
         renderer.onLogout = {
             runOnUiThread {
                 getSharedPreferences("janusplus", Context.MODE_PRIVATE).edit().clear().apply()
@@ -171,35 +138,7 @@ class JanusPlusActivity : AppCompatActivity() {
             }
         }
 
-        playerView = PlayerView(this).apply {
-            visibility = View.GONE
-            useController = true
-        }
-
-        // Hidden EditText to relay keyboard input for login/settings
-        keyboardRelay = EditText(this).apply {
-            alpha = 0f
-            layoutParams = FrameLayout.LayoutParams(1, 1)
-            isFocusable = false
-            isFocusableInTouchMode = false
-            inputType = android.text.InputType.TYPE_CLASS_TEXT
-        }
-        keyboardRelay.addTextChangedListener(object : android.text.TextWatcher {
-            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
-            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
-                if (count > 0 && s != null && state.screen == Screen.LOGIN) {
-                    val newChar = s[start + count - 1]
-                    LoginScreen.onChar(newChar)
-                    keyboardRelay.post { keyboardRelay.setText(""); keyboardRelay.setSelection(0) }
-                }
-            }
-            override fun afterTextChanged(s: android.text.Editable?) {}
-        })
-
-        rootLayout.addView(glView)
-        rootLayout.addView(playerView)
-        rootLayout.addView(keyboardRelay)
-        setContentView(rootLayout)
+        setContentView(glView)
 
         // Poll for play requests from the GL thread
         val checkPlay = object : Runnable {
@@ -229,11 +168,8 @@ class JanusPlusActivity : AppCompatActivity() {
         exo.play()
 
         PlayerScreen.reset()
-        playerView?.player = exo
-        playerView?.useController = false
-        playerView?.visibility = View.VISIBLE
-        glView.setZOrderOnTop(true)
-        glView.holder.setFormat(android.graphics.PixelFormat.TRANSLUCENT)
+        // Render video to our GL SurfaceTexture — no PlayerView needed
+        exo.setVideoSurface(renderer.videoSurface.surface)
         player = exo
 
         // Load subtitles
@@ -302,12 +238,9 @@ class JanusPlusActivity : AppCompatActivity() {
     }
 
     private fun stopPlayer() {
+        player?.setVideoSurface(null)
         player?.release()
         player = null
-        playerView?.player = null
-        playerView?.visibility = View.GONE
-        glView.setZOrderOnTop(false)
-        glView.holder.setFormat(android.graphics.PixelFormat.OPAQUE)
         PlayerScreen.reset()
         state.screen = state.returnScreen
         state.playingUrl = null
@@ -622,19 +555,8 @@ class JanusPlusActivity : AppCompatActivity() {
     }
 
     private fun showKeyboard() {
-        keyboardRelay.isFocusable = true
-        keyboardRelay.isFocusableInTouchMode = true
-        keyboardRelay.requestFocus()
         val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as android.view.inputmethod.InputMethodManager
-        imm.showSoftInput(keyboardRelay, android.view.inputmethod.InputMethodManager.SHOW_IMPLICIT)
-    }
-
-    private fun hideKeyboard() {
-        val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as android.view.inputmethod.InputMethodManager
-        imm.hideSoftInputFromWindow(keyboardRelay.windowToken, 0)
-        keyboardRelay.isFocusable = false
-        keyboardRelay.isFocusableInTouchMode = false
-        keyboardRelay.clearFocus()
+        imm.showSoftInput(glView, android.view.inputmethod.InputMethodManager.SHOW_IMPLICIT)
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
@@ -660,25 +582,20 @@ class JanusPlusActivity : AppCompatActivity() {
         }
         if (state.screen == Screen.PLAYING) {
             if (event.action == MotionEvent.ACTION_UP) {
-                // Check hit rects first (buttons, track list items, seekbar)
+                PlayerScreen.lastTapX = event.x
                 for (hr in input.hitRects) {
                     if (event.x >= hr.x && event.x <= hr.x + hr.w &&
                         event.y >= hr.y && event.y <= hr.y + hr.h) {
                         hr.action()
-                        handleSubOrAudioChange()
                         return true
                     }
                 }
-                // Tap on track list backdrop dismisses it
                 if (PlayerScreen.showTrackList) {
                     PlayerScreen.showTrackList = false
                     return true
                 }
-                // Tap toggles controls / play-pause
                 if (PlayerScreen.showControls) {
-                    player?.let {
-                        if (it.isPlaying) it.pause() else it.play()
-                    }
+                    player?.let { if (it.isPlaying) it.pause() else it.play() }
                 } else {
                     PlayerScreen.toggleControls()
                 }
@@ -689,16 +606,6 @@ class JanusPlusActivity : AppCompatActivity() {
         return super.onTouchEvent(event)
     }
 
-    private fun handleSubOrAudioChange() {
-        val p = player ?: return
-        // Handle subtitle track change
-        if (PlayerScreen.subtitleTracks.isNotEmpty()) {
-            val sub = PlayerScreen.subtitleTracks.getOrNull(PlayerScreen.selectedSubIdx)
-            if (sub != null) {
-                loadSubtitle(state.selectedItem?.id ?: return, sub.srtFile)
-            }
-        }
-    }
 
     override fun onResume() {
         super.onResume()
