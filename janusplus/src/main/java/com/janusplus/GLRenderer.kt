@@ -20,6 +20,7 @@ class GLRenderer(
     lateinit var texArray: TextureArray
     lateinit var dimens: Dimens
     val thumbAtlas = ThumbnailAtlas()
+    val videoSurface = VideoSurface()
 
     private val projMatrix = FloatArray(16)
     var width = 0f; private set
@@ -48,6 +49,8 @@ class GLRenderer(
 
         shader = ShaderProgram()
         shader.compile()
+        shader.compileExternal()
+        videoSurface.initGL()
 
         batch = QuadBatch()
         batch.initGL()
@@ -55,7 +58,7 @@ class GLRenderer(
         textures = TextureManager()
         textures.initGL()
 
-        texArray = TextureArray(4096, 10) // 5 font pages + covers + thumbs + banner + spare
+        texArray = TextureArray(4096, 4)
         texArray.initGL()
 
         font = FontAtlas(assets)
@@ -106,12 +109,23 @@ class GLRenderer(
         texArray.bind()
 
         if (state.screen == Screen.PLAYING) {
-            // Transparent clear — video shows through from PlayerView underneath
-            GLES30.glClearColor(0f, 0f, 0f, 0f)
             GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT)
+
+            // Pass 1: video quad (external OES texture)
+            videoSurface.updateTexture()
+            shader.useExternal()
+            GLES30.glUniformMatrix4fv(shader.uProjExt, 1, false, projMatrix, 0)
+            GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
+            GLES30.glUniform1i(shader.uTexExt, 0)
+            videoSurface.bind()
+            batch.begin()
+            // Video fills the screen — UV flipped vertically (SurfaceTexture convention)
+            batch.addQuad(0f, 0f, width, height, 0f, 1f, 1f, 0f)
+            batch.flush()
+
+            // Pass 2: UI overlay (texture array)
             shader.use()
             GLES30.glUniformMatrix4fv(shader.uProj, 1, false, projMatrix, 0)
-            GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
             GLES30.glUniform1i(shader.uTex, 0)
             texArray.bind()
             batch.begin()
@@ -121,7 +135,6 @@ class GLRenderer(
             batch.flush()
             inputHandler?.hitRects?.clear()
             inputHandler?.hitRects?.addAll(rc.hitRects)
-            GLES30.glClearColor(0.039f, 0.039f, 0.102f, 1f)
             return
         }
 
@@ -172,6 +185,25 @@ class GLRenderer(
             SettingsScreen.pendingLogout = false
             onLogout?.invoke()
         }
+        if (PlayerScreen.pendingBack) {
+            PlayerScreen.pendingBack = false
+            onPlayerBack?.invoke()
+        }
+        val seek = PlayerScreen.pendingSeek
+        if (seek != null) {
+            PlayerScreen.pendingSeek = null
+            onPlayerSeek?.invoke(seek)
+        }
+        val pause = PlayerScreen.pendingPause
+        if (pause != null) {
+            PlayerScreen.pendingPause = null
+            onPlayerPause?.invoke(pause)
+        }
+        val subIdx = PlayerScreen.pendingSubChange
+        if (subIdx != null) {
+            PlayerScreen.pendingSubChange = null
+            onSubChange?.invoke(subIdx)
+        }
 
         lastFrameMs = (System.nanoTime() - frameStart) / 1_000_000f
 
@@ -189,6 +221,10 @@ class GLRenderer(
     var onSeasonChanged: ((Int) -> Unit)? = null
     var onLogin: (() -> Unit)? = null
     var onLogout: (() -> Unit)? = null
+    var onPlayerBack: (() -> Unit)? = null
+    var onPlayerSeek: ((Long) -> Unit)? = null
+    var onPlayerPause: ((Boolean) -> Unit)? = null
+    var onSubChange: ((Int) -> Unit)? = null
 }
 
 class RenderCtx(
@@ -205,13 +241,13 @@ class RenderCtx(
 ) {
     fun solid(x: Float, y: Float, w: Float, h: Float, r: Float, g: Float, b: Float, a: Float = 1f) {
         val u = font.whiteU; val v = font.whiteV
-        batch.addQuad(x, y, w, h, u, v, u, v, r, g, b, a, layer = TextureArray.LAYER_FONT_BASE.toFloat())
+        batch.addQuad(x, y, w, h, u, v, u, v, r, g, b, a, layer = TextureArray.LAYER_FONT.toFloat())
     }
 
     fun gradient(x: Float, y: Float, w: Float, h: Float,
                  tlColor: FloatArray, trColor: FloatArray,
                  brColor: FloatArray, blColor: FloatArray) {
-        batch.addGradientQuad(x, y, w, h, tlColor, trColor, brColor, blColor, font.whiteU, font.whiteV, TextureArray.LAYER_FONT_BASE.toFloat())
+        batch.addGradientQuad(x, y, w, h, tlColor, trColor, brColor, blColor, font.whiteU, font.whiteV, TextureArray.LAYER_FONT.toFloat())
     }
 
     fun border(x: Float, y: Float, w: Float, h: Float, t: Float, r: Float, g: Float, b: Float, a: Float = 1f) {
@@ -277,11 +313,6 @@ class RenderCtx(
 
     var hitRects = mutableListOf<HitRect>()
 
-    private val bakedSizes = intArrayOf(20, 28, 36)
-    fun sp(value: Int): Int {
-        val raw = (value * density).toInt()
-        // Snap to nearest baked font size
-        return bakedSizes.minByOrNull { kotlin.math.abs(it - raw) } ?: raw
-    }
+    fun sp(value: Int): Int = (value * density).toInt()
     fun dp(value: Float): Float = value * density
 }

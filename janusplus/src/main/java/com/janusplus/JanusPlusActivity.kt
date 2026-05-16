@@ -7,7 +7,6 @@ import android.opengl.GLSurfaceView
 import android.os.Bundle
 import android.view.KeyEvent
 import android.view.MotionEvent
-import android.view.View
 import android.view.WindowManager
 import android.widget.EditText
 import android.widget.FrameLayout
@@ -17,7 +16,6 @@ import androidx.media3.common.MediaItem
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
-import androidx.media3.ui.PlayerView
 import android.util.Log
 import kotlin.concurrent.thread
 
@@ -32,7 +30,6 @@ class JanusPlusActivity : AppCompatActivity() {
     private var api: JanusApi? = null
     private var updater: AppUpdater? = null
     private var player: ExoPlayer? = null
-    private var playerView: PlayerView? = null
     private lateinit var rootLayout: FrameLayout
     private lateinit var keyboardRelay: EditText
 
@@ -159,6 +156,16 @@ class JanusPlusActivity : AppCompatActivity() {
         renderer.onLogin = {
             runOnUiThread { doGpuLogin() }
         }
+        renderer.onPlayerBack = { runOnUiThread { stopPlayer() } }
+        renderer.onPlayerSeek = { ms -> player?.seekTo(ms) }
+        renderer.onPlayerPause = { pause ->
+            if (pause) player?.pause() else player?.play()
+        }
+        renderer.onSubChange = { idx ->
+            val sub = PlayerScreen.subtitleTracks.getOrNull(idx)
+            val itemId = state.selectedItem?.id
+            if (sub != null && itemId != null) loadSubtitle(itemId, sub.srtFile)
+        }
         renderer.onLogout = {
             runOnUiThread {
                 getSharedPreferences("janusplus", Context.MODE_PRIVATE).edit().clear().apply()
@@ -171,10 +178,7 @@ class JanusPlusActivity : AppCompatActivity() {
             }
         }
 
-        playerView = PlayerView(this).apply {
-            visibility = View.GONE
-            useController = true
-        }
+        // No PlayerView — video renders as a GL quad via SurfaceTexture
 
         // Hidden EditText to relay keyboard input for login/settings
         keyboardRelay = EditText(this).apply {
@@ -197,7 +201,6 @@ class JanusPlusActivity : AppCompatActivity() {
         })
 
         rootLayout.addView(glView)
-        rootLayout.addView(playerView)
         rootLayout.addView(keyboardRelay)
         setContentView(rootLayout)
 
@@ -229,11 +232,8 @@ class JanusPlusActivity : AppCompatActivity() {
         exo.play()
 
         PlayerScreen.reset()
-        playerView?.player = exo
-        playerView?.useController = false
-        playerView?.visibility = View.VISIBLE
-        glView.setZOrderOnTop(true)
-        glView.holder.setFormat(android.graphics.PixelFormat.TRANSLUCENT)
+        // Render video to our GL SurfaceTexture — no PlayerView needed
+        exo.setVideoSurface(renderer.videoSurface.surface)
         player = exo
 
         // Load subtitles
@@ -302,12 +302,9 @@ class JanusPlusActivity : AppCompatActivity() {
     }
 
     private fun stopPlayer() {
+        player?.setVideoSurface(null)
         player?.release()
         player = null
-        playerView?.player = null
-        playerView?.visibility = View.GONE
-        glView.setZOrderOnTop(false)
-        glView.holder.setFormat(android.graphics.PixelFormat.OPAQUE)
         PlayerScreen.reset()
         state.screen = state.returnScreen
         state.playingUrl = null
@@ -460,16 +457,7 @@ class JanusPlusActivity : AppCompatActivity() {
                 val season = state.selectedSeason
                 val cards = currentApi.fetchSeasonCards(item.id, season)
                 Log.i(TAG, "Season cards: ${cards?.episodes?.size ?: "null"}")
-                if (cards != null) {
-                    state.seasonCards = cards
-                    // Pre-cache all episode title glyphs so scrolling never triggers glyph uploads
-                    val density = resources.displayMetrics.density
-                    for (card in cards.episodes) {
-                        val title = "${card.episode}. ${card.title()}"
-                        renderer.font.ensureGlyphs(title, (13 * density).toInt())
-                        renderer.font.ensureGlyphs("${(card.durationSec / 60).toInt()} min", (10 * density).toInt())
-                    }
-                }
+                if (cards != null) state.seasonCards = cards
 
                 val thumbs = currentApi.fetchThumbsBlob(item.id, season)
                 Log.i(TAG, "Thumbs: ${thumbs.size}")
@@ -669,25 +657,19 @@ class JanusPlusActivity : AppCompatActivity() {
         }
         if (state.screen == Screen.PLAYING) {
             if (event.action == MotionEvent.ACTION_UP) {
-                // Check hit rects first (buttons, track list items, seekbar)
                 for (hr in input.hitRects) {
                     if (event.x >= hr.x && event.x <= hr.x + hr.w &&
                         event.y >= hr.y && event.y <= hr.y + hr.h) {
                         hr.action()
-                        handleSubOrAudioChange()
                         return true
                     }
                 }
-                // Tap on track list backdrop dismisses it
                 if (PlayerScreen.showTrackList) {
                     PlayerScreen.showTrackList = false
                     return true
                 }
-                // Tap toggles controls / play-pause
                 if (PlayerScreen.showControls) {
-                    player?.let {
-                        if (it.isPlaying) it.pause() else it.play()
-                    }
+                    player?.let { if (it.isPlaying) it.pause() else it.play() }
                 } else {
                     PlayerScreen.toggleControls()
                 }
@@ -698,16 +680,6 @@ class JanusPlusActivity : AppCompatActivity() {
         return super.onTouchEvent(event)
     }
 
-    private fun handleSubOrAudioChange() {
-        val p = player ?: return
-        // Handle subtitle track change
-        if (PlayerScreen.subtitleTracks.isNotEmpty()) {
-            val sub = PlayerScreen.subtitleTracks.getOrNull(PlayerScreen.selectedSubIdx)
-            if (sub != null) {
-                loadSubtitle(state.selectedItem?.id ?: return, sub.srtFile)
-            }
-        }
-    }
 
     override fun onResume() {
         super.onResume()
