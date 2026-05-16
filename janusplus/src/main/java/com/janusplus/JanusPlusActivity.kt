@@ -165,22 +165,37 @@ class JanusPlusActivity : AppCompatActivity() {
             .setUsage(androidx.media3.common.C.USAGE_MEDIA)
             .setContentType(androidx.media3.common.C.AUDIO_CONTENT_TYPE_MOVIE)
             .build()
+        PlayerScreen.reset()
         val exo = ExoPlayer.Builder(this)
             .setMediaSourceFactory(mediaSourceFactory)
-            .setAudioAttributes(audioAttrs, false) // false = don't manage audio focus = no system media controls
+            .setAudioAttributes(audioAttrs, false)
             .build()
-        exo.setMediaItem(MediaItem.fromUri(url))
-        exo.prepare()
-        exo.play()
-
-        PlayerScreen.reset()
         exo.setVideoSurface(renderer.videoSurface.surface)
         exo.addListener(object : androidx.media3.common.Player.Listener {
             override fun onVideoSizeChanged(size: androidx.media3.common.VideoSize) {
                 PlayerScreen.videoWidth = size.width
                 PlayerScreen.videoHeight = size.height
+                Log.i(TAG, "Video size: ${size.width}x${size.height}")
+            }
+            override fun onTracksChanged(tracks: androidx.media3.common.Tracks) {
+                val audioNames = mutableListOf<String>()
+                for (group in tracks.groups) {
+                    if (group.type == androidx.media3.common.C.TRACK_TYPE_AUDIO) {
+                        for (i in 0 until group.length) {
+                            val format = group.getTrackFormat(i)
+                            val lang = format.language ?: "?"
+                            val label = format.label ?: ""
+                            audioNames.add(if (label.isNotEmpty()) "$lang · $label" else lang)
+                        }
+                    }
+                }
+                if (audioNames.isNotEmpty()) PlayerScreen.audioTrackNames = audioNames
+                Log.i(TAG, "Audio tracks: $audioNames")
             }
         })
+        exo.setMediaItem(MediaItem.fromUri(url))
+        exo.prepare()
+        exo.play()
         player = exo
 
         // Load subtitles

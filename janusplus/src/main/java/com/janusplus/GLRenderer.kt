@@ -132,6 +132,8 @@ class GLRenderer(
                     qh = height; qw = height * videoAspect; qy = 0f; qx = (width - qw) / 2f
                 }
             } else { qx = 0f; qy = 0f; qw = width; qh = height }
+            // Debug: store quad for logging
+            PlayerScreen.debugVideoQuad = "${qx.toInt()},${qy.toInt()},${qw.toInt()},${qh.toInt()} vw=${vw.toInt()} vh=${vh.toInt()} scr=${width.toInt()}x${height.toInt()}"
             batch.addQuad(qx, qy, qw, qh, 0f, 1f, 1f, 0f)
             // Debug: log first frame orientation
             batch.flush()

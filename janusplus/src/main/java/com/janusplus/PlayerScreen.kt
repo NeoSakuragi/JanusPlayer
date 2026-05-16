@@ -29,6 +29,7 @@ object PlayerScreen {
     var seekBarY = 0f
     var videoWidth = 0
     var videoHeight = 0
+    var debugVideoQuad = ""
     @Volatile var pendingPause: Boolean? = null
     @Volatile var pendingSubChange: Int? = null
 
@@ -60,6 +61,9 @@ object PlayerScreen {
 
         // Controls overlay
         if (showControls || isPaused) renderControls(rc)
+
+        // Debug quad info
+        rc.text("Q:$debugVideoQuad", rc.dp(8f), rc.dp(80f), rc.sp(12), 1f, 0f, 0f)
 
         // Track list
         if (showTrackList) renderTrackList(rc)
