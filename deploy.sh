@@ -9,7 +9,7 @@ APP_DIR="$(dirname "$0")"
 cd "$APP_DIR"
 
 echo "Building APK..."
-./gradlew assembleDebug -q
+./gradlew :app:assembleDebug -q
 
 APK=$(find app/build/outputs/apk/debug -name '*universal*.apk' | head -1)
 if [ -z "$APK" ]; then

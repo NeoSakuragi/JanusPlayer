@@ -52,7 +52,7 @@ object PlayerScreen {
     }
 
     fun render(rc: RenderCtx) {
-        if (subtitleCues.isNotEmpty()) {
+        if (subtitleCues.isNotEmpty() && !GameLoop.isDragging) {
             currentCueText = SrtParser.cueAt(subtitleCues, positionMs)?.text
         }
 

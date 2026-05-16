@@ -37,6 +37,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.layout.layout
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInParent
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.viewinterop.AndroidView
 import kotlinx.coroutines.delay
@@ -56,6 +57,16 @@ class ExoPlayerActivity : ComponentActivity() {
 
     enum class ReadingMode { PRO, ADVANCED, INTERMEDIATE, NOVICE }
     private val readingMode = mutableStateOf(ReadingMode.PRO)
+
+    private fun loadReadingMode() {
+        val saved = getSharedPreferences("player_prefs", MODE_PRIVATE).getInt("reading_mode", 3)
+        readingMode.value = when (saved) { 0 -> ReadingMode.NOVICE; 1 -> ReadingMode.INTERMEDIATE; 2 -> ReadingMode.ADVANCED; else -> ReadingMode.PRO }
+    }
+
+    private fun saveReadingMode() {
+        val value = when (readingMode.value) { ReadingMode.NOVICE -> 0; ReadingMode.INTERMEDIATE -> 1; ReadingMode.ADVANCED -> 2; ReadingMode.PRO -> 3 }
+        getSharedPreferences("player_prefs", MODE_PRIVATE).edit().putInt("reading_mode", value).apply()
+    }
 
     companion object {
         private const val TAG = "ExoPlayer"
@@ -101,13 +112,10 @@ class ExoPlayerActivity : ComponentActivity() {
     //    LEFT/BACK      → CONTROLS
     //    CENTER         → apply + CONTROLS
 
-    enum class Screen { PLAYING, CONTROLS, WORD_NAV, LIST_SELECT }
+    enum class Screen { PLAYING, CONTROLS, WORD_NAV, LIST_SELECT, SETTINGS }
 
     private val CTRL_SEEK = 0
-    private val CTRL_AUDIO = 1
-    private val CTRL_SUBS = 2
-    private val CTRL_FONTSIZE = 3
-    private val CTRL_FONT = 4
+    private val CTRL_SETTINGS = 1
 
     private val FONT_SIZES = listOf(24, 32, 44)
     private val FONT_KEYS = listOf("noto_sans", "noto_serif", "kosugi_maru", "shippori_mincho")
@@ -117,8 +125,10 @@ class ExoPlayerActivity : ComponentActivity() {
         "fonts/KosugiMaru-Regular.ttf", "fonts/ShipporiMincho-Regular.ttf"
     )
 
-    private val CTRL_READING = 5
-    private val CTRL_CONDENSED = 6
+    // Settings panel
+    private val settingsFocus = mutableIntStateOf(0)
+
+    data class SettingsRow(val icon: String, val label: String, val value: String, val indent: Boolean = false, val selected: Boolean = false, val action: () -> Unit)
     private val condensedMode = mutableStateOf(false)
     private val condensedSpeedLabel = mutableStateOf<String?>(null)
     private var lastCondensedSpeed = 1f
@@ -180,9 +190,7 @@ class ExoPlayerActivity : ComponentActivity() {
         }.start()
     }
 
-    private val CTRL_HWSW = 6
 
-    private val CTRL_DOWNLOAD = 7
     private val dlLabel = mutableStateOf("↓ DL")
 
     private val screen = mutableStateOf(Screen.PLAYING)
@@ -204,9 +212,14 @@ class ExoPlayerActivity : ComponentActivity() {
     private var wordNavSubText = ""
 
     // Subtitle rendering state
+    private val deltaFurigana = mutableFloatStateOf(0.8f)  // DF: furigana distance = cueRowHeight * DF
+    private val deltaRow = mutableFloatStateOf(1.8f)        // DR: row spacing = cueRowHeight * DR
+    private val deltaSpacing = mutableFloatStateOf(0f)      // DS: letter spacing in sp
+    private val deltaYShift = mutableFloatStateOf(0f)       // DY: Y shift from seekbar in dp
     private var subCharBoxes = emptyArray<androidx.compose.ui.geometry.Rect>()
     private var subTextOffsetX = 0f
     private var subTextOffsetY = 0f
+    private var subLineBaselines = listOf<Pair<Float, Float>>()  // (baseline, lineTop) per line
 
     // Supercharged SRT
     data class WordSpan(val start: Int, val end: Int, val word: String, val dictIdx: Int, val inflection: String,
@@ -232,7 +245,7 @@ class ExoPlayerActivity : ComponentActivity() {
     private val listTitle = mutableStateOf("")
     private val listFocus = mutableIntStateOf(0)
     private var listCallback: ((Int) -> Unit)? = null
-    private var listReturnFocus = CTRL_AUDIO
+    private var listReturnFocus = CTRL_SETTINGS
 
     // Font
     private val fontSizeIdx = mutableIntStateOf(0)
@@ -253,6 +266,7 @@ class ExoPlayerActivity : ComponentActivity() {
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         enterFullscreen()
 
+        loadReadingMode()
         val appSettings = AppSettings(this)
         val savedSizeIdx = FONT_SIZES.indexOf(appSettings.fontSize)
         if (savedSizeIdx >= 0) fontSizeIdx.intValue = savedSizeIdx
@@ -380,11 +394,7 @@ class ExoPlayerActivity : ComponentActivity() {
                             }
                             val start = display.length
                             when (mode) {
-                                ReadingMode.PRO -> display.append(w.surface)
-                                ReadingMode.ADVANCED -> {
-                                    display.append(w.surface)
-                                    if (display.length > start) display.append(" ")
-                                }
+                                ReadingMode.PRO, ReadingMode.ADVANCED -> display.append(w.surface)
                                 ReadingMode.INTERMEDIATE -> {
                                     val hira = kata2hira(w.reading.ifEmpty { w.surface })
                                     display.append(hira)
@@ -395,7 +405,9 @@ class ExoPlayerActivity : ComponentActivity() {
                                     display.append(" ")
                                 }
                             }
-                            spans.add(WordSpan(start, display.length.let { if (mode != ReadingMode.PRO && it > start + 1) it - 1 else it }, w.surface, w.dictIdx, w.inflection, w.reading, w.subReadings, w.furigana))
+                            val hasTrailingSpace = mode == ReadingMode.INTERMEDIATE || mode == ReadingMode.NOVICE
+                            val spanEnd = if (hasTrailingSpace && display.length > start + 1) display.length - 1 else display.length
+                            spans.add(WordSpan(start, spanEnd, w.surface, w.dictIdx, w.inflection, w.reading, w.subReadings, w.furigana))
                         }
                         currentSubText.value = display.toString().trimEnd()
                         // Generate furigana for Advanced mode using per-kanji spans
@@ -627,7 +639,7 @@ class ExoPlayerActivity : ComponentActivity() {
 
             // Top: buttons row
             AnimatedVisibility(
-                visible = scr == Screen.CONTROLS || scr == Screen.LIST_SELECT || scr == Screen.WORD_NAV,
+                visible = scr == Screen.CONTROLS || scr == Screen.LIST_SELECT || scr == Screen.WORD_NAV || scr == Screen.SETTINGS,
                 enter = fadeIn(tween(200)),
                 exit = fadeOut(tween(200)),
                 modifier = Modifier.align(Alignment.TopEnd)
@@ -636,29 +648,13 @@ class ExoPlayerActivity : ComponentActivity() {
                     verticalAlignment = Alignment.CenterVertically,
                     modifier = Modifier.padding(top = 16.dp, end = 24.dp)
                 ) {
-                    CtrlBtn("♪", Lang.s("audio"), CTRL_AUDIO, cFocus) { showAudioList() }
-                    Spacer(Modifier.width(8.dp))
-                    CtrlBtn("CC", Lang.s("subs"), CTRL_SUBS, cFocus) { showSubsList() }
-                    Spacer(Modifier.width(8.dp))
-                    CtrlBtn("Aa", "${FONT_SIZES[fSizeIdx]}sp", CTRL_FONTSIZE, cFocus) { cycleFontSize() }
-                    Spacer(Modifier.width(8.dp))
-                    CtrlBtn("F", FONT_NAMES[fIdx].take(8), CTRL_FONT, cFocus) { cycleFont() }
-                    Spacer(Modifier.width(8.dp))
-                    val rMode by readingMode
-                    val rLabel = when (rMode) { ReadingMode.PRO -> "PRO"; ReadingMode.ADVANCED -> "ADV"; ReadingMode.INTERMEDIATE -> "INT"; ReadingMode.NOVICE -> "NOV" }
-                    CtrlBtn("読", rLabel, CTRL_READING, cFocus) { cycleReadingMode() }
-                    Spacer(Modifier.width(8.dp))
-                    val condOn by condensedMode
-                    CtrlBtn("⏩", if (condOn) Lang.s("cond_on") else Lang.s("cond_off"), CTRL_CONDENSED, cFocus) { toggleCondensed() }
-                    Spacer(Modifier.width(8.dp))
-                    val dlText by dlLabel
-                    CtrlBtn("↓", dlText, CTRL_DOWNLOAD, cFocus) { toggleDownload() }
+                    CtrlBtn("⚙", Lang.s("settings"), CTRL_SETTINGS, cFocus) { showSettings() }
                 }
             }
 
             // Title + back button
             AnimatedVisibility(
-                visible = scr == Screen.CONTROLS || scr == Screen.LIST_SELECT || scr == Screen.WORD_NAV,
+                visible = scr == Screen.CONTROLS || scr == Screen.LIST_SELECT || scr == Screen.WORD_NAV || scr == Screen.SETTINGS,
                 enter = fadeIn(tween(200)),
                 exit = fadeOut(tween(200)),
                 modifier = Modifier.align(Alignment.TopStart)
@@ -731,101 +727,146 @@ class ExoPlayerActivity : ComponentActivity() {
                 }
             }
 
-            // Subtitle
+            // Subtitle — Canvas-based, bottom-up rendering
             if (sub != null && sub!!.isNotBlank()) {
                 val hS by hlStart
                 val hE by hlEnd
                 val subText = sub!!
-                val annotated = buildAnnotatedString {
-                    for (i in subText.indices) {
-                        if (scr == Screen.WORD_NAV && hS >= 0 && hE > hS && i in hS until hE) {
-                            pushStyle(SpanStyle(background = Color(0xFF7986CB)))
-                            append(subText[i])
-                            pop()
-                        } else {
-                            append(subText[i])
-                        }
-                    }
-                }
-
-                var charBoxes by remember(subText) { mutableStateOf(subCharBoxes) }
-                val rubySpans by currentRubySpans
+                val subLines = subText.split("\n")
                 val rubyFontSize = subFontSize * 0.45f
-                val hasFurigana = rubySpans.isNotEmpty()
+                val rubyList by currentRubySpans
+                val textMeasurer = androidx.compose.ui.text.rememberTextMeasurer()
+                val df = deltaFurigana.floatValue
+                val dr = deltaRow.floatValue
+                val subStyle = androidx.compose.ui.text.TextStyle(
+                    fontSize = subFontSize, fontFamily = subFontFamily, color = Color.White,
+                    textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                    letterSpacing = deltaSpacing.floatValue.sp,
+                    shadow = androidx.compose.ui.graphics.Shadow(color = Color.Black, blurRadius = 8f)
+                )
+                val rubyStyle = androidx.compose.ui.text.TextStyle(
+                    fontSize = rubyFontSize, fontFamily = subFontFamily, color = Color(0xFFDDDDDD)
+                )
+
+                // Pre-measure all lines
+                val measured = subLines.map { line -> textMeasurer.measure(line, style = subStyle) }
+                val cueRowHeight = measured.maxOfOrNull { it.size.height.toFloat() } ?: 0f
+
+                // Calculate total height needed
+                val numLines = subLines.size
+                val totalHeight = cueRowHeight * numLines + cueRowHeight * (dr - 1f) * (numLines - 1).coerceAtLeast(0) +
+                    (if (rubyList.isNotEmpty()) cueRowHeight * df else 0f)
+
+                // Background + Canvas
                 Box(
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
-                        .padding(bottom = dimens.subBottomPadding, start = dimens.rowPadding, end = dimens.rowPadding)
-                        .background(Color(0x99000000), RoundedCornerShape(6.dp))
-                        .padding(horizontal = 12.dp, vertical = 8.dp)
+                        .padding(bottom = dimens.subBottomPadding + deltaYShift.floatValue.dp, start = dimens.rowPadding, end = dimens.rowPadding)
                         .onGloballyPositioned { coords ->
                             subTopY = coords.positionInParent().y
+                            val rootPos = coords.positionInRoot()
+                            subTextOffsetX = rootPos.x
+                            subTextOffsetY = rootPos.y
                         }
                 ) {
-                    val subLineHeight = if (hasFurigana) (subFontSize.value * 1.6f).sp else subFontSize
+                    // Single Canvas: shade + text + furigana
+                    androidx.compose.foundation.Canvas(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(with(androidx.compose.ui.platform.LocalDensity.current) { totalHeight.toDp() + 16.dp })
+                    ) {
+                        val canvasWidth = size.width
+                        val canvasHeight = size.height
+                        val padH = 12f * density
+                        val padV = 8f * density
 
-                    // Text layer
-                    Box(modifier = Modifier.onGloballyPositioned { textCoords ->
-                        val rootPos = textCoords.positionInRoot()
-                        subTextOffsetX = rootPos.x
-                        subTextOffsetY = rootPos.y
-                    }) {
-                        androidx.compose.material3.Text(
-                            text = annotated, color = Color.Black, fontSize = subFontSize, fontFamily = subFontFamily,
-                            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-                            lineHeight = subLineHeight,
-                            modifier = Modifier.fillMaxWidth(),
-                            style = androidx.compose.ui.text.TextStyle(drawStyle = androidx.compose.ui.graphics.drawscope.Stroke(width = 6f))
+                        // Compute shade bounds
+                        val lastLineY = canvasHeight - padV - cueRowHeight
+                        val firstLineY = canvasHeight - padV - cueRowHeight - (numLines - 1) * cueRowHeight * dr
+                        val shadeTop = if (rubyList.isNotEmpty()) firstLineY - cueRowHeight * df else firstLineY - padV
+                        val shadeBottom = lastLineY + cueRowHeight + padV
+                        val shadePad = padH
+                        drawRoundRect(
+                            Color(0x99000000),
+                            topLeft = androidx.compose.ui.geometry.Offset(0f, shadeTop),
+                            size = androidx.compose.ui.geometry.Size(canvasWidth, shadeBottom - shadeTop),
+                            cornerRadius = androidx.compose.ui.geometry.CornerRadius(6f * density)
                         )
-                        androidx.compose.material3.Text(
-                            text = annotated, color = Color.White, fontSize = subFontSize, fontFamily = subFontFamily,
-                            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-                            lineHeight = subLineHeight,
-                            modifier = Modifier.fillMaxWidth(),
-                            onTextLayout = { layout ->
-                                charBoxes = Array(subText.length) { i -> layout.getBoundingBox(i) }
-                                subCharBoxes = charBoxes
-                            }
-                        )
-                    }
 
-                    // Furigana overlay — separate Canvas layer on top
-                    val boxes = charBoxes
-                    val rubys = rubySpans
-                    if (boxes.isNotEmpty() && rubys.isNotEmpty()) {
-                        val textMeasurer = androidx.compose.ui.text.rememberTextMeasurer()
-                        androidx.compose.foundation.Canvas(
-                            modifier = Modifier.matchParentSize()
-                        ) {
-                            for (ruby in rubys) {
-                                if (ruby.start >= boxes.size || ruby.start + ruby.length - 1 >= boxes.size) continue
-                                val left = boxes[ruby.start].left
-                                val right = boxes[ruby.start + ruby.length - 1].right
-                                val top = boxes[ruby.start].top
-                                val kanjiWidth = right - left
-                                val measured = textMeasurer.measure(
-                                    ruby.reading,
-                                    style = androidx.compose.ui.text.TextStyle(
-                                        fontSize = rubyFontSize,
-                                        fontFamily = subFontFamily,
-                                        color = Color(0xFFDDDDDD),
+                        // Build char boxes for tap detection
+                        val allBoxes = mutableListOf<androidx.compose.ui.geometry.Rect>()
+
+                        // Iterate lines forward, compute Y bottom-up
+                        for (lineIdx in subLines.indices) {
+                            val lineText = subLines[lineIdx]
+                            val lineMeasured = measured[lineIdx]
+                            val linesFromBottom = numLines - 1 - lineIdx
+
+                            // Line Y: last line at bottom, previous lines above
+                            val lineY = canvasHeight - padV - cueRowHeight - linesFromBottom * cueRowHeight * dr
+
+                            val lineX = (canvasWidth - lineMeasured.size.width) / 2f
+                            val lineStart = subLines.take(lineIdx).sumOf { it.length + 1 }
+
+                            // Draw text with highlight
+                            if (hS >= 0 && hE > hS) {
+                                val hlLocalStart = (hS - lineStart).coerceIn(0, lineText.length)
+                                val hlLocalEnd = (hE - lineStart).coerceIn(0, lineText.length)
+                                if (hlLocalStart < hlLocalEnd) {
+                                    val hlLeft = lineMeasured.getBoundingBox(hlLocalStart.coerceAtMost(lineText.length - 1)).left
+                                    val hlRight = lineMeasured.getBoundingBox((hlLocalEnd - 1).coerceAtMost(lineText.length - 1)).right
+                                    drawRect(
+                                        Color(0xFF7986CB),
+                                        topLeft = androidx.compose.ui.geometry.Offset(lineX + hlLeft, lineY),
+                                        size = androidx.compose.ui.geometry.Size(hlRight - hlLeft, cueRowHeight)
                                     )
-                                )
-                                val rubyX = left + (kanjiWidth - measured.size.width) / 2f
-                                val rubyY = top - measured.firstBaseline
+                                }
+                            }
+
+                            // Draw text
+                            drawContext.canvas.save()
+                            drawContext.canvas.translate(lineX, lineY)
+                            lineMeasured.multiParagraph.paint(drawContext.canvas)
+                            drawContext.canvas.restore()
+
+                            // Store char boxes in screen space for tap detection
+                            for (ci in lineText.indices) {
+                                val box = lineMeasured.getBoundingBox(ci)
+                                allBoxes.add(androidx.compose.ui.geometry.Rect(
+                                    box.left + lineX, box.top + lineY,
+                                    box.right + lineX, box.bottom + lineY
+                                ))
+                            }
+                            if (lineIdx < numLines - 1) allBoxes.add(androidx.compose.ui.geometry.Rect.Zero) // placeholder for \n
+
+                            // Draw furigana for this line
+                            val lineRubys = rubyList.filter { it.start >= lineStart && it.start < lineStart + lineText.length }
+                            for (ruby in lineRubys) {
+                                val ls = ruby.start - lineStart
+                                val le = ls + ruby.length - 1
+                                if (ls < 0 || le >= lineText.length) continue
+                                val left = lineMeasured.getBoundingBox(ls).left
+                                val right = lineMeasured.getBoundingBox(le).right
+                                val kanjiWidth = right - left
+                                val rm = textMeasurer.measure(ruby.reading, style = rubyStyle)
+                                val rx = lineX + left + (kanjiWidth - rm.size.width) / 2f
+                                val ry = lineY - cueRowHeight * df + (cueRowHeight - rm.firstBaseline)
                                 drawContext.canvas.save()
-                                drawContext.canvas.translate(rubyX, rubyY)
-                                measured.multiParagraph.paint(drawContext.canvas)
+                                drawContext.canvas.translate(rx, ry)
+                                rm.multiParagraph.paint(drawContext.canvas)
                                 drawContext.canvas.restore()
                             }
+
                         }
+
+                        subCharBoxes = allBoxes.toTypedArray()
                     }
                 }
             }
 
             // Seekbar
             AnimatedVisibility(
-                visible = scr == Screen.CONTROLS || scr == Screen.LIST_SELECT || scr == Screen.WORD_NAV,
+                visible = scr == Screen.CONTROLS || scr == Screen.LIST_SELECT || scr == Screen.WORD_NAV || scr == Screen.SETTINGS,
                 enter = fadeIn(tween(200)),
                 exit = fadeOut(tween(300)),
                 modifier = Modifier.align(Alignment.BottomCenter)
@@ -933,7 +974,193 @@ class ExoPlayerActivity : ComponentActivity() {
                     }
                 }
             }
+            // Settings panel
+            AnimatedVisibility(
+                visible = scr == Screen.SETTINGS,
+                enter = slideInHorizontally(initialOffsetX = { it }, animationSpec = tween(200)) + fadeIn(tween(200)),
+                exit = slideOutHorizontally(targetOffsetX = { it }, animationSpec = tween(150)) + fadeOut(tween(150)),
+            ) {
+                val sFocus by settingsFocus
+                Box(Modifier.fillMaxSize().background(Color(0x44000000)).clickable { goto(Screen.CONTROLS, CTRL_SETTINGS) }) {
+                    Column(
+                        Modifier.align(Alignment.CenterEnd).widthIn(min = 200.dp, max = dimens.listPanelWidth).fillMaxHeight()
+                            .background(Color(0xFF1A1A2E)).padding(vertical = 12.dp)
+                    ) {
+                        androidx.compose.material3.Text(
+                            Lang.s("settings"), color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold,
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+                        )
+                        val rows = buildSettingsRows()
+                        val scrollState = rememberScrollState()
+                        LaunchedEffect(sFocus) { scrollState.animateScrollTo((sFocus * 48).coerceAtLeast(0)) }
+                        Column(Modifier.verticalScroll(scrollState)) {
+                            rows.forEachIndexed { idx, row ->
+                                val focused = idx == sFocus
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 1.dp)
+                                        .clickable { settingsFocus.intValue = idx; row.action() }
+                                        .background(
+                                            when { focused -> Color(0xFFBB86FC); row.selected -> Color(0xFF2A2A4A); else -> Color.Transparent },
+                                            RoundedCornerShape(6.dp)
+                                        )
+                                        .padding(start = if (row.indent) 42.dp else 14.dp, end = 14.dp, top = 10.dp, bottom = 10.dp)
+                                ) {
+                                    if (!row.indent) {
+                                        androidx.compose.material3.Text(row.icon, color = Color.White, fontSize = 16.sp, modifier = Modifier.width(28.dp))
+                                    }
+                                    if (row.selected && row.indent) {
+                                        androidx.compose.material3.Text("●", color = Color(0xFF81C784), fontSize = 8.sp)
+                                        Spacer(Modifier.width(8.dp))
+                                    }
+                                    Column(Modifier.weight(1f)) {
+                                        androidx.compose.material3.Text(row.label, color = if (focused) Color.White else Color(0xFFEEEEEE), fontSize = if (row.indent) 13.sp else 14.sp)
+                                    }
+                                    if (row.value.isNotEmpty()) {
+                                        androidx.compose.material3.Text(row.value, color = Color(0xFF81C784), fontSize = 13.sp)
+                                    }
+                                }
+                                // Slider for furigana Y
+                                if (row.icon == "DF") {
+                                    var sliderVal by remember { mutableFloatStateOf(deltaFurigana.floatValue) }
+                                    androidx.compose.material3.Slider(
+                                        value = sliderVal,
+                                        onValueChange = { sliderVal = it; deltaFurigana.floatValue = it },
+                                        valueRange = 0.5f..1.5f,
+                                        modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp)
+                                    )
+                                }
+                                if (row.icon == "DR") {
+                                    var sliderVal by remember { mutableFloatStateOf(deltaRow.floatValue) }
+                                    androidx.compose.material3.Slider(
+                                        value = sliderVal,
+                                        onValueChange = { sliderVal = it; deltaRow.floatValue = it },
+                                        valueRange = 1.0f..3.0f,
+                                        modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp)
+                                    )
+                                }
+                                if (row.icon == "DS") {
+                                    var sliderVal by remember { mutableFloatStateOf(deltaSpacing.floatValue) }
+                                    androidx.compose.material3.Slider(
+                                        value = sliderVal,
+                                        onValueChange = { sliderVal = it; deltaSpacing.floatValue = it },
+                                        valueRange = -4f..8f,
+                                        modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp)
+                                    )
+                                }
+                                if (row.icon == "DY") {
+                                    var sliderVal by remember { mutableFloatStateOf(deltaYShift.floatValue) }
+                                    androidx.compose.material3.Slider(
+                                        value = sliderVal,
+                                        onValueChange = { sliderVal = it; deltaYShift.floatValue = it },
+                                        valueRange = -50f..50f,
+                                        modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
+    }
+
+    @OptIn(androidx.media3.common.util.UnstableApi::class)
+    private fun buildSettingsRows(): List<SettingsRow> {
+        val rows = mutableListOf<SettingsRow>()
+
+        // Audio tracks
+        rows.add(SettingsRow("♪", Lang.s("audio"), "", action = {}))
+        if (::player.isInitialized) {
+            var trackIdx = 0
+            for (group in player.currentTracks.groups) {
+                if (group.type != C.TRACK_TYPE_AUDIO) continue
+                for (i in 0 until group.length) {
+                    val format = group.getTrackFormat(i)
+                    val label = format.label ?: format.language?.uppercase() ?: "Track ${trackIdx + 1}"
+                    val selected = group.isTrackSelected(i)
+                    val idx = trackIdx
+                    rows.add(SettingsRow("", label, "", indent = true, selected = selected) { selectAudioTrack(idx); saveSeriesPref("audio_track", idx) })
+                    trackIdx++
+                }
+            }
+        }
+
+        // Subtitle tracks
+        rows.add(SettingsRow("CC", Lang.s("subs"), "", action = {}))
+        rows.add(SettingsRow("", "Off", "", indent = true, selected = subtitleCues.isEmpty() && superCues.isEmpty()) {
+            subtitleCues = emptyList(); superCues = emptyList(); superSRT = null
+            currentSubText.value = null; currentSuperCue = null
+        })
+        val allSubs = intent.getStringArrayListExtra("all_subs") ?: arrayListOf()
+        allSubs.forEachIndexed { i, entry ->
+            val parts = entry.split("|", limit = 2)
+            val name = parts[0]
+            val url = if (parts.size == 2) parts[1] else ""
+            val label = when {
+                name.contains("_ja") -> "Japanese"
+                name.contains("_en") -> "English"
+                name.contains("_fr") -> "French"
+                else -> name
+            }
+            rows.add(SettingsRow("", label, "", indent = true, selected = false) {
+                if (url.isNotEmpty()) {
+                    Thread {
+                        val srt = try {
+                            val reqBuilder = okhttp3.Request.Builder().url(url)
+                            PlayerManager.authToken?.let { reqBuilder.header("Authorization", "Bearer $it") }
+                            okhttp3.OkHttpClient().newCall(reqBuilder.build()).execute().body?.string()
+                        } catch (_: Exception) { null }
+                        if (srt != null) { subtitleCues = SrtParser.parse(srt) }
+                    }.start()
+                }
+                saveSeriesPref("sub_track", i + 1)
+            })
+        }
+
+        // Reading level
+        val rmLabel = when (readingMode.value) {
+            ReadingMode.NOVICE -> "1 · Novice"
+            ReadingMode.INTERMEDIATE -> "2 · Intermediate"
+            ReadingMode.ADVANCED -> "3 · Advanced"
+            ReadingMode.PRO -> "4 · Pro"
+        }
+        rows.add(SettingsRow("読", "Reading", rmLabel) {
+            setReadingMode(when (readingMode.value) {
+                ReadingMode.PRO -> ReadingMode.NOVICE
+                ReadingMode.NOVICE -> ReadingMode.INTERMEDIATE
+                ReadingMode.INTERMEDIATE -> ReadingMode.ADVANCED
+                ReadingMode.ADVANCED -> ReadingMode.PRO
+            })
+        })
+
+        // Font
+        rows.add(SettingsRow("F", "Font", FONT_NAMES[fontIdx.intValue].take(8)) { cycleFont() })
+
+        // Font size
+        rows.add(SettingsRow("Aa", "Size", "${FONT_SIZES[fontSizeIdx.intValue]}sp") { cycleFontSize() })
+
+        // Condensed
+        rows.add(SettingsRow("⏩", "Condensed", if (condensedMode.value) "ON" else "OFF") { toggleCondensed() })
+
+        // DF: furigana gap
+        rows.add(SettingsRow("DF", "Furigana gap", "%.1f".format(deltaFurigana.floatValue)) {})
+        // DR: row spacing
+        rows.add(SettingsRow("DR", "Row spacing", "%.1f".format(deltaRow.floatValue)) {})
+        // DS: letter spacing
+        rows.add(SettingsRow("DS", "Letter spacing", "%.1f".format(deltaSpacing.floatValue)) {})
+        // DY: Y shift
+        rows.add(SettingsRow("DY", "Y offset", "%.0f".format(deltaYShift.floatValue)) {})
+
+        // Download
+        rows.add(SettingsRow("↓", "Download", dlLabel.value) { toggleDownload() })
+
+        return rows
+    }
+
+    private fun showSettings() {
+        settingsFocus.intValue = 0
+        screen.value = Screen.SETTINGS
     }
 
     @Composable
@@ -975,7 +1202,7 @@ class ExoPlayerActivity : ComponentActivity() {
                         ?: subtitleCues.firstOrNull { it.startMs > pos }?.let { JanusApi.SuperCue(it.startMs, it.endMs, emptyList()) }
                     if (next != null) player.seekTo(next.startMs) else player.seekTo(pos + 10000)
                 }
-                KeyEvent.KEYCODE_DPAD_UP -> { player.pause(); goto(Screen.CONTROLS, CTRL_AUDIO) }
+                KeyEvent.KEYCODE_DPAD_UP -> { player.pause(); goto(Screen.CONTROLS, CTRL_SETTINGS) }
                 KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE -> { if (player.isPlaying) player.pause() else player.play() }
                 KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> {
                     player.pause()
@@ -990,7 +1217,7 @@ class ExoPlayerActivity : ComponentActivity() {
                     KeyEvent.KEYCODE_BACK -> { player.play(); goto(Screen.PLAYING) }
                     KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE -> { if (player.isPlaying) player.pause() else player.play() }
                     KeyEvent.KEYCODE_DPAD_UP -> when {
-                        f == CTRL_SEEK -> if (!enterWordNav()) controlFocus.intValue = CTRL_AUDIO
+                        f == CTRL_SEEK -> if (!enterWordNav()) controlFocus.intValue = CTRL_SETTINGS
                         else -> { player.play(); goto(Screen.PLAYING) }
                     }
                     KeyEvent.KEYCODE_DPAD_DOWN -> when {
@@ -999,20 +1226,13 @@ class ExoPlayerActivity : ComponentActivity() {
                     }
                     KeyEvent.KEYCODE_DPAD_LEFT -> when {
                         f == CTRL_SEEK -> player.seekTo((player.currentPosition - 10000).coerceAtLeast(0))
-                        f > CTRL_AUDIO -> controlFocus.intValue = f - 1
                     }
                     KeyEvent.KEYCODE_DPAD_RIGHT -> when {
                         f == CTRL_SEEK -> player.seekTo(player.currentPosition + 10000)
-                        f < CTRL_DOWNLOAD -> controlFocus.intValue = f + 1
                     }
                     KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> when (f) {
                         CTRL_SEEK -> { player.play(); goto(Screen.PLAYING) }
-                        CTRL_AUDIO -> showAudioList()
-                        CTRL_SUBS -> showSubsList()
-                        CTRL_FONTSIZE -> cycleFontSize()
-                        CTRL_FONT -> cycleFont()
-                        CTRL_CONDENSED -> toggleCondensed()
-                        CTRL_DOWNLOAD -> toggleDownload()
+                        CTRL_SETTINGS -> showSettings()
                     }
                     else -> return false
                 }
@@ -1022,7 +1242,7 @@ class ExoPlayerActivity : ComponentActivity() {
                 val ci = cursorIdx.intValue
                 when (key) {
                     KeyEvent.KEYCODE_BACK -> { clearDict(); player.play(); goto(Screen.PLAYING) }
-                    KeyEvent.KEYCODE_DPAD_UP -> { clearDict(); goto(Screen.CONTROLS, CTRL_AUDIO) }
+                    KeyEvent.KEYCODE_DPAD_UP -> { clearDict(); goto(Screen.CONTROLS, CTRL_SETTINGS) }
                     KeyEvent.KEYCODE_DPAD_DOWN -> { clearDict(); goto(Screen.CONTROLS, CTRL_SEEK) }
                     KeyEvent.KEYCODE_DPAD_LEFT -> {
                         if (ci > 0) { cursorIdx.intValue = ci - 1; updateWordAtCursor() }
@@ -1036,14 +1256,47 @@ class ExoPlayerActivity : ComponentActivity() {
             }
 
             Screen.LIST_SELECT -> when (key) {
-                KeyEvent.KEYCODE_BACK, KeyEvent.KEYCODE_DPAD_LEFT -> { goto(Screen.CONTROLS, listReturnFocus) }
+                KeyEvent.KEYCODE_BACK, KeyEvent.KEYCODE_DPAD_LEFT -> { goto(Screen.SETTINGS) }
                 KeyEvent.KEYCODE_DPAD_UP -> { listFocus.intValue = (listFocus.intValue - 1).coerceAtLeast(0) }
                 KeyEvent.KEYCODE_DPAD_DOWN -> { listFocus.intValue = (listFocus.intValue + 1).coerceAtMost(listItems.size - 1) }
                 KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> {
                     listCallback?.invoke(listFocus.intValue)
-                    player.play(); goto(Screen.PLAYING)
+                    goto(Screen.SETTINGS)
                 }
                 else -> return false
+            }
+
+            Screen.SETTINGS -> {
+                val rows = buildSettingsRows()
+                val focusedIcon = rows.getOrNull(settingsFocus.intValue)?.icon ?: ""
+                val isSlider = focusedIcon in listOf("DF", "DR", "DS", "DY")
+                when (key) {
+                    KeyEvent.KEYCODE_BACK -> { goto(Screen.CONTROLS, CTRL_SETTINGS) }
+                    KeyEvent.KEYCODE_DPAD_LEFT -> {
+                        if (isSlider) {
+                            when (focusedIcon) {
+                                "DF" -> deltaFurigana.floatValue = (deltaFurigana.floatValue - 0.1f).coerceAtLeast(0.5f)
+                                "DR" -> deltaRow.floatValue = (deltaRow.floatValue - 0.1f).coerceAtLeast(1.0f)
+                                "DS" -> deltaSpacing.floatValue = (deltaSpacing.floatValue - 0.5f).coerceAtLeast(-4f)
+                                "DY" -> deltaYShift.floatValue = (deltaYShift.floatValue - 5f).coerceAtLeast(-50f)
+                            }
+                        } else { goto(Screen.CONTROLS, CTRL_SETTINGS) }
+                    }
+                    KeyEvent.KEYCODE_DPAD_RIGHT -> {
+                        if (isSlider) {
+                            when (focusedIcon) {
+                                "DF" -> deltaFurigana.floatValue = (deltaFurigana.floatValue + 0.1f).coerceAtMost(1.5f)
+                                "DR" -> deltaRow.floatValue = (deltaRow.floatValue + 0.1f).coerceAtMost(3.0f)
+                                "DS" -> deltaSpacing.floatValue = (deltaSpacing.floatValue + 0.5f).coerceAtMost(8f)
+                                "DY" -> deltaYShift.floatValue = (deltaYShift.floatValue + 5f).coerceAtMost(50f)
+                            }
+                        }
+                    }
+                    KeyEvent.KEYCODE_DPAD_UP -> { settingsFocus.intValue = (settingsFocus.intValue - 1).coerceAtLeast(0) }
+                    KeyEvent.KEYCODE_DPAD_DOWN -> { settingsFocus.intValue = (settingsFocus.intValue + 1).coerceAtMost(rows.size - 1) }
+                    KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> { rows.getOrNull(settingsFocus.intValue)?.action?.invoke() }
+                    else -> return false
+                }
             }
         }
         return true
@@ -1055,6 +1308,10 @@ class ExoPlayerActivity : ComponentActivity() {
             player.volume = 1f
             lastCondensedSpeed = 1f
             condensedSpeedLabel.value = null
+        }
+        if (s == Screen.PLAYING) {
+            hlStart.intValue = -1
+            hlEnd.intValue = -1
         }
         screen.value = s
         if (focus >= 0) controlFocus.intValue = focus
@@ -1121,16 +1378,12 @@ class ExoPlayerActivity : ComponentActivity() {
         }
     }
 
-    private fun cycleReadingMode() {
+    private fun setReadingMode(mode: ReadingMode) {
         val wasInWordNav = screen.value == Screen.WORD_NAV
         val savedCursorIdx = cursorIdx.intValue
-        readingMode.value = when (readingMode.value) {
-            ReadingMode.NOVICE -> ReadingMode.INTERMEDIATE
-            ReadingMode.INTERMEDIATE -> ReadingMode.ADVANCED
-            ReadingMode.ADVANCED -> ReadingMode.PRO
-            ReadingMode.PRO -> ReadingMode.NOVICE
-        }
-        currentSuperCue = null  // force re-render on next tick
+        readingMode.value = mode
+        saveReadingMode()
+        currentSuperCue = null
         // Restore highlight after re-render
         if (wasInWordNav) {
             android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
@@ -1244,7 +1497,7 @@ class ExoPlayerActivity : ComponentActivity() {
         }
         listTitle.value = Lang.s("audio")
         listFocus.intValue = listItems.indexOfFirst { it.selected }.coerceAtLeast(0)
-        listReturnFocus = CTRL_AUDIO
+        listReturnFocus = CTRL_SETTINGS
         listCallback = { idx -> selectAudioTrack(idx); saveSeriesPref("audio_track", idx) }
         screen.value = Screen.LIST_SELECT
     }
@@ -1296,7 +1549,7 @@ class ExoPlayerActivity : ComponentActivity() {
 
         listTitle.value = Lang.s("subs")
         listFocus.intValue = listItems.indexOfFirst { it.selected }.coerceAtLeast(0)
-        listReturnFocus = CTRL_SUBS
+        listReturnFocus = CTRL_SETTINGS
         listCallback = { idx ->
             saveSeriesPref("sub_track", idx)
             if (idx == 0) {

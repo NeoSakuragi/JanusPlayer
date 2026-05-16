@@ -29,6 +29,7 @@ class JanusPlusActivity : AppCompatActivity() {
     private var api: JanusApi? = null
     private var updater: AppUpdater? = null
     private var player: ExoPlayer? = null
+    private var lastTapTime = 0L
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -43,6 +44,11 @@ class JanusPlusActivity : AppCompatActivity() {
             loadDetail(item)
         }
         input.onBack = { finish() }
+
+        // Register debug command receiver
+        DebugReceiver.activity = this
+        registerReceiver(DebugReceiver(), android.content.IntentFilter("com.janusplus.DEBUG"),
+            android.content.Context.RECEIVER_EXPORTED)
 
         initGL()
 
@@ -222,24 +228,27 @@ class JanusPlusActivity : AppCompatActivity() {
             }
         }
 
-        // Position update poller
-        val updatePosition = object : Runnable {
+        // Main thread loop: feed player state to GameLoop, execute commands
+        val mainLoop = object : Runnable {
             override fun run() {
                 val p = player ?: return
-                PlayerScreen.positionMs = p.currentPosition
-                PlayerScreen.durationMs = p.duration.coerceAtLeast(0)
-                PlayerScreen.isPaused = !p.isPlaying
-
-                // Auto-hide controls after 4 seconds
-                if (PlayerScreen.showControls && !PlayerScreen.isPaused &&
-                    System.currentTimeMillis() - PlayerScreen.controlsTimer > 4000) {
-                    PlayerScreen.showControls = false
+                // Feed state — skip position while dragging
+                if (!GameLoop.isDragging) {
+                    GameLoop.playerPositionMs = p.currentPosition
+                    GameLoop.playerIsPlaying = p.isPlaying
                 }
-
-                glView.postDelayed(this, 200)
+                GameLoop.playerDurationMs = p.duration.coerceAtLeast(0)
+                // Execute commands from game loop
+                val seekMs = GameLoop.cmdSeek
+                if (seekMs != null) { GameLoop.cmdSeek = null; p.seekTo(seekMs) }
+                if (GameLoop.cmdPause) { GameLoop.cmdPause = false; p.pause() }
+                if (GameLoop.cmdPlay) { GameLoop.cmdPlay = false; p.play() }
+                // Back
+                if (PlayerScreen.pendingBack) { PlayerScreen.pendingBack = false; stopPlayer(); return }
+                glView.postDelayed(this, 16)
             }
         }
-        glView.post(updatePosition)
+        glView.post(mainLoop)
     }
 
     private fun loadSubtitle(itemId: String, srtFile: String) {
@@ -607,39 +616,8 @@ class JanusPlusActivity : AppCompatActivity() {
             }
         }
         if (state.screen == Screen.PLAYING) {
-            if (event.action == MotionEvent.ACTION_UP) {
-                val tx = event.x
-                val ty = event.y
-                PlayerScreen.lastTapX = tx
-
-                // Direct seekbar: check if tap Y is near the seekbar Y (±40px)
-                if (PlayerScreen.showControls && PlayerScreen.seekBarW > 0) {
-                    val sy = PlayerScreen.seekBarY
-                    if (ty > sy - 60f && ty < sy + 60f) {
-                        val frac = ((tx - PlayerScreen.seekBarX) / PlayerScreen.seekBarW).coerceIn(0f, 1f)
-                        player?.seekTo((frac * PlayerScreen.durationMs).toLong())
-                        return true
-                    }
-                }
-
-                // Hit rects for buttons
-                for (hr in input.hitRects) {
-                    if (tx >= hr.x && tx <= hr.x + hr.w && ty >= hr.y && ty <= hr.y + hr.h) {
-                        hr.action()
-                        if (PlayerScreen.pendingBack) { PlayerScreen.pendingBack = false; stopPlayer() }
-                        return true
-                    }
-                }
-                if (PlayerScreen.showTrackList) {
-                    PlayerScreen.showTrackList = false
-                    return true
-                }
-                if (PlayerScreen.showControls) {
-                    player?.let { if (it.isPlaying) it.pause() else it.play() }
-                } else {
-                    PlayerScreen.toggleControls()
-                }
-            }
+            // Just queue the event — game loop processes it
+            GameLoop.touchQueue.add(GameLoop.TouchEvent(event.action, event.x, event.y, System.currentTimeMillis()))
             return true
         }
         if (input.handleTouch(event)) return true
@@ -660,6 +638,48 @@ class JanusPlusActivity : AppCompatActivity() {
     override fun onDestroy() {
         player?.release()
         player = null
+        DebugReceiver.activity = null
         super.onDestroy()
+    }
+
+    // Debug commands via: adb shell am broadcast -a com.janusplus.DEBUG --es cmd "play"
+    fun debugPlay() {
+        val series = state.seriesList.firstOrNull() ?: return
+        state.openItem(series)
+        loadDetail(series)
+        // Auto-play first episode after detail loads
+        glView.postDelayed({
+            val cards = state.seasonCards?.episodes
+            if (cards != null && cards.isNotEmpty()) {
+                val ep = cards.first().episode
+                state.playingUrl = "https://canneji.duckdns.org/janus/api/stream/${series.id}/${state.selectedSeason}/$ep"
+                state.returnScreen = state.screen
+                state.screen = Screen.PLAYING
+            }
+        }, 5000)
+    }
+
+    fun debugBack() {
+        if (state.screen == Screen.PLAYING) stopPlayer()
+        else if (state.screen == Screen.SERIES_DETAIL || state.screen == Screen.MOVIE_DETAIL) state.closeDetail()
+    }
+
+    fun debugPause() {
+        player?.let { if (it.isPlaying) it.pause() else it.play() }
+    }
+
+    fun debugSeek(ms: Long) {
+        player?.seekTo(ms)
+    }
+
+    fun debugNav(target: String) {
+        when (target) {
+            "home" -> state.screen = Screen.HOME
+            "settings" -> state.screen = Screen.SETTINGS
+            else -> {
+                val item = state.library.find { it.id == target }
+                if (item != null) { state.openItem(item); loadDetail(item) }
+            }
+        }
     }
 }

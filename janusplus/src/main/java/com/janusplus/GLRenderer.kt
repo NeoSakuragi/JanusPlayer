@@ -109,9 +109,99 @@ class GLRenderer(
         texArray.bind()
 
         if (state.screen == Screen.PLAYING) {
+            // ── GAME LOOP: poll → process → render ──
+
+            // 1. Poll player state
+            val playerPos = GameLoop.playerPositionMs
+            val playerDur = GameLoop.playerDurationMs
+            val playerPlaying = GameLoop.playerIsPlaying
+
+            // 2. Poll input
+            val touches = mutableListOf<GameLoop.TouchEvent>()
+            while (true) { touches.add(GameLoop.touchQueue.poll() ?: break) }
+
+            // 3. Process logic
+            val seekBarY = PlayerScreen.seekBarY
+            val seekBarX = PlayerScreen.seekBarX
+            val seekBarW = PlayerScreen.seekBarW
+
+            for (t in touches) {
+                val inSeekZone = PlayerScreen.showControls && seekBarW > 0 && t.y > seekBarY - 80f && t.y < seekBarY + 80f
+
+                when (t.action) {
+                    0 -> { // ACTION_DOWN
+                        if (inSeekZone) {
+                            GameLoop.isDragging = true
+                            GameLoop.cmdPause = true
+                            val frac = ((t.x - seekBarX) / seekBarW).coerceIn(0f, 1f)
+                            GameLoop.dragPositionMs = (frac * playerDur).toLong()
+                        } else if (PlayerScreen.showTrackList) {
+                            // handled on UP
+                        }
+                    }
+                    2 -> { // ACTION_MOVE
+                        if (GameLoop.isDragging && seekBarW > 0) {
+                            val frac = ((t.x - seekBarX) / seekBarW).coerceIn(0f, 1f)
+                            GameLoop.dragPositionMs = (frac * playerDur).toLong()
+                        }
+                    }
+                    1 -> { // ACTION_UP
+                        if (GameLoop.isDragging) {
+                            val frac = ((t.x - seekBarX) / seekBarW).coerceIn(0f, 1f)
+                            GameLoop.cmdSeek = (frac * playerDur).toLong()
+                            GameLoop.cmdPlay = true
+                            GameLoop.isDragging = false
+                        } else {
+                            // Check hit rects
+                            PlayerScreen.lastTapX = t.x
+                            var handled = false
+                            for (hr in inputHandler?.hitRects ?: emptyList()) {
+                                if (t.x >= hr.x && t.x <= hr.x + hr.w && t.y >= hr.y && t.y <= hr.y + hr.h) {
+                                    hr.action()
+                                    handled = true
+                                    break
+                                }
+                            }
+                            if (!handled) {
+                                if (PlayerScreen.showTrackList) {
+                                    PlayerScreen.showTrackList = false
+                                } else if (PlayerScreen.showControls) {
+                                    if (playerPlaying) GameLoop.cmdPause = true else GameLoop.cmdPlay = true
+                                } else {
+                                    PlayerScreen.toggleControls()
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Update player screen state
+            if (GameLoop.isDragging) {
+                PlayerScreen.positionMs = GameLoop.dragPositionMs
+                PlayerScreen.isPaused = true
+                PlayerScreen.controlsTimer = System.currentTimeMillis()
+            } else {
+                PlayerScreen.positionMs = playerPos
+                PlayerScreen.durationMs = playerDur
+                PlayerScreen.isPaused = !playerPlaying
+            }
+
+            // Auto-hide controls
+            if (PlayerScreen.showControls && playerPlaying && !GameLoop.isDragging &&
+                System.currentTimeMillis() - PlayerScreen.controlsTimer > 5000) {
+                PlayerScreen.showControls = false
+            }
+
+            // Subtitle change (still via callback since it needs network)
+            val pendingSub = PlayerScreen.pendingSubChange
+            if (pendingSub != null) { PlayerScreen.pendingSubChange = null; onSubChange?.invoke(pendingSub) }
+            // Commands (seek, pause, play, back) are handled by the main thread loop directly
+
+            // 4. Render
             GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT)
 
-            // Pass 1: video quad (external OES texture)
+            // Video quad
             videoSurface.updateTexture()
             shader.useExternal()
             GLES30.glUniformMatrix4fv(shader.uProjExt, 1, false, projMatrix, 0)
@@ -132,13 +222,10 @@ class GLRenderer(
                     qh = height; qw = height * videoAspect; qy = 0f; qx = (width - qw) / 2f
                 }
             } else { qx = 0f; qy = 0f; qw = width; qh = height }
-            // Debug: store quad for logging
-            PlayerScreen.debugVideoQuad = "${qx.toInt()},${qy.toInt()},${qw.toInt()},${qh.toInt()} vw=${vw.toInt()} vh=${vh.toInt()} scr=${width.toInt()}x${height.toInt()}"
             batch.addQuad(qx, qy, qw, qh, 0f, 1f, 1f, 0f)
-            // Debug: log first frame orientation
             batch.flush()
 
-            // Pass 2: UI overlay (texture array)
+            // UI overlay
             shader.use()
             GLES30.glUniformMatrix4fv(shader.uProj, 1, false, projMatrix, 0)
             GLES30.glUniform1i(shader.uTex, 0)
@@ -150,13 +237,6 @@ class GLRenderer(
             batch.flush()
             inputHandler?.hitRects?.clear()
             inputHandler?.hitRects?.addAll(rc.hitRects)
-
-            // Process pending player actions
-            if (PlayerScreen.pendingBack) { PlayerScreen.pendingBack = false; onPlayerBack?.invoke() }
-            val seek = PlayerScreen.pendingSeek
-            if (seek != null) { PlayerScreen.pendingSeek = null; onPlayerSeek?.invoke(seek) }
-            val subIdx = PlayerScreen.pendingSubChange
-            if (subIdx != null) { PlayerScreen.pendingSubChange = null; onSubChange?.invoke(subIdx) }
             return
         }
 
