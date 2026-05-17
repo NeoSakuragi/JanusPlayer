@@ -44,10 +44,16 @@ class HomeState : GameState {
 
         // Header
         rc.text("Janus+", pad, pad + rc.dp(28f), rc.sp(28), 0.733f, 0.525f, 0.988f)
-        val settingsLabel = Lang.s("settings")
-        val slW = rc.font.measureText(settingsLabel, rc.sp(14))
-        rc.text(settingsLabel, rc.w - pad - slW, pad + rc.dp(24f), rc.sp(14), 0.533f, 0.533f, 0.533f)
-        rc.tappable(rc.w - pad - slW - rc.dp(16f), pad, slW + rc.dp(32f), rc.dp(48f)) {
+        // Settings button — top right
+        val setBtnW = rc.dp(80f)
+        val setBtnH = rc.dp(40f)
+        val setBtnX = rc.w - pad - setBtnW
+        val setBtnY = pad
+        rc.solid(setBtnX, setBtnY, setBtnW, setBtnH, 0.102f, 0.102f, 0.180f)
+        val setLabel = Lang.s("settings")
+        val setLabelW = rc.font.measureText(setLabel, rc.sp(12))
+        rc.text(setLabel, setBtnX + (setBtnW - setLabelW) / 2f, setBtnY + rc.dp(26f), rc.sp(12), 0.733f, 0.525f, 0.988f)
+        rc.tappable(setBtnX, setBtnY, setBtnW, setBtnH) {
             app.transition(Screen.SETTINGS, SettingsState())
         }
 
