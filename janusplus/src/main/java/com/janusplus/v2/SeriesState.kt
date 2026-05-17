@@ -81,46 +81,44 @@ class SeriesState(private val item: JanusApi.LibraryItem) : GameState {
         val api = app.api ?: return
 
         thread {
-            val blob = api.fetchPageBlob(item.id, 1) ?: return@thread
+            val atlas = api.fetchPageBlob(item.id, 1, onHeader = { header ->
+                if (!alive) return@fetchPageBlob
+                // Parse metadata + queue banner — arrives fast
+                val json = JSONObject(header.metadataJson)
+                val eps = json.getJSONArray("episodes")
+                val cards = (0 until eps.length()).map { i ->
+                    val e = eps.getJSONObject(i)
+                    EpisodeCard(e.getInt("episode"), e.optString("titleEn", ""), e.optInt("durationSec", 0))
+                }
+                pageData = PageData(
+                    titleEn = json.optString("titleEn", ""),
+                    titleJa = json.optString("titleJa", ""),
+                    synopsisEn = json.optString("synopsisEn", ""),
+                    synopsisJa = json.optString("synopsisJa", ""),
+                    episodeCount = json.optInt("episodeCount", cards.size),
+                    episodes = cards,
+                )
+                if (header.bannerEtc2 != null && header.bannerW > 0) {
+                    val buf = ByteBuffer.allocateDirect(header.bannerEtc2.size).order(ByteOrder.nativeOrder())
+                    buf.put(header.bannerEtc2)
+                    buf.position(0)
+                    bannerW = header.bannerW
+                    bannerH = header.bannerH
+                    pendingBanner = Etc2Upload(bannerLayer, header.bannerW, header.bannerH, buf)
+                }
+            }) ?: return@thread
+
             if (!alive) return@thread
 
-            // Parse metadata
-            val json = JSONObject(blob.metadataJson)
-            val eps = json.getJSONArray("episodes")
-            val cards = (0 until eps.length()).map { i ->
-                val e = eps.getJSONObject(i)
-                EpisodeCard(e.getInt("episode"), e.optString("titleEn", ""), e.optInt("durationSec", 0))
-            }
-            val data = PageData(
-                titleEn = json.optString("titleEn", ""),
-                titleJa = json.optString("titleJa", ""),
-                synopsisEn = json.optString("synopsisEn", ""),
-                synopsisJa = json.optString("synopsisJa", ""),
-                episodeCount = json.optInt("episodeCount", cards.size),
-                episodes = cards,
-            )
-            if (!alive) return@thread
-            pageData = data
-
-            // Queue ETC2 banner upload
-            if (blob.bannerEtc2 != null && blob.bannerW > 0) {
-                val buf = ByteBuffer.allocateDirect(blob.bannerEtc2.size).order(ByteOrder.nativeOrder())
-                buf.put(blob.bannerEtc2)
+            // Atlas arrives after — may take longer for large series
+            if (atlas.atlasEtc2 != null && atlas.atlasW > 0) {
+                val buf = ByteBuffer.allocateDirect(atlas.atlasEtc2.size).order(ByteOrder.nativeOrder())
+                buf.put(atlas.atlasEtc2)
                 buf.position(0)
-                bannerW = blob.bannerW
-                bannerH = blob.bannerH
-                pendingBanner = Etc2Upload(bannerLayer, blob.bannerW, blob.bannerH, buf)
-            }
-
-            // Queue ETC2 atlas upload
-            if (blob.atlasEtc2 != null && blob.atlasW > 0) {
-                val buf = ByteBuffer.allocateDirect(blob.atlasEtc2.size).order(ByteOrder.nativeOrder())
-                buf.put(blob.atlasEtc2)
-                buf.position(0)
-                atlasW = blob.atlasW
-                atlasH = blob.atlasH
-                atlasCols = blob.atlasCols
-                pendingAtlas = Etc2Upload(atlasLayer, blob.atlasW, blob.atlasH, buf)
+                atlasW = atlas.atlasW
+                atlasH = atlas.atlasH
+                atlasCols = atlas.atlasCols
+                pendingAtlas = Etc2Upload(atlasLayer, atlas.atlasW, atlas.atlasH, buf)
             }
         }
     }

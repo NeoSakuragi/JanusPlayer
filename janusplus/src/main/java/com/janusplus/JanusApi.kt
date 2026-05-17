@@ -12,7 +12,7 @@ class JanusApi(private val baseUrl: String) {
 
     private val client = OkHttpClient.Builder()
         .connectTimeout(10, TimeUnit.SECONDS)
-        .readTimeout(30, TimeUnit.SECONDS)
+        .readTimeout(120, TimeUnit.SECONDS)
         .build()
 
     var token: String? = null
@@ -245,16 +245,19 @@ class JanusApi(private val baseUrl: String) {
         return entries
     }
 
-    data class PageBlob(
+    data class PageHeader(
         val metadataJson: String,
         val bannerW: Int, val bannerH: Int, val bannerEtc2: ByteArray?,
+    )
+    data class PageAtlas(
         val atlasW: Int, val atlasH: Int, val atlasCols: Int, val thumbCount: Int,
         val atlasEtc2: ByteArray?
     )
 
     var cacheDir: java.io.File? = null
 
-    fun fetchPageBlob(itemId: String, seasonNum: Int): PageBlob? {
+    fun fetchPageBlob(itemId: String, seasonNum: Int,
+                      onHeader: (PageHeader) -> Unit): PageAtlas? {
         val cacheFile = cacheDir?.let { java.io.File(it, "pages/${itemId}_s${seasonNum}.bin") }
         val etagFile = cacheDir?.let { java.io.File(it, "pages/${itemId}_s${seasonNum}.etag") }
 
@@ -283,10 +286,18 @@ class JanusApi(private val baseUrl: String) {
                 bytes = cacheFile.readBytes()
             }
         } else {
+            Log.i("JanusApi", "Page blob cache miss: $itemId s$seasonNum, fetching...")
             val request = authRequest("$baseUrl/api/page/$itemId/$seasonNum").build()
-            val response = try { client.newCall(request).execute() } catch (_: Exception) { return null }
-            if (!response.isSuccessful) return null
+            val response = try { client.newCall(request).execute() } catch (e: Exception) {
+                Log.e("JanusApi", "Page blob fetch failed: ${e.message}")
+                return null
+            }
+            if (!response.isSuccessful) {
+                Log.e("JanusApi", "Page blob HTTP ${response.code}")
+                return null
+            }
             val fetched = response.body?.bytes() ?: return null
+            Log.i("JanusApi", "Page blob fetched: ${fetched.size} bytes")
             if (cacheFile != null) {
                 cacheFile.parentFile?.mkdirs()
                 cacheFile.writeBytes(fetched)
@@ -306,6 +317,9 @@ class JanusApi(private val baseUrl: String) {
         val bannerEtc2 = if (bannerLen > 0) bytes.copyOfRange(off, off + bannerLen) else null
         off += bannerLen
 
+        // Publish header immediately — UI can show title + banner
+        onHeader(PageHeader(metaJson, bannerW, bannerH, bannerEtc2))
+
         val atlasW = readInt(bytes, off); off += 4
         val atlasH = readInt(bytes, off); off += 4
         val atlasCols = readInt(bytes, off); off += 4
@@ -313,7 +327,7 @@ class JanusApi(private val baseUrl: String) {
         val atlasLen = readInt(bytes, off); off += 4
         val atlasEtc2 = if (atlasLen > 0) bytes.copyOfRange(off, off + atlasLen) else null
 
-        return PageBlob(metaJson, bannerW, bannerH, bannerEtc2, atlasW, atlasH, atlasCols, thumbCount, atlasEtc2)
+        return PageAtlas(atlasW, atlasH, atlasCols, thumbCount, atlasEtc2)
     }
 
     fun coverUrl(itemId: String) = "$baseUrl/api/covers/$itemId.jpg"
