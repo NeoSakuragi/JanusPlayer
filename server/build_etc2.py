@@ -193,19 +193,16 @@ def build_page_blob(db, item_id, season):
         banner_w, banner_h, banner_etc2 = banner
         print(f"  Banner: {banner_w}x{banner_h}, {len(banner_etc2)} bytes ETC2")
 
-    # Pack binary blob
-    # Format: [4B meta_len][meta JSON]
-    #         [4B banner_w][4B banner_h][4B banner_etc2_len][banner ETC2 data]
-    #         [4B atlas_w][4B atlas_h][4B atlas_cols][4B thumb_count][4B atlas_etc2_len][atlas ETC2 data]
-    blob = bytearray()
-    blob += struct.pack("<I", len(meta_json))
-    blob += meta_json
-    blob += struct.pack("<III", banner_w, banner_h, len(banner_etc2))
-    blob += banner_etc2
-    blob += struct.pack("<IIIII", atlas_w, atlas_h, atlas_cols, len(thumb_paths), len(atlas_etc2))
-    blob += atlas_etc2
+    # Header blob: metadata + banner (small, ~300KB-1MB)
+    header = bytearray()
+    header += struct.pack("<I", len(meta_json))
+    header += meta_json
+    header += struct.pack("<III", banner_w, banner_h, len(banner_etc2))
+    header += banner_etc2
+    header += struct.pack("<IIII", atlas_w, atlas_h, atlas_cols, len(thumb_paths))
 
-    return bytes(blob)
+    # Atlas blob: just the ETC2 compressed thumbnail atlas (large, 1-10MB)
+    return bytes(header), atlas_etc2
 
 
 def main():
@@ -221,17 +218,20 @@ def main():
     total_size = 0
     for item_id, season in seasons:
         print(f"\n{item_id} season {season}:")
-        blob = build_page_blob(db, item_id, season)
-        if blob is None:
+        result = build_page_blob(db, item_id, season)
+        if result is None:
             print("  SKIP — no data")
             continue
+        header, atlas = result
 
-        out_path = PAGES_DIR / f"{item_id}_s{season}.bin"
-        with open(out_path, "wb") as f:
-            f.write(blob)
-        size_kb = len(blob) / 1024
-        total_size += len(blob)
-        print(f"  → {out_path.name} ({size_kb:.0f} KB)")
+        header_path = PAGES_DIR / f"{item_id}_s{season}.hdr"
+        atlas_path = PAGES_DIR / f"{item_id}_s{season}.atlas"
+        with open(header_path, "wb") as f:
+            f.write(header)
+        with open(atlas_path, "wb") as f:
+            f.write(atlas)
+        total_size += len(header) + len(atlas)
+        print(f"  → {header_path.name} ({len(header)/1024:.0f} KB) + {atlas_path.name} ({len(atlas)/1024:.0f} KB)")
 
     db.close()
     print(f"\nTotal: {total_size / 1024 / 1024:.1f} MB in {PAGES_DIR}")

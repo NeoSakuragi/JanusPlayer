@@ -248,89 +248,45 @@ class JanusApi(private val baseUrl: String) {
     data class PageHeader(
         val metadataJson: String,
         val bannerW: Int, val bannerH: Int, val bannerEtc2: ByteArray?,
-    )
-    data class PageAtlas(
         val atlasW: Int, val atlasH: Int, val atlasCols: Int, val thumbCount: Int,
-        val atlasEtc2: ByteArray?
     )
 
     var cacheDir: java.io.File? = null
 
-    fun fetchPageBlob(itemId: String, seasonNum: Int,
-                      onHeader: (PageHeader) -> Unit): PageAtlas? {
-        val cacheFile = cacheDir?.let { java.io.File(it, "pages/${itemId}_s${seasonNum}.bin") }
-        val etagFile = cacheDir?.let { java.io.File(it, "pages/${itemId}_s${seasonNum}.etag") }
-
-        // Cached path — local disk, instant
+    private fun fetchCached(url: String, cacheFile: java.io.File?, etagFile: java.io.File?): ByteArray? {
         if (cacheFile != null && cacheFile.exists()) {
             val storedEtag = if (etagFile?.exists() == true) etagFile.readText() else null
             if (storedEtag != null) {
                 try {
-                    val req = authRequest("$baseUrl/api/page/$itemId/$seasonNum")
-                        .header("If-None-Match", storedEtag).build()
+                    val req = authRequest(url).header("If-None-Match", storedEtag).build()
                     val resp = client.newCall(req).execute()
-                    if (resp.code == 304) {
-                        // Cache still valid
-                    } else if (resp.isSuccessful) {
-                        val fetched = resp.body?.bytes() ?: return parseBlob(cacheFile.readBytes(), onHeader)
+                    if (resp.code == 304) return cacheFile.readBytes()
+                    if (resp.isSuccessful) {
+                        val fetched = resp.body?.bytes() ?: return cacheFile.readBytes()
                         cacheFile.writeBytes(fetched)
                         resp.header("ETag")?.let { etagFile?.writeText(it) }
-                        return parseBlob(fetched, onHeader)
+                        return fetched
                     }
                 } catch (_: Exception) { }
             }
-            return parseBlob(cacheFile.readBytes(), onHeader)
+            return cacheFile.readBytes()
         }
-
-        // Network path — stream progressively
-        val request = authRequest("$baseUrl/api/page/$itemId/$seasonNum").build()
-        val response = try { client.newCall(request).execute() } catch (e: Exception) {
-            Log.e("JanusApi", "Page blob fetch failed: ${e.message}")
-            return null
-        }
+        val request = authRequest(url).build()
+        val response = try { client.newCall(request).execute() } catch (_: Exception) { return null }
         if (!response.isSuccessful) return null
-        val body = response.body ?: return null
-        val stream = body.byteStream()
-
-        try {
-            // Read metadata + banner (small, arrives fast)
-            val metaLen = readIntStream(stream)
-            val metaBytes = readExact(stream, metaLen)
-            val metaJson = String(metaBytes, Charsets.UTF_8)
-
-            val bannerW = readIntStream(stream)
-            val bannerH = readIntStream(stream)
-            val bannerLen = readIntStream(stream)
-            val bannerEtc2 = if (bannerLen > 0) readExact(stream, bannerLen) else null
-
-            // Publish header NOW — banner + metadata render while atlas streams
-            onHeader(PageHeader(metaJson, bannerW, bannerH, bannerEtc2))
-
-            // Read atlas (large, takes time for big series)
-            val atlasW = readIntStream(stream)
-            val atlasH = readIntStream(stream)
-            val atlasCols = readIntStream(stream)
-            val thumbCount = readIntStream(stream)
-            val atlasLen = readIntStream(stream)
-            val atlasEtc2 = if (atlasLen > 0) readExact(stream, atlasLen) else null
-
-            // Cache the full blob to disk for next time
-            if (cacheFile != null) {
-                cacheFile.parentFile?.mkdirs()
-                val blob = buildBlobBytes(metaBytes, bannerW, bannerH, bannerEtc2,
-                    atlasW, atlasH, atlasCols, thumbCount, atlasEtc2)
-                cacheFile.writeBytes(blob)
-                response.header("ETag")?.let { etagFile?.writeText(it) }
-            }
-
-            return PageAtlas(atlasW, atlasH, atlasCols, thumbCount, atlasEtc2)
-        } finally {
-            stream.close()
-            body.close()
+        val fetched = response.body?.bytes() ?: return null
+        if (cacheFile != null) {
+            cacheFile.parentFile?.mkdirs()
+            cacheFile.writeBytes(fetched)
+            response.header("ETag")?.let { etagFile?.writeText(it) }
         }
+        return fetched
     }
 
-    private fun parseBlob(bytes: ByteArray, onHeader: (PageHeader) -> Unit): PageAtlas? {
+    fun fetchPageHeader(itemId: String, seasonNum: Int): PageHeader? {
+        val cache = cacheDir?.let { java.io.File(it, "pages/${itemId}_s${seasonNum}.hdr") }
+        val etag = cacheDir?.let { java.io.File(it, "pages/${itemId}_s${seasonNum}.hdr.etag") }
+        val bytes = fetchCached("$baseUrl/api/page/$itemId/$seasonNum/header", cache, etag) ?: return null
         if (bytes.size < 4) return null
         var off = 0
         val metaLen = readInt(bytes, off); off += 4
@@ -340,43 +296,17 @@ class JanusApi(private val baseUrl: String) {
         val bannerLen = readInt(bytes, off); off += 4
         val bannerEtc2 = if (bannerLen > 0) bytes.copyOfRange(off, off + bannerLen) else null
         off += bannerLen
-        onHeader(PageHeader(metaJson, bannerW, bannerH, bannerEtc2))
         val atlasW = readInt(bytes, off); off += 4
         val atlasH = readInt(bytes, off); off += 4
         val atlasCols = readInt(bytes, off); off += 4
         val thumbCount = readInt(bytes, off); off += 4
-        val atlasLen = readInt(bytes, off); off += 4
-        val atlasEtc2 = if (atlasLen > 0) bytes.copyOfRange(off, off + atlasLen) else null
-        return PageAtlas(atlasW, atlasH, atlasCols, thumbCount, atlasEtc2)
+        return PageHeader(metaJson, bannerW, bannerH, bannerEtc2, atlasW, atlasH, atlasCols, thumbCount)
     }
 
-    private fun readIntStream(s: java.io.InputStream): Int {
-        val b = readExact(s, 4)
-        return (b[0].toInt() and 0xFF) or ((b[1].toInt() and 0xFF) shl 8) or
-            ((b[2].toInt() and 0xFF) shl 16) or ((b[3].toInt() and 0xFF) shl 24)
-    }
-
-    private fun readExact(s: java.io.InputStream, n: Int): ByteArray {
-        val buf = ByteArray(n)
-        var read = 0
-        while (read < n) {
-            val r = s.read(buf, read, n - read)
-            if (r < 0) break
-            read += r
-        }
-        return buf
-    }
-
-    private fun buildBlobBytes(meta: ByteArray, bw: Int, bh: Int, banner: ByteArray?,
-                               aw: Int, ah: Int, ac: Int, tc: Int, atlas: ByteArray?): ByteArray {
-        val out = java.io.ByteArrayOutputStream()
-        fun writeInt(v: Int) { out.write(byteArrayOf((v and 0xFF).toByte(), ((v shr 8) and 0xFF).toByte(),
-            ((v shr 16) and 0xFF).toByte(), ((v shr 24) and 0xFF).toByte())) }
-        writeInt(meta.size); out.write(meta)
-        writeInt(bw); writeInt(bh); writeInt(banner?.size ?: 0); if (banner != null) out.write(banner)
-        writeInt(aw); writeInt(ah); writeInt(ac); writeInt(tc); writeInt(atlas?.size ?: 0)
-        if (atlas != null) out.write(atlas)
-        return out.toByteArray()
+    fun fetchPageAtlas(itemId: String, seasonNum: Int): ByteArray? {
+        val cache = cacheDir?.let { java.io.File(it, "pages/${itemId}_s${seasonNum}.atlas") }
+        val etag = cacheDir?.let { java.io.File(it, "pages/${itemId}_s${seasonNum}.atlas.etag") }
+        return fetchCached("$baseUrl/api/page/$itemId/$seasonNum/atlas", cache, etag)
     }
 
     fun coverUrl(itemId: String) = "$baseUrl/api/covers/$itemId.jpg"

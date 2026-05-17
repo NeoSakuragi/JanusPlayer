@@ -80,46 +80,46 @@ class SeriesState(private val item: JanusApi.LibraryItem) : GameState {
 
         val api = app.api ?: return
 
+        // Request 1: header (metadata + banner, ~300KB-1MB) — instant
         thread {
-            val atlas = api.fetchPageBlob(item.id, 1, onHeader = { header ->
-                if (!alive) return@fetchPageBlob
-                // Parse metadata + queue banner — arrives fast
-                val json = JSONObject(header.metadataJson)
-                val eps = json.getJSONArray("episodes")
-                val cards = (0 until eps.length()).map { i ->
-                    val e = eps.getJSONObject(i)
-                    EpisodeCard(e.getInt("episode"), e.optString("titleEn", ""), e.optInt("durationSec", 0))
-                }
-                pageData = PageData(
-                    titleEn = json.optString("titleEn", ""),
-                    titleJa = json.optString("titleJa", ""),
-                    synopsisEn = json.optString("synopsisEn", ""),
-                    synopsisJa = json.optString("synopsisJa", ""),
-                    episodeCount = json.optInt("episodeCount", cards.size),
-                    episodes = cards,
-                )
-                if (header.bannerEtc2 != null && header.bannerW > 0) {
-                    val buf = ByteBuffer.allocateDirect(header.bannerEtc2.size).order(ByteOrder.nativeOrder())
-                    buf.put(header.bannerEtc2)
-                    buf.position(0)
-                    bannerW = header.bannerW
-                    bannerH = header.bannerH
-                    pendingBanner = Etc2Upload(bannerLayer, header.bannerW, header.bannerH, buf)
-                }
-            }) ?: return@thread
-
+            val header = api.fetchPageHeader(item.id, 1) ?: return@thread
             if (!alive) return@thread
 
-            // Atlas arrives after — may take longer for large series
-            if (atlas.atlasEtc2 != null && atlas.atlasW > 0) {
-                val buf = ByteBuffer.allocateDirect(atlas.atlasEtc2.size).order(ByteOrder.nativeOrder())
-                buf.put(atlas.atlasEtc2)
-                buf.position(0)
-                atlasW = atlas.atlasW
-                atlasH = atlas.atlasH
-                atlasCols = atlas.atlasCols
-                pendingAtlas = Etc2Upload(atlasLayer, atlas.atlasW, atlas.atlasH, buf)
+            val json = JSONObject(header.metadataJson)
+            val eps = json.getJSONArray("episodes")
+            val cards = (0 until eps.length()).map { i ->
+                val e = eps.getJSONObject(i)
+                EpisodeCard(e.getInt("episode"), e.optString("titleEn", ""), e.optInt("durationSec", 0))
             }
+            pageData = PageData(
+                titleEn = json.optString("titleEn", ""),
+                titleJa = json.optString("titleJa", ""),
+                synopsisEn = json.optString("synopsisEn", ""),
+                synopsisJa = json.optString("synopsisJa", ""),
+                episodeCount = json.optInt("episodeCount", cards.size),
+                episodes = cards,
+            )
+            if (header.bannerEtc2 != null && header.bannerW > 0) {
+                val buf = ByteBuffer.allocateDirect(header.bannerEtc2.size).order(ByteOrder.nativeOrder())
+                buf.put(header.bannerEtc2)
+                buf.position(0)
+                bannerW = header.bannerW
+                bannerH = header.bannerH
+                pendingBanner = Etc2Upload(bannerLayer, header.bannerW, header.bannerH, buf)
+            }
+            atlasW = header.atlasW
+            atlasH = header.atlasH
+            atlasCols = header.atlasCols
+        }
+
+        // Request 2: atlas (ETC2 thumbnails, 1-10MB) — arrives in background
+        thread {
+            val atlasBytes = api.fetchPageAtlas(item.id, 1) ?: return@thread
+            if (!alive || atlasBytes.isEmpty()) return@thread
+            val buf = ByteBuffer.allocateDirect(atlasBytes.size).order(ByteOrder.nativeOrder())
+            buf.put(atlasBytes)
+            buf.position(0)
+            pendingAtlas = Etc2Upload(atlasLayer, atlasW, atlasH, buf)
         }
     }
 

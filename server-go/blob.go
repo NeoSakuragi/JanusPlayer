@@ -74,24 +74,39 @@ func warmBlobCache() {
 	log.Printf("Blob cache warmed")
 }
 
-// GET /api/page/{item_id}/{season} — pre-built page blob with ETag support
+// GET /api/page/{item_id}/{season}/header — metadata + banner (small, fast)
+// GET /api/page/{item_id}/{season}/atlas  — ETC2 thumbnail atlas (large)
 func handlePage(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, "/api/page/")
 	parts := strings.Split(path, "/")
-	if len(parts) != 2 {
+	if len(parts) != 3 {
 		http.Error(w, "not found", 404)
 		return
 	}
 	itemID := parts[0]
 	season := parts[1]
-	key := fmt.Sprintf("page:%s:%s", itemID, season)
+	kind := parts[2] // "header" or "atlas"
 
-	// Load or cache the blob
+	var ext string
+	switch kind {
+	case "header":
+		ext = ".hdr"
+	case "atlas":
+		ext = ".atlas"
+	default:
+		http.Error(w, "not found", 404)
+		return
+	}
+
+	key := fmt.Sprintf("page-%s:%s:%s", kind, itemID, season)
+	servePageBlob(w, r, key, fmt.Sprintf("%s_s%s%s", itemID, season, ext))
+}
+
+func servePageBlob(w http.ResponseWriter, r *http.Request, key, filename string) {
 	var data []byte
 	if cached, ok := blobCache.Load(key); ok {
 		data = cached.([]byte)
 	} else {
-		filename := fmt.Sprintf("%s_s%s.bin", itemID, season)
 		var err error
 		data, err = os.ReadFile(filepath.Join(dataDir, "pages", filename))
 		if err != nil {
@@ -101,7 +116,6 @@ func handlePage(w http.ResponseWriter, r *http.Request) {
 		blobCache.Store(key, data)
 	}
 
-	// ETag based on content hash (computed once, cached alongside)
 	etagKey := key + ":etag"
 	var etag string
 	if cached, ok := blobCache.Load(etagKey); ok {
