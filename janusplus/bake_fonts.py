@@ -72,7 +72,7 @@ def bake_atlas(font_path, size_px, codepoints):
     for cp in codepoints:
         ch = chr(cp)
         try:
-            bbox = font.getbbox(ch)
+            bbox = font.getbbox(ch, anchor='ls')
         except Exception:
             continue
         if bbox is None:
@@ -97,7 +97,7 @@ def bake_atlas(font_path, size_px, codepoints):
         if cursor_y + glyph_h > ATLAS_SIZE:
             break  # Atlas full
 
-        draw.text((cursor_x - bbox[0] + 1, cursor_y - bbox[1] + 1), ch, font=font, fill=(255, 255, 255, 255))
+        draw.text((cursor_x - bbox[0] + 1, cursor_y - bbox[1] + 1), ch, font=font, fill=(255, 255, 255, 255), anchor='ls')
 
         metrics[cp] = {
             "u0": cursor_x / ATLAS_SIZE,
@@ -107,7 +107,7 @@ def bake_atlas(font_path, size_px, codepoints):
             "w": glyph_w,
             "h": glyph_h,
             "advance": advance,
-            "ascent": abs(-bbox[1] + 1),
+            "ascent": -bbox[1] + 1,
         }
 
         cursor_x += glyph_w + padding

@@ -48,9 +48,14 @@ class FontAtlas(private val assets: AssetManager) {
                 cache[GlyphKey(cp, bakedSize)] = GlyphMetrics(u0, v0, u1, v1, w, h, advance, ascent)
             }
 
-            // Compute line metrics from a reference glyph
-            val ref = cache[GlyphKey('あ'.code, bakedSize)]
-            if (ref != null) { bakedAscent = ref.ascent; bakedDescent = ref.h - ref.ascent }
+            // Line metrics: use max ascent and max descent across all glyphs
+            var maxAsc = 0f; var maxDesc = 0f
+            for ((_, m) in cache) {
+                if (m.ascent > maxAsc) maxAsc = m.ascent
+                val desc = m.h - m.ascent
+                if (desc > maxDesc) maxDesc = desc
+            }
+            bakedAscent = maxAsc; bakedDescent = maxDesc
 
             // Load atlas PNG
             val pngStream = assets.open("baked_fonts/$name.png")
