@@ -38,7 +38,7 @@ FONTS = {
     "shippori": "ShipporiMincho-Regular.ttf",
 }
 
-SIZES = [40]  # bake at large size, scale down at render time
+SIZES = [24]  # bake at 24px, scale at render time. Fits ~9K CJK in 4096 atlas.
 
 
 def collect_codepoints():
@@ -107,7 +107,7 @@ def bake_atlas(font_path, size_px, codepoints):
             "w": glyph_w,
             "h": glyph_h,
             "advance": advance,
-            "ascent": -bbox[1] + 1,
+            "ascent": abs(-bbox[1] + 1),
         }
 
         cursor_x += glyph_w + padding

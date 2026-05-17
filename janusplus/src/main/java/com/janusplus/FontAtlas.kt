@@ -20,7 +20,7 @@ class FontAtlas(private val assets: AssetManager) {
     var atlasSize = 4096
     var texArray: TextureArray? = null
     val layer = TextureArray.LAYER_FONT
-    private var bakedSize = 40
+    private var bakedSize = 24
     private var bakedAscent = 0f
     private var bakedDescent = 0f
 
