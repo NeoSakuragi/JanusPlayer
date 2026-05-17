@@ -325,24 +325,23 @@ class PlayerState(
     }
 
     private fun handleTap(app: App, x: Float, y: Float) {
-        val now = System.currentTimeMillis()
-        val dt = now - lastTapTime
-
-        // Double-tap detection
-        if (dt < 300) {
-            if (x < app.width / 2) seekRelative(-10000)
-            else seekRelative(10000)
-            lastTapTime = 0
-            return
+        // Seekbar — AABB check, same rect as debug green zone
+        val seekTop = barY - 36f  // dp(24f) at density ~1.5
+        val seekBottom = barY + 36f  // dp(24f) below
+        if ((mode == Mode.CONTROLS || mode == Mode.WORD_NAV) && screenW > 0) {
+            if (y >= seekTop && y <= seekBottom + 36f && x >= pad && x <= screenW - pad) {
+                val progress = ((x - pad) / (screenW - pad * 2)).coerceIn(0f, 1f)
+                val target = (durationMs * progress).toLong().coerceIn(0, durationMs)
+                seekTo(target)
+                controlsTimer = 0f
+                return
+            }
         }
-        lastTapTime = now
-        lastTapX = x
 
-        // Check if tap is on subtitle characters
+        // Subtitle character tap
         if (charBoxes.isNotEmpty() && mode != Mode.SETTINGS) {
             for (box in charBoxes) {
                 if (x >= box.x && x <= box.x + box.w && y >= box.y && y <= box.y + box.h) {
-                    // Find which word span contains this character
                     val charIdx = box.charIdx
                     val spanIdx = wordSpans.indexOfFirst { charIdx >= it.start && charIdx < it.end }
                     if (spanIdx >= 0) {
@@ -356,40 +355,32 @@ class PlayerState(
             }
         }
 
-        // Check seekbar tap — bottom 15% of screen
-        if (mode != Mode.PLAYING && mode != Mode.SETTINGS && screenW > 0) {
-            if (y >= screenH * 0.85f && x >= pad && x <= screenW - pad) {
-                val progress = (x - pad) / (screenW - pad * 2)
-                val target = (durationMs * progress).toLong().coerceIn(0, durationMs)
-                seekTo(target)
-                return
+        // Settings — tap outside to close
+        if (mode == Mode.SETTINGS) {
+            val panelX = screenW - screenW * 0.35f
+            if (x < panelX) {
+                mode = Mode.CONTROLS
+                controlsTimer = 0f
             }
+            return
         }
 
-        // Single tap
+        // Double-tap seek
+        val now = System.currentTimeMillis()
+        if (now - lastTapTime < 300) {
+            if (x < screenW / 2) seekRelative(-10000)
+            else seekRelative(10000)
+            lastTapTime = 0
+            return
+        }
+        lastTapTime = now
+
+        // Single tap — toggle controls
         when (mode) {
-            Mode.PLAYING -> {
-                mode = Mode.CONTROLS
-                controlsTimer = 0f
-                pause()
-            }
-            Mode.CONTROLS -> {
-                mode = Mode.PLAYING
-                play()
-            }
-            Mode.WORD_NAV -> {
-                mode = Mode.CONTROLS
-                controlsTimer = 0f
-                hlStart = -1; hlEnd = -1
-            }
-            Mode.SETTINGS -> {
-                // Tap outside panel closes it
-                val panelX = screenW - screenW * 0.35f
-                if (x < panelX) {
-                    mode = Mode.CONTROLS
-                    controlsTimer = 0f
-                }
-            }
+            Mode.PLAYING -> { mode = Mode.CONTROLS; controlsTimer = 0f; pause() }
+            Mode.CONTROLS -> { mode = Mode.PLAYING; play() }
+            Mode.WORD_NAV -> { mode = Mode.CONTROLS; controlsTimer = 0f; hlStart = -1; hlEnd = -1 }
+            else -> {}
         }
     }
 
@@ -904,10 +895,8 @@ class PlayerState(
         val handleX = pad + barW * progress
         rc.solid(handleX - rc.dp(6f), barY - rc.dp(6f), rc.dp(12f), rc.dp(16f), 1f, 1f, 1f)
 
-        // Make seekbar tappable/draggable
-        rc.tappable(pad, barY - rc.dp(20f), barW, rc.dp(40f)) {
-            // handled in handleTap seekbar logic
-        }
+        // Debug: show seekbar hit zone
+        rc.solid(pad, barY - rc.dp(24f), barW, rc.dp(48f), 0f, 1f, 0f, 0.15f)
 
         // Time display
         val posStr = formatTime(positionMs)
