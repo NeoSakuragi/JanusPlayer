@@ -356,11 +356,9 @@ class PlayerState(
             }
         }
 
-        // Check seekbar tap
+        // Check seekbar tap — bottom 15% of screen
         if (mode != Mode.PLAYING && mode != Mode.SETTINGS && screenW > 0) {
-            val seekbarY = barY - screenH * 0.02f
-            val seekbarBottom = barY + screenH * 0.04f
-            if (y >= seekbarY && y <= seekbarBottom && x >= pad && x <= screenW - pad) {
+            if (y >= screenH * 0.85f && x >= pad && x <= screenW - pad) {
                 val progress = (x - pad) / (screenW - pad * 2)
                 val target = (durationMs * progress).toLong().coerceIn(0, durationMs)
                 seekTo(target)
@@ -765,9 +763,6 @@ class PlayerState(
     }
 
     private fun drawSettingsPanel(rc: RC) {
-        // Dim background
-        rc.solid(0f, 0f, rc.w, rc.h, 0f, 0f, 0f, 0.4f)
-
         // Panel on right
         val panelW = rc.dp(300f).coerceAtMost(rc.w * 0.4f)
         val panelX = rc.w - panelW
@@ -868,9 +863,6 @@ class PlayerState(
     // ── Controls Overlay ──
 
     private fun drawControls(app: App, rc: RC) {
-        // Dim overlay
-        rc.solid(0f, 0f, rc.w, rc.h, 0f, 0f, 0f, 0.4f)
-
         // Play/pause icon (centered)
         val centerX = rc.w / 2f
         val centerY = rc.h / 2f
