@@ -127,7 +127,7 @@ def build_page_blob(db, item_id, season):
 
     # Get episodes for this season
     episodes = db.execute(
-        "SELECT episode, title_en, duration_sec FROM episodes WHERE item_id=? AND season=? ORDER BY episode",
+        "SELECT episode, title_en, duration_sec, synopsis_en, synopsis_ja, synopsis_fr FROM episodes WHERE item_id=? AND season=? ORDER BY episode",
         (item_id, season),
     ).fetchall()
     if not episodes:
@@ -148,6 +148,9 @@ def build_page_blob(db, item_id, season):
                 "episode": ep[0],
                 "titleEn": ep[1] or "",
                 "durationSec": ep[2] or 0,
+                "synopsisEn": ep[3] or "",
+                "synopsisJa": ep[4] or "",
+                "synopsisFr": ep[5] or "",
             }
             for ep in episodes
         ],
