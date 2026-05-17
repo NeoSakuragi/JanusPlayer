@@ -287,15 +287,25 @@ class JanusApi(private val baseUrl: String) {
     fun fetchPageHeader(itemId: String, seasonNum: Int): PageHeader? {
         val cache = cacheDir?.let { java.io.File(it, "pages/${itemId}_s${seasonNum}.hdr") }
         val etag = cacheDir?.let { java.io.File(it, "pages/${itemId}_s${seasonNum}.hdr.etag") }
-        val bytes = fetchCached("$baseUrl/api/page/$itemId/$seasonNum/header", cache, etag) ?: return null
-        if (bytes.size < 4) return null
+        var bytes = fetchCached("$baseUrl/api/page/$itemId/$seasonNum/header", cache, etag) ?: return null
+        return try {
+            parsePageHeader(bytes)
+        } catch (_: Exception) {
+            // Stale cache format — delete and refetch
+            cache?.delete(); etag?.delete()
+            bytes = fetchCached("$baseUrl/api/page/$itemId/$seasonNum/header", cache, etag) ?: return null
+            try { parsePageHeader(bytes) } catch (_: Exception) { null }
+        }
+    }
+
+    private fun parsePageHeader(bytes: ByteArray): PageHeader {
         var off = 0
         val metaLen = readInt(bytes, off); off += 4
         val metaJson = String(bytes, off, metaLen, Charsets.UTF_8); off += metaLen
         val bannerW = readInt(bytes, off); off += 4
         val bannerH = readInt(bytes, off); off += 4
         val bannerLen = readInt(bytes, off); off += 4
-        val bannerEtc2 = if (bannerLen > 0) bytes.copyOfRange(off, off + bannerLen) else null
+        val bannerJpeg = if (bannerLen > 0) bytes.copyOfRange(off, off + bannerLen) else null
         off += bannerLen
         val atlasW = readInt(bytes, off); off += 4
         val atlasH = readInt(bytes, off); off += 4
@@ -303,7 +313,7 @@ class JanusApi(private val baseUrl: String) {
         val thumbCount = readInt(bytes, off); off += 4
         val thumbW = readInt(bytes, off); off += 4
         val thumbH = readInt(bytes, off); off += 4
-        return PageHeader(metaJson, bannerW, bannerH, bannerEtc2, atlasW, atlasH, atlasCols, thumbCount, thumbW, thumbH)
+        return PageHeader(metaJson, bannerW, bannerH, bannerJpeg, atlasW, atlasH, atlasCols, thumbCount, thumbW, thumbH)
     }
 
     fun fetchPageAtlas(itemId: String, seasonNum: Int): ByteArray? {
