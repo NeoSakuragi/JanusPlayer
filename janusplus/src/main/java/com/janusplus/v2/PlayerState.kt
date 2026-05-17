@@ -729,17 +729,6 @@ class PlayerState(
             cy += rc.font.textHeight(meaningSize) + rc.dp(4f)
         }
 
-        // Mine button
-        cy += rc.dp(8f)
-        val mineText = "Mine"
-        val mineW = rc.font.measureText(mineText, rc.sp(13)) + rc.dp(24f)
-        val mineH = rc.dp(28f)
-        val mineX = popupX + (popupW - mineW) / 2f
-        rc.solid(mineX, cy, mineW, mineH, 0.106f, 0.369f, 0.125f)
-        rc.text(mineText, mineX + rc.dp(12f), cy + rc.dp(18f), rc.sp(13), 0.506f, 0.78f, 0.522f)
-        rc.tappable(mineX, cy, mineW, mineH) {
-            // Future: Anki card mining
-        }
     }
 
     // ── Settings Panel ──
