@@ -30,6 +30,8 @@ class SeriesState(private val item: JanusApi.LibraryItem) : GameState {
     @Volatile var atlasW = 0
     @Volatile var atlasH = 0
     @Volatile var atlasCols = 0
+    @Volatile var thumbWPx = 400f
+    @Volatile var thumbHPx = 300f
     private var atlasLayer = 0
 
     // Pending bitmap uploads — background thread decodes JPEG, GL thread uploads
@@ -93,8 +95,8 @@ class SeriesState(private val item: JanusApi.LibraryItem) : GameState {
             )
 
             // Decode banner JPEG → queue bitmap for GL thread
-            if (header.bannerEtc2 != null && header.bannerW > 0) {
-                val bmp = BitmapFactory.decodeByteArray(header.bannerEtc2, 0, header.bannerEtc2.size)
+            if (header.bannerJpeg != null && header.bannerW > 0) {
+                val bmp = BitmapFactory.decodeByteArray(header.bannerJpeg, 0, header.bannerJpeg.size)
                 if (bmp != null && alive) {
                     bannerW = bmp.width; bannerH = bmp.height
                     pendingBannerBmp = bmp
@@ -103,6 +105,8 @@ class SeriesState(private val item: JanusApi.LibraryItem) : GameState {
             atlasW = header.atlasW
             atlasH = header.atlasH
             atlasCols = header.atlasCols
+            thumbWPx = header.thumbW.toFloat()
+            thumbHPx = header.thumbH.toFloat()
         }
 
         // Request 2: atlas JPEG (~0.5-2MB, arrives in background)
@@ -132,7 +136,7 @@ class SeriesState(private val item: JanusApi.LibraryItem) : GameState {
         val availW = rc.w - pad * 2
         gridCols = ((availW + gridSpacing) / (rc.dp(160f) + gridSpacing)).toInt().coerceAtLeast(1)
         cardW = (availW - gridSpacing * (gridCols - 1)) / gridCols
-        thumbH = cardW / (400f / 224f)
+        thumbH = cardW / (thumbWPx / thumbHPx)
         cardH = thumbH + rc.dp(50f)
         contentMaxW = (rc.w * 0.6f).coerceAtMost(rc.w - pad * 2)
         dp50 = rc.dp(50f)
@@ -140,6 +144,15 @@ class SeriesState(private val item: JanusApi.LibraryItem) : GameState {
     }
 
     override fun update(app: App, touches: List<Touch>) {
+        // Recalculate card height when thumb dimensions arrive
+        if (layoutDone && cardW > 0) {
+            val newThumbH = cardW / (thumbWPx / thumbHPx)
+            if (newThumbH != thumbH) {
+                thumbH = newThumbH
+                cardH = thumbH + dp50
+            }
+        }
+
         val bBmp = pendingBannerBmp
         if (bBmp != null) {
             pendingBannerBmp = null
@@ -216,8 +229,6 @@ class SeriesState(private val item: JanusApi.LibraryItem) : GameState {
         val cardCount = if (episodes.isNotEmpty()) episodes.size else 12
 
         val texSize = app.texArray.size.toFloat()
-        val thumbWPx = 400f
-        val thumbHPx = 224f
 
         for (i in 0 until cardCount) {
             val col = i % gridCols

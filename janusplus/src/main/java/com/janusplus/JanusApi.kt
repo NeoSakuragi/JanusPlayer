@@ -247,8 +247,9 @@ class JanusApi(private val baseUrl: String) {
 
     data class PageHeader(
         val metadataJson: String,
-        val bannerW: Int, val bannerH: Int, val bannerEtc2: ByteArray?,
+        val bannerW: Int, val bannerH: Int, val bannerJpeg: ByteArray?,
         val atlasW: Int, val atlasH: Int, val atlasCols: Int, val thumbCount: Int,
+        val thumbW: Int, val thumbH: Int,
     )
 
     var cacheDir: java.io.File? = null
@@ -300,7 +301,9 @@ class JanusApi(private val baseUrl: String) {
         val atlasH = readInt(bytes, off); off += 4
         val atlasCols = readInt(bytes, off); off += 4
         val thumbCount = readInt(bytes, off); off += 4
-        return PageHeader(metaJson, bannerW, bannerH, bannerEtc2, atlasW, atlasH, atlasCols, thumbCount)
+        val thumbW = readInt(bytes, off); off += 4
+        val thumbH = readInt(bytes, off); off += 4
+        return PageHeader(metaJson, bannerW, bannerH, bannerEtc2, atlasW, atlasH, atlasCols, thumbCount, thumbW, thumbH)
     }
 
     fun fetchPageAtlas(itemId: String, seasonNum: Int): ByteArray? {

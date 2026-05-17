@@ -31,8 +31,7 @@ PAGES_DIR = DATA_DIR / "pages"
 THUMBS_DIR = DATA_DIR / "thumbs"
 COVERS_DIR = DATA_DIR / "covers"
 
-THUMB_W = 400
-THUMB_H = 224
+THUMB_DIVISOR = 4
 PVR_HEADER_SIZE = 52
 
 
@@ -56,31 +55,46 @@ def compress_etc2(png_path):
         os.unlink(pvr_path)
 
 
-def build_atlas_png(thumb_paths, output_path):
-    """Pack thumbnails into a single atlas PNG. Returns (width, height, cols)."""
+def get_video_resolution(item_id):
+    """Get video resolution from first MKV file."""
+    vid_dir = DATA_DIR / "videos" / item_id
+    if not vid_dir.exists():
+        return None, None
+    for f in sorted(vid_dir.iterdir()):
+        if f.suffix.lower() in (".mkv", ".mp4"):
+            try:
+                result = subprocess.run(
+                    ["ffprobe", "-v", "error", "-select_streams", "v:0",
+                     "-show_entries", "stream=width,height", "-of", "csv=p=0", str(f)],
+                    capture_output=True, text=True)
+                w, h = result.stdout.strip().split(",")
+                return int(w), int(h)
+            except Exception:
+                pass
+    return None, None
+
+
+def build_atlas_png(thumb_paths, output_path, thumb_w, thumb_h):
+    """Pack thumbnails into a single atlas PNG. Returns (atlas_w, atlas_h, cols)."""
     count = len(thumb_paths)
     cols = math.ceil(math.sqrt(count))
-    rows = math.ceil(count / cols)
-    # Ensure atlas fits within 4096x4096 texture
-    max_cols = 4096 // THUMB_W
+    max_cols = 4096 // thumb_w
     if cols > max_cols:
         cols = max_cols
-        rows = math.ceil(count / cols)
-    atlas_w = round_up_4(cols * THUMB_W)
-    atlas_h = round_up_4(rows * THUMB_H)
-    if atlas_h > 4096:
-        print(f"  WARN: atlas {atlas_w}x{atlas_h} exceeds 4096 height!")
+    rows = math.ceil(count / cols)
+    atlas_w = round_up_4(cols * thumb_w)
+    atlas_h = round_up_4(rows * thumb_h)
 
     atlas = Image.new("RGBA", (atlas_w, atlas_h), (0, 0, 0, 255))
 
     for i, path in enumerate(thumb_paths):
         col = i % cols
         row = i // cols
-        x = col * THUMB_W
-        y = row * THUMB_H
+        x = col * thumb_w
+        y = row * thumb_h
         try:
             img = Image.open(path).convert("RGBA")
-            img = img.resize((THUMB_W, THUMB_H), Image.LANCZOS)
+            img = img.resize((thumb_w, thumb_h), Image.LANCZOS)
             atlas.paste(img, (x, y))
         except Exception as e:
             print(f"  WARN: {path}: {e}")
@@ -182,18 +196,27 @@ def build_page_blob(db, item_id, season):
             if found:
                 break
 
+    # Detect video resolution → thumb size
+    vid_w, vid_h = get_video_resolution(item_id)
+    if vid_w and vid_h:
+        thumb_w = round_up_4(vid_w // THUMB_DIVISOR)
+        thumb_h = round_up_4(vid_h // THUMB_DIVISOR)
+    else:
+        thumb_w, thumb_h = 360, 270  # fallback 4:3
+
     atlas_jpeg = b""
     atlas_w = atlas_h = atlas_cols = 0
     if thumb_paths:
         with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
             atlas_png = tmp.name
         try:
-            atlas_w, atlas_h, atlas_cols = build_atlas_png(thumb_paths, atlas_png)
+            atlas_w, atlas_h, atlas_cols = build_atlas_png(thumb_paths, atlas_png, thumb_w, thumb_h)
             img = Image.open(atlas_png).convert("RGB")
             with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as jtmp:
                 img.save(jtmp.name, "JPEG", quality=85)
                 atlas_jpeg = open(jtmp.name, "rb").read()
                 os.unlink(jtmp.name)
+            print(f"  Thumbs: {thumb_w}x{thumb_h} (video {vid_w}x{vid_h}/{THUMB_DIVISOR})")
             print(f"  Atlas: {atlas_w}x{atlas_h}, {atlas_cols} cols, {len(atlas_jpeg)/1024:.0f} KB JPEG")
         finally:
             os.unlink(atlas_png)
@@ -219,7 +242,7 @@ def build_page_blob(db, item_id, season):
     header += meta_json
     header += struct.pack("<III", banner_w, banner_h, len(banner_jpeg))
     header += banner_jpeg
-    header += struct.pack("<IIII", atlas_w, atlas_h, atlas_cols, len(thumb_paths))
+    header += struct.pack("<IIIIII", atlas_w, atlas_h, atlas_cols, len(thumb_paths), thumb_w, thumb_h)
 
     # Atlas blob: JPEG thumbnail atlas
     return bytes(header), atlas_jpeg
