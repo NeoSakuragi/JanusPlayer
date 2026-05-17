@@ -134,7 +134,7 @@ class SeriesState(private val item: JanusApi.LibraryItem) : GameState {
         gridY = synopsisY + synopsisH
         gridSpacing = rc.dp(12f); textPad = rc.dp(8f)
         val availW = rc.w - pad * 2
-        gridCols = ((availW + gridSpacing) / (rc.dp(160f) + gridSpacing)).toInt().coerceAtLeast(1)
+        gridCols = 4
         cardW = (availW - gridSpacing * (gridCols - 1)) / gridCols
         thumbH = cardW / (thumbWPx / thumbHPx)
         cardH = thumbH + rc.dp(50f)
