@@ -25,16 +25,20 @@ class MainActivity : AppCompatActivity() {
         glView.renderMode = GLSurfaceView.RENDERMODE_CONTINUOUSLY
         setContentView(glView)
 
-        // Load library on background thread
+        // Load library on background thread with retry
         thread {
             val api = JanusApi("https://canneji.duckdns.org/janus")
             api.cacheDir = cacheDir
-            val result = api.login("bruno", "janus2026")
-            if (result != null) {
-                app.api = api
-                val library = api.fetchLibrary()
-                app.library = library
-                loadCovers(api, library)
+            for (attempt in 1..10) {
+                val result = api.login("bruno", "janus2026")
+                if (result != null) {
+                    app.api = api
+                    val library = api.fetchLibrary()
+                    app.library = library
+                    loadCovers(api, library)
+                    break
+                }
+                Thread.sleep(2000)
             }
         }
     }
