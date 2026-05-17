@@ -45,6 +45,21 @@ class TextureArray(val size: Int = 2048, val layerCount: Int = 4) {
         uploadQueue.add(layer to bitmap)
     }
 
+    // Immediate GL upload — must be called on GL thread
+    fun uploadLayerNow(layer: Int, bitmap: Bitmap) {
+        val src = if (bitmap.config != Bitmap.Config.ARGB_8888)
+            bitmap.copy(Bitmap.Config.ARGB_8888, false).also { bitmap.recycle() } else bitmap
+        val w = src.width; val h = src.height
+        val buf = ByteBuffer.allocateDirect(w * h * 4).order(ByteOrder.nativeOrder())
+        src.copyPixelsToBuffer(buf)
+        buf.position(0)
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D_ARRAY, textureId)
+        GLES30.glTexSubImage3D(GLES30.GL_TEXTURE_2D_ARRAY, 0,
+            0, 0, layer, w, h, 1,
+            GLES30.GL_RGBA, GLES30.GL_UNSIGNED_BYTE, buf)
+        src.recycle()
+    }
+
     fun processUploads() {
         while (true) {
             val (layer, bmp) = uploadQueue.poll() ?: break

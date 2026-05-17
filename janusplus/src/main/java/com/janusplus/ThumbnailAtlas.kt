@@ -75,7 +75,7 @@ class ThumbnailAtlas {
         pendingQueue.add(PendingAtlas(atlas, newMap, forLayer))
     }
 
-    // Called on GL thread — uploads bitmap and THEN sets ready
+    // Called on GL thread — uploads bitmap directly to GPU and THEN sets ready
     fun processPending() {
         val pending = pendingQueue.poll() ?: return
         if (pending.layer != layerIndex) {
@@ -83,7 +83,7 @@ class ThumbnailAtlas {
             return
         }
         val ta = texArray ?: return
-        ta.uploadLayer(pending.layer, pending.bitmap)
+        ta.uploadLayerNow(pending.layer, pending.bitmap)
         uvMap = pending.uvMap
         ready = true
     }
