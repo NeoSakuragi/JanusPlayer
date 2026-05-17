@@ -86,7 +86,7 @@ object HomeScreen {
 
             // Touch target
             val tappedItem = item
-            rc.tappable(x, cardsY, cardW, cardH) { rc.state.pendingTap = tappedItem }
+            rc.tappable(x, cardsY, cardW, cardH) { rc.state.openItem(tappedItem) }
 
             // Title gradient overlay at bottom
             val gradH = cardH * 0.35f

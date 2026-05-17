@@ -41,7 +41,6 @@ class JanusPlusActivity : AppCompatActivity() {
 
         input.onItemSelected = { item ->
             state.openItem(item)
-            loadDetail(item)
         }
         input.onBack = { finish() }
 
@@ -100,7 +99,6 @@ class JanusPlusActivity : AppCompatActivity() {
                 renderer.thumbAtlas.clear()
                 state.bannerReady = false
                 state.openItem(item)
-                loadDetail(item)
             }
         }
         renderer.onSeasonChanged = { season ->
@@ -604,13 +602,9 @@ class JanusPlusActivity : AppCompatActivity() {
         if (input.handleTouch(event)) {
             val tapped = state.pendingTap
             if (tapped != null) {
-                Log.e(TAG, "TAP→OPEN ${System.currentTimeMillis()}")
                 state.pendingTap = null
-                renderer.thumbAtlas.clear()
-                state.bannerReady = false
                 state.openItem(tapped)
-                loadDetail(tapped)
-                Log.e(TAG, "OPEN DONE ${System.currentTimeMillis()}")
+                // Don't load anything. Just switch screen. See if it's instant.
             }
             val seasonChange = state.pendingSeasonChange
             if (seasonChange != null) {

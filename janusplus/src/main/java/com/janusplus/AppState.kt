@@ -48,6 +48,7 @@ class AppState {
     var returnScreen = Screen.HOME
 
     fun openItem(item: JanusApi.LibraryItem) {
+        android.util.Log.e("STATE", "openItem ${item.id} from ${Thread.currentThread().name}")
         selectedItem = item
         heroBlob = null
         seasonCards = null

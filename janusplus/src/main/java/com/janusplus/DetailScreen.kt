@@ -19,21 +19,8 @@ object DetailScreen {
             renderHero(rc, heroTop, heroH, blob, pad)
         }
 
-        // Episode grid (series only)
-        val cards = state.seasonCards?.episodes ?: emptyList()
-        if (cards.isEmpty() && state.screen == Screen.SERIES_DETAIL) {
-            // Skeleton placeholders while loading
-            val gridY = heroH - scrollY + rc.dp(16f)
-            val skeletonW = (rc.w - pad * 2 - rc.dp(12f) * 5) / 6
-            val skeletonH = skeletonW / 1.33f + rc.dp(50f)
-            for (i in 0 until 6) {
-                val x = pad + i * (skeletonW + rc.dp(12f))
-                rc.solid(x, gridY, skeletonW, skeletonH, 0.102f, 0.102f, 0.180f, 0.5f)
-            }
-        }
-        if (cards.isNotEmpty() && state.screen == Screen.SERIES_DETAIL) {
-            renderEpisodeGrid(rc, cards, heroH - scrollY)
-        }
+        // Episode grid disabled for testing
+        // val cards = state.seasonCards?.episodes ?: emptyList()
     }
 
     fun renderThumbs(rc: RenderCtx, cards: List<JanusApi.CardEpisode>, startY: Float) {

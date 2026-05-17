@@ -94,7 +94,6 @@ class GLRenderer(
         texArray.processUploads()
         thumbAtlas.uploadIfNeeded()
         state.coverAtlas.uploadIfNeeded()
-        font.uploadDirtyGlyphs()
         lastUploadMs = (System.nanoTime() - uploadStart) / 1_000_000f
 
         state.seriesScroll.update(dt)
@@ -176,9 +175,7 @@ class GLRenderer(
             Screen.SETTINGS -> SettingsScreen.render(rc)
             Screen.PLAYING -> {}
         }
-        val g = font.glyphsEmitted; val tc = font.addTextCalls
-        font.glyphsEmitted = 0; font.addTextCalls = 0
-        val perfText = "${fps}fps ${lastFrameMs.toInt()}ms b=${lastBuildMs.toInt()} f=${lastFlushMs.toInt()} g=$g tc=$tc"
+        val perfText = "${fps}fps ${lastFrameMs.toInt()}ms"
         rc.text(perfText, rc.dp(8f), rc.dp(16f), rc.sp(10), 0.4f, 0.8f, 0.4f)
         lastBuildMs = (System.nanoTime() - buildStart) / 1_000_000f
 
@@ -189,11 +186,7 @@ class GLRenderer(
 
         inputHandler?.hitRects = rc.hitRects.toList()
 
-        val tapped = state.pendingTap
-        if (tapped != null) {
-            state.pendingTap = null
-            onItemTapped?.invoke(tapped)
-        }
+        // pendingTap handled directly in touch handler, not here
         val seasonChange = state.pendingSeasonChange
         if (seasonChange != null) {
             state.pendingSeasonChange = null
