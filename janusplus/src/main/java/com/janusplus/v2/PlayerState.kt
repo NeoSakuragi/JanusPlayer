@@ -74,6 +74,15 @@ class PlayerState(
     // Seekbar drag
     private var isDraggingSeekbar = false
 
+    // UI bounding boxes (set in draw, checked in handleTap)
+    private var backBtnRect = floatArrayOf(0f, 0f, 0f, 0f)     // x, y, w, h
+    private var settingsBtnRect = floatArrayOf(0f, 0f, 0f, 0f)
+    private var seekbarRect = floatArrayOf(0f, 0f, 0f, 0f)
+    private var prevCueRect = floatArrayOf(0f, 0f, 0f, 0f)
+    private var nextCueRect = floatArrayOf(0f, 0f, 0f, 0f)
+    private var prevCueVisible = false
+    private var nextCueVisible = false
+
     private var startTime = System.nanoTime()
 
     // Layout
@@ -217,15 +226,10 @@ class PlayerState(
         for (t in touches) {
             when (t.action) {
                 0 -> { // ACTION_DOWN
-                    // Check if starting a seekbar drag
-                    if ((mode == Mode.CONTROLS || mode == Mode.WORD_NAV) && screenW > 0) {
-                        val seekTop = barY - 36f
-                        val seekBot = barY + 48f
-                        if (t.y >= seekTop && t.y <= seekBot && t.x >= pad && t.x <= screenW - pad) {
-                            isDraggingSeekbar = true
-                            val progress = ((t.x - pad) / (screenW - pad * 2)).coerceIn(0f, 1f)
-                            seekTo((durationMs * progress).toLong().coerceIn(0, durationMs))
-                        }
+                    if ((mode == Mode.CONTROLS || mode == Mode.WORD_NAV) && aabbHit(t.x, t.y, seekbarRect)) {
+                        isDraggingSeekbar = true
+                        val progress = ((t.x - seekbarRect[0]) / seekbarRect[2]).coerceIn(0f, 1f)
+                        seekTo((durationMs * progress).toLong().coerceIn(0, durationMs))
                     }
                 }
                 2 -> { // ACTION_MOVE
@@ -357,58 +361,62 @@ class PlayerState(
         hlEnd = span.end
     }
 
+    private fun aabbHit(x: Float, y: Float, r: FloatArray): Boolean =
+        x >= r[0] && y >= r[1] && x <= r[0] + r[2] && y <= r[1] + r[3]
+
     private fun handleTap(app: App, x: Float, y: Float) {
-        // Seekbar — AABB check, same rect as debug green zone
-        val seekTop = barY - 36f  // dp(24f) at density ~1.5
-        val seekBottom = barY + 36f  // dp(24f) below
-        if ((mode == Mode.CONTROLS || mode == Mode.WORD_NAV) && screenW > 0) {
-            if (y >= seekTop && y <= seekBottom + 36f && x >= pad && x <= screenW - pad) {
-                val progress = ((x - pad) / (screenW - pad * 2)).coerceIn(0f, 1f)
-                val target = (durationMs * progress).toLong().coerceIn(0, durationMs)
-                seekTo(target)
+        // Priority 1: Settings panel — tap outside to close
+        if (mode == Mode.SETTINGS) {
+            val panelX = screenW - screenW * 0.35f
+            if (x < panelX) { mode = Mode.CONTROLS; controlsTimer = 0f }
+            return
+        }
+
+        // Priority 2: Controls buttons (only when controls visible)
+        if (mode == Mode.CONTROLS || mode == Mode.WORD_NAV) {
+            // Back button
+            if (aabbHit(x, y, backBtnRect)) { cleanup(app); app.goBack(); return }
+            // Settings button
+            if (aabbHit(x, y, settingsBtnRect)) { openSettings(); return }
+            // Seekbar
+            if (aabbHit(x, y, seekbarRect)) {
+                val progress = ((x - seekbarRect[0]) / seekbarRect[2]).coerceIn(0f, 1f)
+                seekTo((durationMs * progress).toLong().coerceIn(0, durationMs))
                 controlsTimer = 0f
                 return
             }
+            // Prev/next cue buttons
+            if (prevCueVisible && aabbHit(x, y, prevCueRect)) {
+                SrtParser.prevCueBefore(cues, positionMs)?.let { seekTo(it.startMs) }; return
+            }
+            if (nextCueVisible && aabbHit(x, y, nextCueRect)) {
+                SrtParser.nextCueAfter(cues, positionMs)?.let { seekTo(it.startMs) }; return
+            }
         }
 
-        // Subtitle character tap
-        if (charBoxes.isNotEmpty() && mode != Mode.SETTINGS) {
+        // Priority 3: Subtitle character tap → word nav
+        if (charBoxes.isNotEmpty()) {
             for (box in charBoxes) {
                 if (x >= box.x && x <= box.x + box.w && y >= box.y && y <= box.y + box.h) {
-                    val charIdx = box.charIdx
-                    val spanIdx = wordSpans.indexOfFirst { charIdx >= it.start && charIdx < it.end }
+                    val spanIdx = wordSpans.indexOfFirst { box.charIdx >= it.start && box.charIdx < it.end }
                     if (spanIdx >= 0) {
                         if (mode != Mode.WORD_NAV) pause()
-                        mode = Mode.WORD_NAV
-                        cursorIdx = spanIdx
-                        updateHighlight()
+                        mode = Mode.WORD_NAV; cursorIdx = spanIdx; updateHighlight()
                         return
                     }
                 }
             }
         }
 
-        // Settings — tap outside to close
-        if (mode == Mode.SETTINGS) {
-            val panelX = screenW - screenW * 0.35f
-            if (x < panelX) {
-                mode = Mode.CONTROLS
-                controlsTimer = 0f
-            }
-            return
-        }
-
-        // Double-tap seek
+        // Priority 4: Double-tap seek
         val now = System.currentTimeMillis()
         if (now - lastTapTime < 300) {
-            if (x < screenW / 2) seekRelative(-10000)
-            else seekRelative(10000)
-            lastTapTime = 0
-            return
+            if (x < screenW / 2) seekRelative(-10000) else seekRelative(10000)
+            lastTapTime = 0; return
         }
         lastTapTime = now
 
-        // Single tap — toggle controls
+        // Priority 5: Single tap — toggle controls
         when (mode) {
             Mode.PLAYING -> { mode = Mode.CONTROLS; controlsTimer = 0f; pause() }
             Mode.CONTROLS -> { mode = Mode.PLAYING; play() }
@@ -877,9 +885,10 @@ class PlayerState(
     // ── Controls Overlay ──
 
     private fun drawControls(app: App, rc: RC) {
-        // Play/pause icon (centered)
         val centerX = rc.w / 2f
         val centerY = rc.h / 2f
+
+        // Play/pause icon
         if (!isPlaying) {
             val playIcon = "▶"
             val iconSize = rc.sp(36)
@@ -888,66 +897,55 @@ class PlayerState(
                 iconSize, 1f, 1f, 1f, 0.8f)
         }
 
-        // Episode title at top
-        val title = "${episode.episode}. ${episode.title()}"
-        rc.text(title, pad, rc.dp(32f), rc.sp(16), 1f, 1f, 1f)
+        // Episode title
+        rc.text("${episode.episode}. ${episode.title()}", pad, rc.dp(32f), rc.sp(16), 1f, 1f, 1f)
 
-        // Back button
+        // Back button — store bbox
         rc.text("←", pad, rc.dp(60f), rc.sp(22), 0.8f, 0.8f, 0.8f)
-        rc.tappable(0f, 0f, rc.dp(80f), rc.dp(80f)) {
-            cleanup(app)
-            app.goBack()
-        }
+        backBtnRect = floatArrayOf(0f, 0f, rc.dp(80f), rc.dp(80f))
 
-        // Settings button (top right)
-        val gearText = "⚙"
-        val gearSize = rc.sp(22)
-        val gearW = rc.font.measureText(gearText, gearSize)
-        rc.text(gearText, rc.w - pad - gearW, rc.dp(32f), gearSize, 0.8f, 0.8f, 0.8f)
-        rc.tappable(rc.w - rc.dp(80f), 0f, rc.dp(80f), rc.dp(60f)) { openSettings() }
+        // Settings button — visible pill, store bbox
+        val setBtnW = rc.dp(80f)
+        val setBtnH = rc.dp(36f)
+        val setBtnX = rc.w - pad - setBtnW
+        val setBtnY = rc.dp(12f)
+        rc.solid(setBtnX, setBtnY, setBtnW, setBtnH, 0.102f, 0.102f, 0.180f)
+        val setLabel = Lang.s("settings")
+        val setLabelW = rc.font.measureText(setLabel, rc.sp(12))
+        rc.text(setLabel, setBtnX + (setBtnW - setLabelW) / 2f, setBtnY + rc.dp(24f), rc.sp(12), 0.733f, 0.525f, 0.988f)
+        settingsBtnRect = floatArrayOf(setBtnX, setBtnY, setBtnW, setBtnH)
 
-        // Seekbar background
-        rc.solid(pad, barY, rc.w - pad * 2, rc.dp(4f), 0.3f, 0.3f, 0.4f)
-
-        // Seekbar progress
-        val progress = if (durationMs > 0) positionMs.toFloat() / durationMs else 0f
+        // Seekbar
         val barW = rc.w - pad * 2
+        rc.solid(pad, barY, barW, rc.dp(4f), 0.3f, 0.3f, 0.4f)
+        val progress = if (durationMs > 0) positionMs.toFloat() / durationMs else 0f
         rc.solid(pad, barY, barW * progress, rc.dp(4f), 0.733f, 0.525f, 0.988f)
-
-        // Seekbar handle
         val handleX = pad + barW * progress
         rc.solid(handleX - rc.dp(6f), barY - rc.dp(6f), rc.dp(12f), rc.dp(16f), 1f, 1f, 1f)
+        seekbarRect = floatArrayOf(pad, barY - rc.dp(24f), barW, rc.dp(48f))
 
-        // Debug: show seekbar hit zone
-        rc.solid(pad, barY - rc.dp(24f), barW, rc.dp(48f), 0f, 1f, 0f, 0.15f)
-
-        // Time display
+        // Time
         val posStr = formatTime(positionMs)
         val durStr = formatTime(durationMs)
         rc.text(posStr, pad, barY + rc.dp(20f), rc.sp(12), 0.8f, 0.8f, 0.8f)
         val durW = rc.font.measureText(durStr, rc.sp(12))
         rc.text(durStr, rc.w - pad - durW, barY + rc.dp(20f), rc.sp(12), 0.8f, 0.8f, 0.8f)
 
-        // Prev/Next subtitle buttons when paused
+        // Prev/Next subtitle buttons
+        prevCueVisible = false; nextCueVisible = false
         if (!isPlaying && cues.isNotEmpty()) {
             val btnSize = rc.sp(22)
-            val prevText = "⏮"
-            val nextText = "⏭"
             val btnY = barY - rc.dp(40f)
 
-            // Prev subtitle
-            val prevW = rc.font.measureText(prevText, btnSize)
-            rc.text(prevText, centerX - rc.dp(60f) - prevW / 2f, btnY, btnSize, 0.8f, 0.8f, 0.8f)
-            rc.tappable(centerX - rc.dp(80f), btnY - rc.dp(20f), rc.dp(40f), rc.dp(40f)) {
-                SrtParser.prevCueBefore(cues, positionMs)?.let { seekTo(it.startMs) }
-            }
+            val prevW = rc.font.measureText("⏮", btnSize)
+            rc.text("⏮", centerX - rc.dp(60f) - prevW / 2f, btnY, btnSize, 0.8f, 0.8f, 0.8f)
+            prevCueRect = floatArrayOf(centerX - rc.dp(80f), btnY - rc.dp(20f), rc.dp(60f), rc.dp(40f))
+            prevCueVisible = true
 
-            // Next subtitle
-            val nextW = rc.font.measureText(nextText, btnSize)
-            rc.text(nextText, centerX + rc.dp(60f) - nextW / 2f, btnY, btnSize, 0.8f, 0.8f, 0.8f)
-            rc.tappable(centerX + rc.dp(40f), btnY - rc.dp(20f), rc.dp(40f), rc.dp(40f)) {
-                SrtParser.nextCueAfter(cues, positionMs)?.let { seekTo(it.startMs) }
-            }
+            val nextW = rc.font.measureText("⏭", btnSize)
+            rc.text("⏭", centerX + rc.dp(60f) - nextW / 2f, btnY, btnSize, 0.8f, 0.8f, 0.8f)
+            nextCueRect = floatArrayOf(centerX + rc.dp(30f), btnY - rc.dp(20f), rc.dp(60f), rc.dp(40f))
+            nextCueVisible = true
         }
     }
 
