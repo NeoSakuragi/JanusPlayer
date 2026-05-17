@@ -94,6 +94,19 @@ def build_atlas_png(thumb_paths, output_path, thumb_w, thumb_h):
         y = row * thumb_h
         try:
             img = Image.open(path).convert("RGBA")
+            # Center-crop to target aspect ratio, then resize
+            src_aspect = img.width / img.height
+            dst_aspect = thumb_w / thumb_h
+            if src_aspect > dst_aspect:
+                # Source is wider — crop sides
+                new_w = int(img.height * dst_aspect)
+                offset = (img.width - new_w) // 2
+                img = img.crop((offset, 0, offset + new_w, img.height))
+            elif src_aspect < dst_aspect:
+                # Source is taller — crop top/bottom
+                new_h = int(img.width / dst_aspect)
+                offset = (img.height - new_h) // 2
+                img = img.crop((0, offset, img.width, offset + new_h))
             img = img.resize((thumb_w, thumb_h), Image.LANCZOS)
             atlas.paste(img, (x, y))
         except Exception as e:
