@@ -77,6 +77,8 @@ class PlayerState(
     private var pad = 0f
     private var barH = 0f
     private var barY = 0f
+    private var screenW = 0f
+    private var screenH = 0f
     private var layoutDone = false
 
     // Settings panel
@@ -167,6 +169,8 @@ class PlayerState(
         pad = rc.dp(24f)
         barH = rc.dp(48f)
         barY = rc.h - barH - rc.dp(24f)
+        screenW = rc.w
+        screenH = rc.h
         layoutDone = true
     }
 
@@ -353,11 +357,11 @@ class PlayerState(
         }
 
         // Check seekbar tap
-        if (mode != Mode.PLAYING && mode != Mode.SETTINGS) {
-            val seekbarY = barY - app.height * 0.02f
-            val seekbarBottom = barY + app.height * 0.04f
-            if (y >= seekbarY && y <= seekbarBottom && x >= pad && x <= app.width - pad) {
-                val progress = (x - pad) / (app.width - pad * 2)
+        if (mode != Mode.PLAYING && mode != Mode.SETTINGS && screenW > 0) {
+            val seekbarY = barY - screenH * 0.02f
+            val seekbarBottom = barY + screenH * 0.04f
+            if (y >= seekbarY && y <= seekbarBottom && x >= pad && x <= screenW - pad) {
+                val progress = (x - pad) / (screenW - pad * 2)
                 val target = (durationMs * progress).toLong().coerceIn(0, durationMs)
                 seekTo(target)
                 return
@@ -382,7 +386,8 @@ class PlayerState(
             }
             Mode.SETTINGS -> {
                 // Tap outside panel closes it
-                if (x < app.width - app.width * 0.35f) {
+                val panelX = screenW - screenW * 0.35f
+                if (x < panelX) {
                     mode = Mode.CONTROLS
                     controlsTimer = 0f
                 }
@@ -409,7 +414,12 @@ class PlayerState(
             rc.text(loadText, (rc.w - tw) / 2f, rc.h / 2f, rc.sp(16), pulse, pulse, pulse)
         }
 
-        // ── Subtitle (cue layer) ──
+        // ── Controls overlay (BEHIND subtitles) ──
+        if (mode == Mode.CONTROLS || mode == Mode.WORD_NAV) {
+            drawControls(app, rc)
+        }
+
+        // ── Subtitle (cue layer, ON TOP of controls) ──
         if (currentCueText.isNotEmpty()) {
             drawCueLayer(rc)
         }
@@ -417,11 +427,6 @@ class PlayerState(
         // ── Dictionary popup (above subtitle) ──
         if (mode == Mode.WORD_NAV) {
             drawDictPopup(rc)
-        }
-
-        // ── Controls overlay ──
-        if (mode == Mode.CONTROLS || mode == Mode.WORD_NAV) {
-            drawControls(app, rc)
         }
 
         // ── Settings panel ──
@@ -456,8 +461,9 @@ class PlayerState(
         val furiganaExtra = if (readingMode == ReadingMode.ADVANCED && superCues.isNotEmpty()) lineH * deltaFurigana else 0f
         val totalH = totalTextH + furiganaExtra
 
-        // Position: centered horizontally, bottom-aligned with offset
-        val baseY = rc.h - rc.dp(60f) - deltaYShift * rc.density
+        // Position: centered horizontally, above seekbar with offset
+        val controlsH = if (mode == Mode.CONTROLS || mode == Mode.WORD_NAV) rc.dp(90f) else rc.dp(40f)
+        val baseY = rc.h - controlsH - deltaYShift * rc.density
         val topY = baseY - totalH
 
         // ── Background shade ──
