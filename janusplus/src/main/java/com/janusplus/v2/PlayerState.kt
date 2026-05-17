@@ -189,12 +189,7 @@ class PlayerState(
                     Mode.WORD_NAV -> { mode = Mode.CONTROLS; controlsTimer = 0f }
                 }
             }
-            android.view.KeyEvent.KEYCODE_BACK -> {
-                when (mode) {
-                    Mode.CONTROLS, Mode.WORD_NAV -> { mode = Mode.PLAYING; play() }
-                    Mode.PLAYING -> { cleanup(app); app.goBack() }
-                }
-            }
+            // BACK handled by Activity.onBackPressed
         }
     }
 
@@ -377,7 +372,7 @@ class PlayerState(
 
     private var appRef: App? = null
 
-    private fun play() {
+    fun play() {
         isPlaying = true
         appRef?.onMainThread?.invoke(Runnable { appRef?.exoPlayer?.play() })
     }

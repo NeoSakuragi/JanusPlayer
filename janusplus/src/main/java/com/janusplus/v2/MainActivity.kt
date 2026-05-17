@@ -86,13 +86,16 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun dispatchKeyEvent(event: android.view.KeyEvent): Boolean {
-        if (event.keyCode == android.view.KeyEvent.KEYCODE_VOLUME_UP ||
-            event.keyCode == android.view.KeyEvent.KEYCODE_VOLUME_DOWN ||
-            event.keyCode == android.view.KeyEvent.KEYCODE_VOLUME_MUTE) {
+        val code = event.keyCode
+        // Let system handle volume and back
+        if (code == android.view.KeyEvent.KEYCODE_VOLUME_UP ||
+            code == android.view.KeyEvent.KEYCODE_VOLUME_DOWN ||
+            code == android.view.KeyEvent.KEYCODE_VOLUME_MUTE ||
+            code == android.view.KeyEvent.KEYCODE_BACK) {
             return super.dispatchKeyEvent(event)
         }
         if (event.action == android.view.KeyEvent.ACTION_DOWN) {
-            app.keyQueue.add(event.keyCode)
+            app.keyQueue.add(code)
             return true
         }
         return super.dispatchKeyEvent(event)
@@ -100,6 +103,16 @@ class MainActivity : AppCompatActivity() {
 
     @Suppress("DEPRECATION")
     override fun onBackPressed() {
+        // Player handles back specially (resume before exit)
+        val state = app.currentState
+        if (state is PlayerState) {
+            if (state.mode != PlayerState.Mode.PLAYING) {
+                state.mode = PlayerState.Mode.PLAYING
+                state.play()
+                return
+            }
+            state.cleanup(app)
+        }
         if (!app.goBack()) super.onBackPressed()
     }
 
