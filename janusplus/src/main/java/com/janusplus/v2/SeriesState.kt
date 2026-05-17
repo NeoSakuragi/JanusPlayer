@@ -17,6 +17,9 @@ class SeriesState(private val item: JanusApi.LibraryItem) : GameState {
     )
     data class EpisodeCard(val episode: Int, val titleEn: String, val durationSec: Int)
 
+    // Full episode data for playback — fetched lazily
+    @Volatile var fullEpisodes: List<JanusApi.Episode>? = null
+
     @Volatile var pageData: PageData? = null
     @Volatile var bannerReady = false
     @Volatile var atlasReady = false
@@ -107,6 +110,10 @@ class SeriesState(private val item: JanusApi.LibraryItem) : GameState {
             atlasCols = header.atlasCols
             thumbWPx = header.thumbW.toFloat()
             thumbHPx = header.thumbH.toFloat()
+
+            // Fetch full episode data for playback (filenames, subtitles)
+            val seasonData = api.fetchSeasonBlob(item.id, 1)
+            if (alive && seasonData != null) fullEpisodes = seasonData.episodes
         }
 
         // Request 2: atlas JPEG (~0.5-2MB, arrives in background)
@@ -206,6 +213,13 @@ class SeriesState(private val item: JanusApi.LibraryItem) : GameState {
         // Play button
         rc.solid(pad, ht + btnY, btnW, btnH, 0.733f, 0.525f, 0.988f)
         rc.text(Lang.s("play"), pad + rc.dp(20f), ht + btnY + rc.dp(30f), btnTextSize, 1f, 1f, 1f)
+        rc.tappable(pad, ht + btnY, btnW, btnH) {
+            val first = fullEpisodes?.firstOrNull()
+            if (first != null) {
+                val baseUrl = app.api?.let { "https://canneji.duckdns.org/janus" } ?: ""
+                app.transition(Screen.PLAYER, PlayerState(item, first, baseUrl))
+            }
+        }
 
         // Metadata
         if (data != null) {
@@ -258,6 +272,16 @@ class SeriesState(private val item: JanusApi.LibraryItem) : GameState {
                     y + thumbH + rc.dp(22f), cardTitleSize, cardW - textPad * 2, 1f, 1f, 1f)
                 rc.text("${ep.durationSec / 60} min", x + textPad,
                     y + thumbH + rc.dp(38f), cardDurSize, 0.533f, 0.533f, 0.533f)
+
+                // Tap to play
+                val epNum = ep.episode
+                rc.tappable(x, y, cardW, cardH) {
+                    val full = fullEpisodes?.firstOrNull { it.episode == epNum }
+                    if (full != null) {
+                        val baseUrl = app.api?.let { "https://canneji.duckdns.org/janus" } ?: ""
+                        app.transition(Screen.PLAYER, PlayerState(item, full, baseUrl))
+                    }
+                }
             } else {
                 rc.solid(x, y, cardW, thumbH, pulse, pulse, pulse + 0.02f)
                 rc.solid(x, y + thumbH, cardW, cardH - thumbH, pulse * 0.7f, pulse * 0.7f, pulse * 0.7f)

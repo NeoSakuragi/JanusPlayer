@@ -168,6 +168,10 @@ class App(private val context: Context, private val assets: android.content.res.
     var api: JanusApi? = null
     var library: List<JanusApi.LibraryItem> = emptyList()
 
+    // Player — created on main thread, controlled from GL thread via pending commands
+    @Volatile var exoPlayer: androidx.media3.exoplayer.ExoPlayer? = null
+    var onMainThread: ((Runnable) -> Unit)? = null
+
     // FPS
     private var frameCount = 0; private var fpsTimer = 0L; var fps = 0
 

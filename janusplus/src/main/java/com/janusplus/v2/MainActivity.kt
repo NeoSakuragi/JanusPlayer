@@ -19,6 +19,11 @@ class MainActivity : AppCompatActivity() {
 
         app = App(this, assets, resources.displayMetrics.density)
 
+        // ExoPlayer (main thread)
+        val player = androidx.media3.exoplayer.ExoPlayer.Builder(this).build()
+        app.exoPlayer = player
+        app.onMainThread = { runnable -> runOnUiThread(runnable) }
+
         glView = GLSurfaceView(this)
         glView.setEGLContextClientVersion(3)
         glView.setRenderer(app)
@@ -87,4 +92,9 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() { super.onResume(); if (::glView.isInitialized) glView.onResume() }
     override fun onPause() { super.onPause(); if (::glView.isInitialized) glView.onPause() }
+    override fun onDestroy() {
+        app.exoPlayer?.release()
+        app.exoPlayer = null
+        super.onDestroy()
+    }
 }
