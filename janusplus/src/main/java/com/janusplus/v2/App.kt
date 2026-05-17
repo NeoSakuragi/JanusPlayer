@@ -251,7 +251,9 @@ class App(private val context: Context, private val assets: android.content.res.
         // Update — may queue texture uploads
         currentState.update(this, touches)
 
-        // Flush all queued GL uploads
+        // Process pending atlases (sets uvMap+ready), then flush GL uploads
+        coverAtlas.processPending()
+        thumbAtlas.processPending()
         texArray.processUploads()
 
         // Draw

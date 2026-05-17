@@ -3,6 +3,7 @@ package com.janusplus
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Rect
+import java.util.concurrent.ConcurrentLinkedQueue
 
 class ThumbnailAtlas {
 
@@ -13,6 +14,10 @@ class ThumbnailAtlas {
     @Volatile private var ready = false
     @Volatile var layerIndex = 0
     var texArray: TextureArray? = null
+
+    // Background thread builds atlas + UV map, GL thread applies after upload
+    data class PendingAtlas(val bitmap: Bitmap, val uvMap: HashMap<String, ThumbUV>, val layer: Int)
+    val pendingQueue = ConcurrentLinkedQueue<PendingAtlas>()
 
     fun pack(entries: List<Pair<String, Bitmap>>, forLayer: Int) {
         if (entries.isEmpty()) return
@@ -62,15 +67,24 @@ class ThumbnailAtlas {
             bmp.recycle()
         }
 
-        // Stale check — if page changed while packing, discard
         if (forLayer != layerIndex) {
             atlas.recycle()
             return
         }
 
-        // Queue directly to texture array — processUploads() does the GL call
-        ta.uploadLayer(forLayer, atlas)
-        uvMap = newMap
+        pendingQueue.add(PendingAtlas(atlas, newMap, forLayer))
+    }
+
+    // Called on GL thread — uploads bitmap and THEN sets ready
+    fun processPending() {
+        val pending = pendingQueue.poll() ?: return
+        if (pending.layer != layerIndex) {
+            pending.bitmap.recycle()
+            return
+        }
+        val ta = texArray ?: return
+        ta.uploadLayer(pending.layer, pending.bitmap)
+        uvMap = pending.uvMap
         ready = true
     }
 
@@ -81,6 +95,7 @@ class ThumbnailAtlas {
     fun clear() {
         uvMap = HashMap()
         ready = false
+        while (true) { (pendingQueue.poll() ?: break).bitmap.recycle() }
         val ta = texArray
         if (ta != null) {
             layerIndex = ta.nextThumbLayer()
