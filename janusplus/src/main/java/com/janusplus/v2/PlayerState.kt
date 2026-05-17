@@ -239,7 +239,8 @@ class PlayerState(
                         isDraggingSeekbar = false
                         val progress = ((t.x - pad) / (screenW - pad * 2)).coerceIn(0f, 1f)
                         seekTo((durationMs * progress).toLong().coerceIn(0, durationMs))
-                        controlsTimer = 0f
+                        mode = Mode.PLAYING
+                        play()
                     } else {
                         handleTap(app, t.x, t.y)
                     }
