@@ -19,8 +19,18 @@ class MainActivity : AppCompatActivity() {
 
         app = App(this, assets, resources.displayMetrics.density)
 
-        // ExoPlayer (main thread)
-        val player = androidx.media3.exoplayer.ExoPlayer.Builder(this).build()
+        // ExoPlayer with aggressive buffering — start playback ASAP
+        val loadControl = androidx.media3.exoplayer.DefaultLoadControl.Builder()
+            .setBufferDurationsMs(
+                15_000,   // minBufferMs (default 50s)
+                30_000,   // maxBufferMs (default 50s)
+                500,      // bufferForPlaybackMs (default 2500ms) — start after 0.5s
+                1_000     // bufferForPlaybackAfterRebufferMs (default 5000ms)
+            )
+            .build()
+        val player = androidx.media3.exoplayer.ExoPlayer.Builder(this)
+            .setLoadControl(loadControl)
+            .build()
         app.exoPlayer = player
         app.onMainThread = { runnable -> runOnUiThread(runnable) }
 
