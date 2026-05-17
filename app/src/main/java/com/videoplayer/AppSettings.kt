@@ -52,6 +52,12 @@ class AppSettings(context: Context) {
         get() = prefs.getBoolean("subtitle_font_bold", false)
         set(value) = prefs.edit().putBoolean("subtitle_font_bold", value).apply()
 
+    // ── Theme ─────────────────────────────────────────────────────────
+
+    var darkMode: Boolean
+        get() = prefs.getBoolean("dark_mode", true)
+        set(value) = prefs.edit().putBoolean("dark_mode", value).apply()
+
     // ── Playback settings ────────────────────────────────────────────
 
     var hardwareDecoding: Boolean

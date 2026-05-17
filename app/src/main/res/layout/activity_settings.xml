@@ -54,6 +54,12 @@
                 <TextView android:id="@+id/tvLogoutStatus" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Logged in" android:textColor="#888888" android:textSize="13sp" android:layout_marginTop="2dp" />
             </LinearLayout>
 
+            <!-- Theme -->
+            <LinearLayout android:id="@+id/settingTheme" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:padding="12dp" android:background="@drawable/focus_highlight" android:focusable="true" android:clickable="true">
+                <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Theme" android:textColor="#EEEEEE" android:textSize="15sp" />
+                <TextView android:id="@+id/tvThemeValue" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Dark" android:textColor="#888888" android:textSize="13sp" android:layout_marginTop="2dp" />
+            </LinearLayout>
+
             <!-- Updates section -->
             <TextView
                 android:layout_width="match_parent"

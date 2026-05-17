@@ -135,6 +135,12 @@ class App(private val assets: android.content.res.AssetManager, val density: Flo
     val touchQueue = ConcurrentLinkedQueue<Touch>()
     @Volatile var hitRects: List<HitRect> = emptyList()
 
+    // Scroll — updated directly from touch thread, read by GL thread
+    @Volatile var scrollY = 0f
+    private var touchDownY = 0f
+    private var scrollAtDown = 0f
+    private var isTouchScrolling = false
+
     // State machine
     var currentScreen = Screen.HOME
     var currentState: GameState = HomeState()
@@ -228,17 +234,33 @@ class App(private val assets: android.content.res.AssetManager, val density: Flo
         hitRects = rc.hitRects.toList()
     }
 
-    // Touch handling — called from main thread
+    // Touch handling — called from main thread, scroll updates instantly
     fun onTouch(action: Int, x: Float, y: Float): Boolean {
-        if (action == 1) { // ACTION_UP
-            for (hr in hitRects) {
-                if (x >= hr.x && x <= hr.x + hr.w && y >= hr.y && y <= hr.y + hr.h) {
-                    hr.action()
-                    return true
+        when (action) {
+            0 -> { // ACTION_DOWN
+                touchDownY = y
+                scrollAtDown = scrollY
+                isTouchScrolling = false
+            }
+            2 -> { // ACTION_MOVE
+                val dy = touchDownY - y
+                if (!isTouchScrolling && Math.abs(dy) > 8f) isTouchScrolling = true
+                if (isTouchScrolling) {
+                    scrollY = (scrollAtDown + dy).coerceAtLeast(0f)
                 }
             }
+            1 -> { // ACTION_UP
+                if (!isTouchScrolling) {
+                    for (hr in hitRects) {
+                        if (x >= hr.x && x <= hr.x + hr.w && y >= hr.y && y <= hr.y + hr.h) {
+                            hr.action()
+                            return true
+                        }
+                    }
+                }
+                isTouchScrolling = false
+            }
         }
-        touchQueue.add(Touch(action, x, y))
         return true
     }
 }

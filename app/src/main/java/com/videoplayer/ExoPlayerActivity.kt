@@ -212,10 +212,20 @@ class ExoPlayerActivity : ComponentActivity() {
     private var wordNavSubText = ""
 
     // Subtitle rendering state
-    private val deltaFurigana = mutableFloatStateOf(0.8f)  // DF: furigana distance = cueRowHeight * DF
-    private val deltaRow = mutableFloatStateOf(1.8f)        // DR: row spacing = cueRowHeight * DR
-    private val deltaSpacing = mutableFloatStateOf(0f)      // DS: letter spacing in sp
-    private val deltaYShift = mutableFloatStateOf(0f)       // DY: Y shift from seekbar in dp
+    private val deltaFurigana = mutableFloatStateOf(0.9f)  // DF: furigana distance = cueRowHeight * DF
+    private val deltaRow = mutableFloatStateOf(1.4f)        // DR: row spacing = cueRowHeight * DR
+    private val deltaSpacing = mutableFloatStateOf(-0.5f)   // DS: letter spacing in sp
+    private val deltaYShift = mutableFloatStateOf(5f)       // DY: Y shift from seekbar in dp
+
+    // Opening/ending/next episode overlay
+    private val showSkipOpening = mutableStateOf(false)
+    private val showEndingCountdown = mutableStateOf(false)
+    private val endingCountdown = mutableIntStateOf(5)
+    private val endingCancelled = mutableStateOf(false)
+    private val hasNextEpisode = mutableStateOf(false)
+    private var openingMs = 0L
+    private var endingMs = 0L
+
     private var subCharBoxes = emptyArray<androidx.compose.ui.geometry.Rect>()
     private var subTextOffsetX = 0f
     private var subTextOffsetY = 0f
@@ -277,8 +287,8 @@ class ExoPlayerActivity : ComponentActivity() {
         val subsUrl = intent.getStringExtra(EXTRA_SUBS_URL)
         titleText.value = intent.getStringExtra(EXTRA_TITLE) ?: ""
         val startPos = intent.getLongExtra(EXTRA_START_POSITION, 0L)
-        var openingMs = 0L
-        var endingMs = 0L
+        openingMs = 0L
+        endingMs = 0L
 
         // Fetch season settings in background
         val seriesId = intent.getStringExtra(EXTRA_SERIES_ID)
@@ -325,6 +335,7 @@ class ExoPlayerActivity : ComponentActivity() {
         player.prepare()
         if (startPos > 0) player.seekTo(startPos)
         player.play()
+        startService(android.content.Intent(this, BackgroundPlayService::class.java))
         updateDlLabel()
 
         // Restore per-series settings when player is ready
@@ -445,18 +456,40 @@ class ExoPlayerActivity : ComponentActivity() {
                         currentSuperCue = null
                     }
 
-                    // Auto-next episode at end
-                    if (player.isPlaying && player.duration > 0 && pos >= player.duration - 1000) {
+                    // Check for next episode availability
+                    hasNextEpisode.value = intent.getStringExtra("next_video_url") != null
+
+                    // Opening skip button
+                    showSkipOpening.value = openingMs > 0 && pos < openingMs && pos > 1000
+
+                    // Ending countdown
+                    val inEndingZone = endingMs > 0 && player.duration > 0 && pos >= player.duration - endingMs
+                    if (inEndingZone && !endingCancelled.value && hasNextEpisode.value) {
+                        if (!showEndingCountdown.value) {
+                            showEndingCountdown.value = true
+                            endingCountdown.intValue = 5
+                        }
+                        val remaining = ((player.duration - pos) / 1000).toInt().coerceAtLeast(0)
+                        endingCountdown.intValue = remaining.coerceAtMost(5)
+                        if (remaining <= 0) {
+                            showEndingCountdown.value = false
+                            playNextEpisode()
+                        }
+                    } else if (!inEndingZone) {
+                        showEndingCountdown.value = false
+                        endingCancelled.value = false
+                    }
+
+                    // Auto-next at very end (no ending data)
+                    if (player.isPlaying && player.duration > 0 && pos >= player.duration - 1000 && endingMs == 0L) {
                         playNextEpisode()
                     }
 
                     // Condensed: speed up through gaps, skip opening/ending
                     if (condensedMode.value && player.isPlaying && screen.value == Screen.PLAYING) {
-                        // Skip opening
                         if (openingMs > 0 && pos < openingMs && pos < 5000) {
                             player.seekTo(openingMs)
                         }
-                        // Skip ending → next episode
                         if (endingMs > 0 && player.duration > 0 && pos >= player.duration - endingMs) {
                             playNextEpisode()
                         }
@@ -637,6 +670,114 @@ class ExoPlayerActivity : ComponentActivity() {
                 }
             }
 
+            // Skip Opening button — left side, above subs
+            val skipOpening by showSkipOpening
+            AnimatedVisibility(
+                visible = skipOpening && scr == Screen.PLAYING,
+                enter = fadeIn(tween(300)),
+                exit = fadeOut(tween(300)),
+                modifier = Modifier.align(Alignment.BottomStart)
+                    .padding(bottom = dimens.subBottomPadding + 80.dp, start = dimens.rowPadding)
+            ) {
+                Box(
+                    modifier = Modifier
+                        .background(Color(0xCC222222), RoundedCornerShape(8.dp))
+                        .clickable { player.seekTo(intent.getLongExtra("opening_ms_end", 0L).let { if (it > 0) it else openingMs }); showSkipOpening.value = false }
+                        .padding(horizontal = 20.dp, vertical = 10.dp)
+                ) {
+                    androidx.compose.material3.Text("Skip Opening ▶", color = Color.White, fontSize = 14.sp)
+                }
+            }
+
+            // Next Episode countdown — right side, above subs (Netflix-style)
+            val showCountdown by showEndingCountdown
+            val countdown by endingCountdown
+            val hasNext by hasNextEpisode
+            AnimatedVisibility(
+                visible = showCountdown && scr == Screen.PLAYING,
+                enter = fadeIn(tween(300)),
+                exit = fadeOut(tween(300)),
+                modifier = Modifier.align(Alignment.BottomEnd)
+                    .padding(bottom = dimens.subBottomPadding + 80.dp, end = dimens.rowPadding)
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .background(Color(0xFFBB86FC), RoundedCornerShape(8.dp))
+                            .clickable { showEndingCountdown.value = false; playNextEpisode() }
+                            .padding(horizontal = 20.dp, vertical = 10.dp)
+                    ) {
+                        androidx.compose.material3.Text("Next episode in $countdown", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                    }
+                    Box(
+                        modifier = Modifier
+                            .background(Color(0x88444444), RoundedCornerShape(8.dp))
+                            .clickable { endingCancelled.value = true; showEndingCountdown.value = false }
+                            .padding(horizontal = 12.dp, vertical = 10.dp)
+                    ) {
+                        androidx.compose.material3.Text("Cancel", color = Color(0xFFAAAAAA), fontSize = 13.sp)
+                    }
+                }
+            }
+
+            // Pause overlay: subtitle nav (touch only, left side)
+            val hasTouchScreen = remember { packageManager.hasSystemFeature(android.content.pm.PackageManager.FEATURE_TOUCHSCREEN) }
+            AnimatedVisibility(
+                visible = (scr == Screen.CONTROLS || scr == Screen.WORD_NAV) && hasTouchScreen,
+                enter = fadeIn(tween(200)),
+                exit = fadeOut(tween(200)),
+                modifier = Modifier.align(Alignment.BottomStart)
+                    .padding(bottom = dimens.subBottomPadding + 80.dp, start = dimens.rowPadding)
+            ) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Box(
+                        modifier = Modifier
+                            .background(Color(0xCC222222), RoundedCornerShape(8.dp))
+                            .clickable {
+                                val p = player.currentPosition
+                                val prev = superCues.lastOrNull { it.startMs < p - 300 }
+                                if (prev != null) player.seekTo(prev.startMs) else player.seekTo((p - 10000).coerceAtLeast(0))
+                            }
+                            .padding(horizontal = 16.dp, vertical = 10.dp)
+                    ) {
+                        androidx.compose.material3.Text("⏮", color = Color.White, fontSize = 18.sp)
+                    }
+                    Box(
+                        modifier = Modifier
+                            .background(Color(0xCC222222), RoundedCornerShape(8.dp))
+                            .clickable {
+                                val p = player.currentPosition
+                                val next = superCues.firstOrNull { it.startMs > p }
+                                if (next != null) player.seekTo(next.startMs) else player.seekTo(p + 10000)
+                            }
+                            .padding(horizontal = 16.dp, vertical = 10.dp)
+                    ) {
+                        androidx.compose.material3.Text("⏭", color = Color.White, fontSize = 18.sp)
+                    }
+                }
+            }
+            if (hasNext) {
+                AnimatedVisibility(
+                    visible = scr == Screen.CONTROLS || scr == Screen.WORD_NAV,
+                    enter = fadeIn(tween(200)),
+                    exit = fadeOut(tween(200)),
+                    modifier = Modifier.align(Alignment.BottomEnd)
+                        .padding(bottom = dimens.subBottomPadding + 80.dp, end = dimens.rowPadding)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .background(Color(0xCC222222), RoundedCornerShape(8.dp))
+                            .clickable { playNextEpisode() }
+                            .padding(horizontal = 20.dp, vertical = 10.dp)
+                    ) {
+                        androidx.compose.material3.Text("Next ⏭", color = Color.White, fontSize = 14.sp)
+                    }
+                }
+            }
+
             // Top: buttons row
             AnimatedVisibility(
                 visible = scr == Screen.CONTROLS || scr == Screen.LIST_SELECT || scr == Screen.WORD_NAV || scr == Screen.SETTINGS,
@@ -738,14 +879,19 @@ class ExoPlayerActivity : ComponentActivity() {
                 val textMeasurer = androidx.compose.ui.text.rememberTextMeasurer()
                 val df = deltaFurigana.floatValue
                 val dr = deltaRow.floatValue
+                val subTextColor = JanusTheme.subtitleText
+                val subShadowColor = JanusTheme.subtitleShadow
+                val shadeBgColor = JanusTheme.subtitleBg
+                val rubyColor = JanusTheme.subtitleRuby
+                val hlColor = JanusTheme.subtitleHighlight
                 val subStyle = androidx.compose.ui.text.TextStyle(
-                    fontSize = subFontSize, fontFamily = subFontFamily, color = Color.White,
+                    fontSize = subFontSize, fontFamily = subFontFamily, color = subTextColor,
                     textAlign = androidx.compose.ui.text.style.TextAlign.Center,
                     letterSpacing = deltaSpacing.floatValue.sp,
-                    shadow = androidx.compose.ui.graphics.Shadow(color = Color.Black, blurRadius = 8f)
+                    shadow = androidx.compose.ui.graphics.Shadow(color = subShadowColor, blurRadius = 8f)
                 )
                 val rubyStyle = androidx.compose.ui.text.TextStyle(
-                    fontSize = rubyFontSize, fontFamily = subFontFamily, color = Color(0xFFDDDDDD)
+                    fontSize = rubyFontSize, fontFamily = subFontFamily, color = rubyColor
                 )
 
                 // Pre-measure all lines
@@ -783,11 +929,18 @@ class ExoPlayerActivity : ComponentActivity() {
                         // Compute shade bounds
                         val lastLineY = canvasHeight - padV - cueRowHeight
                         val firstLineY = canvasHeight - padV - cueRowHeight - (numLines - 1) * cueRowHeight * dr
-                        val shadeTop = if (rubyList.isNotEmpty()) firstLineY - cueRowHeight * df else firstLineY - padV
+                        // Compute actual topmost furigana Y for line 0
+                        val firstLineRubys = rubyList.filter { it.start < (subLines.firstOrNull()?.length ?: 0) }
+                        var topFuriganaY = firstLineY
+                        if (firstLineRubys.isNotEmpty()) {
+                            val sampleRm = textMeasurer.measure("あ", style = androidx.compose.ui.text.TextStyle(fontSize = rubyFontSize, fontFamily = subFontFamily))
+                            topFuriganaY = firstLineY - cueRowHeight * df + (cueRowHeight - sampleRm.firstBaseline)
+                        }
+                        val shadeTop = topFuriganaY
                         val shadeBottom = lastLineY + cueRowHeight + padV
                         val shadePad = padH
                         drawRoundRect(
-                            Color(0x99000000),
+                            shadeBgColor,
                             topLeft = androidx.compose.ui.geometry.Offset(0f, shadeTop),
                             size = androidx.compose.ui.geometry.Size(canvasWidth, shadeBottom - shadeTop),
                             cornerRadius = androidx.compose.ui.geometry.CornerRadius(6f * density)
@@ -816,7 +969,7 @@ class ExoPlayerActivity : ComponentActivity() {
                                     val hlLeft = lineMeasured.getBoundingBox(hlLocalStart.coerceAtMost(lineText.length - 1)).left
                                     val hlRight = lineMeasured.getBoundingBox((hlLocalEnd - 1).coerceAtMost(lineText.length - 1)).right
                                     drawRect(
-                                        Color(0xFF7986CB),
+                                        hlColor,
                                         topLeft = androidx.compose.ui.geometry.Offset(lineX + hlLeft, lineY),
                                         size = androidx.compose.ui.geometry.Size(hlRight - hlLeft, cueRowHeight)
                                     )
@@ -1140,6 +1293,17 @@ class ExoPlayerActivity : ComponentActivity() {
         // Font size
         rows.add(SettingsRow("Aa", "Size", "${FONT_SIZES[fontSizeIdx.intValue]}sp") { cycleFontSize() })
 
+        // Background play
+        val bgLabel = if (backgroundPlay.value) "ON" else "OFF"
+        rows.add(SettingsRow("🎧", "Background play", bgLabel) {
+            backgroundPlay.value = !backgroundPlay.value
+            if (backgroundPlay.value) {
+                startService(android.content.Intent(this@ExoPlayerActivity, BackgroundPlayService::class.java))
+            } else {
+                stopService(android.content.Intent(this@ExoPlayerActivity, BackgroundPlayService::class.java))
+            }
+        })
+
         // Condensed
         rows.add(SettingsRow("⏩", "Condensed", if (condensedMode.value) "ON" else "OFF") { toggleCondensed() })
 
@@ -1202,11 +1366,30 @@ class ExoPlayerActivity : ComponentActivity() {
                         ?: subtitleCues.firstOrNull { it.startMs > pos }?.let { JanusApi.SuperCue(it.startMs, it.endMs, emptyList()) }
                     if (next != null) player.seekTo(next.startMs) else player.seekTo(pos + 10000)
                 }
-                KeyEvent.KEYCODE_DPAD_UP -> { player.pause(); goto(Screen.CONTROLS, CTRL_SETTINGS) }
+                KeyEvent.KEYCODE_DPAD_UP -> {
+                    if (showSkipOpening.value) {
+                        player.seekTo(openingMs); showSkipOpening.value = false
+                    } else if (showEndingCountdown.value) {
+                        showEndingCountdown.value = false; playNextEpisode()
+                    } else {
+                        player.pause(); goto(Screen.CONTROLS, CTRL_SETTINGS)
+                    }
+                }
+                KeyEvent.KEYCODE_DPAD_DOWN -> {
+                    if (showEndingCountdown.value) {
+                        endingCancelled.value = true; showEndingCountdown.value = false
+                    }
+                }
                 KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE -> { if (player.isPlaying) player.pause() else player.play() }
                 KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> {
-                    player.pause()
-                    if (!enterWordNav()) goto(Screen.CONTROLS, CTRL_SEEK)
+                    if (showSkipOpening.value) {
+                        player.seekTo(openingMs); showSkipOpening.value = false
+                    } else if (showEndingCountdown.value) {
+                        showEndingCountdown.value = false; playNextEpisode()
+                    } else {
+                        player.pause()
+                        if (!enterWordNav()) goto(Screen.CONTROLS, CTRL_SEEK)
+                    }
                 }
                 else -> return false
             }
@@ -1735,16 +1918,19 @@ class ExoPlayerActivity : ComponentActivity() {
             .apply()
     }
 
+    private val backgroundPlay = mutableStateOf(true)
+
     override fun onPause() {
         super.onPause()
         saveProgress()
-        player.pause()
+        if (!backgroundPlay.value) player.pause()
     }
 
     override fun onDestroy() {
         super.onDestroy()
         flushDebugEvents()
         saveProgress()
+        stopService(android.content.Intent(this, BackgroundPlayService::class.java))
         handler.removeCallbacksAndMessages(null)
         player.release()
     }

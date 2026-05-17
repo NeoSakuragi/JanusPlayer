@@ -61,8 +61,15 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    override fun onTouchEvent(event: MotionEvent): Boolean {
-        return app.onTouch(event.action, event.x, event.y)
+    override fun dispatchTouchEvent(event: MotionEvent): Boolean {
+        val action = event.actionMasked
+        if (action == MotionEvent.ACTION_MOVE) {
+            for (i in 0 until event.historySize) {
+                app.onTouch(action, event.getHistoricalX(i), event.getHistoricalY(i))
+            }
+        }
+        app.onTouch(action, event.x, event.y)
+        return true
     }
 
     override fun onResume() { super.onResume(); if (::glView.isInitialized) glView.onResume() }

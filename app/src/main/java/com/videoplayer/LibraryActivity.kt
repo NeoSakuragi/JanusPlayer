@@ -120,6 +120,7 @@ class LibraryActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
 
         val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+        JanusTheme.isDark.value = AppSettings(this).darkMode
         serverUrl.value = prefs.getString("server_url", DEFAULT_SERVER_URL) ?: DEFAULT_SERVER_URL
         api = JanusApi(serverUrl.value)
         @Suppress("DEPRECATION")
@@ -179,6 +180,7 @@ class LibraryActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        JanusTheme.isDark.value = AppSettings(this).darkMode
         val navScreen = when (screen.value) {
             Screen.LOGIN -> AppNavigator.Screen.MAIN
             Screen.MAIN, Screen.DOWNLOADS -> AppNavigator.Screen.MAIN
@@ -200,7 +202,7 @@ class LibraryActivity : ComponentActivity() {
         val showCursor by showCursorState
 
         Box(
-            modifier = Modifier.fillMaxSize().background(Color(0xFF0A0A1A))
+            modifier = Modifier.fillMaxSize().background(JanusTheme.bg)
                 .pointerInput(Unit) {
                     awaitPointerEventScope {
                         while (true) {
@@ -654,7 +656,7 @@ class LibraryActivity : ComponentActivity() {
         }
 
         Box(
-            modifier = Modifier.fillMaxSize().background(Color(0xFF0A0A1A)),
+            modifier = Modifier.fillMaxSize().background(JanusTheme.bg),
             contentAlignment = Alignment.Center
         ) {
             Column(
@@ -817,13 +819,13 @@ class LibraryActivity : ComponentActivity() {
                     startX = 0f, endX = 600f
                 )))
                 Box(modifier = Modifier.fillMaxWidth().height(120.dp).align(Alignment.BottomCenter)
-                    .background(Brush.verticalGradient(listOf(Color.Transparent, Color(0xFF0A0A1A))))
+                    .background(Brush.verticalGradient(listOf(Color.Transparent, JanusTheme.bg)))
                 )
                 Box(modifier = Modifier.fillMaxWidth().height(60.dp).align(Alignment.TopCenter)
-                    .background(Brush.verticalGradient(listOf(Color(0xAA0A0A1A), Color.Transparent)))
+                    .background(Brush.verticalGradient(listOf(JanusTheme.bg.copy(alpha = 0.67f), Color.Transparent)))
                 )
                 Box(modifier = Modifier.fillMaxHeight().width(80.dp).align(Alignment.CenterEnd)
-                    .background(Brush.horizontalGradient(listOf(Color.Transparent, Color(0xAA0A0A1A)))
+                    .background(Brush.horizontalGradient(listOf(Color.Transparent, JanusTheme.bg.copy(alpha = 0.67f)))
                 ))
 
                 // Content overlaid on hero
@@ -867,12 +869,27 @@ class LibraryActivity : ComponentActivity() {
                                 .then(if (playFocused) Modifier.border(2.dp, Color.White, RoundedCornerShape(8.dp)) else Modifier)
                                 .background(Color(0xFFBB86FC), RoundedCornerShape(8.dp))
                                 .clickable { releasePreviewPlayer(); playItem() }
-                                .padding(horizontal = 20.dp, vertical = 14.dp),
-                            contentAlignment = Alignment.Center
                         ) {
-                            androidx.compose.material3.Text(
-                                resumeLabel, color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Bold
-                            )
+                            Column(modifier = Modifier.padding(horizontal = 20.dp, vertical = 14.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                                androidx.compose.material3.Text(
+                                    resumeLabel, color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Bold
+                                )
+                            }
+                            if (lastWatched != null) {
+                                val epNum = lastWatched.first
+                                val pos = getWatchProgress(item.id, epNum)
+                                val dur = getSharedPreferences("watch_progress", MODE_PRIVATE).getLong("${item.id}_ep${epNum}_dur", 0L)
+                                if (dur > 0 && pos > 0) {
+                                    val progress = (pos.toFloat() / dur).coerceIn(0f, 1f)
+                                    Box(
+                                        Modifier.align(Alignment.BottomStart).fillMaxWidth().height(3.dp)
+                                            .clip(RoundedCornerShape(bottomStart = 8.dp, bottomEnd = 8.dp))
+                                            .background(Color(0x44000000))
+                                    ) {
+                                        Box(Modifier.fillMaxHeight().fillMaxWidth(progress).background(Color.White, RoundedCornerShape(bottomStart = 8.dp)))
+                                    }
+                                }
+                            }
                         }
                         if (item.type == "MOVIE") {
                             val allDownloaded = detailEpisodes.all { ep ->

@@ -28,6 +28,7 @@ class SettingsActivity : AppCompatActivity() {
 
         localizeLabels()
         setupAccount()
+        setupTheme()
         setupUpdates()
         setupDownloads()
         setupPlaybackSettings()
@@ -196,6 +197,15 @@ class SettingsActivity : AppCompatActivity() {
                     runOnUiThread { tvLibStatus.text = "Failed: ${e.message}"; tvLibStatus.setTextColor(0xFFFF5252.toInt()) }
                 }
             }.start()
+        }
+    }
+
+    private fun setupTheme() {
+        val tvTheme = findViewById<TextView>(R.id.tvThemeValue)
+        tvTheme.text = if (settings.darkMode) "Dark" else "Light"
+        findViewById<LinearLayout>(R.id.settingTheme).setOnClickListener {
+            settings.darkMode = !settings.darkMode
+            tvTheme.text = if (settings.darkMode) "Dark" else "Light"
         }
     }
 
