@@ -28,6 +28,20 @@ object Lang {
         "all_fields_required" to mapOf("ja" to "すべて入力してください", "en" to "All fields required", "fr" to "Tous les champs requis"),
         "invalid_credentials" to mapOf("ja" to "認証エラー", "en" to "Invalid credentials", "fr" to "Identifiants invalides"),
         "settings" to mapOf("ja" to "設定", "en" to "Settings", "fr" to "Paramètres"),
+        "account" to mapOf("ja" to "アカウント", "en" to "Account", "fr" to "Compte"),
+        "logout" to mapOf("ja" to "ログアウト", "en" to "Logout", "fr" to "Déconnexion"),
+        "server_url" to mapOf("ja" to "サーバーURL", "en" to "Server URL", "fr" to "URL du serveur"),
+        "check_update" to mapOf("ja" to "アップデート確認", "en" to "Check for Update", "fr" to "Vérifier les mises à jour"),
+        "playback" to mapOf("ja" to "再生", "en" to "Playback", "fr" to "Lecture"),
+        "hardware_decoding" to mapOf("ja" to "ハードウェアデコード", "en" to "Hardware Decoding", "fr" to "Décodage matériel"),
+        "subtitles" to mapOf("ja" to "字幕", "en" to "Subtitles", "fr" to "Sous-titres"),
+        "font" to mapOf("ja" to "フォント", "en" to "Font", "fr" to "Police"),
+        "font_size" to mapOf("ja" to "フォントサイズ", "en" to "Font Size", "fr" to "Taille"),
+        "downloads" to mapOf("ja" to "ダウンロード", "en" to "Downloads", "fr" to "Téléchargements"),
+        "downloaded_episodes" to mapOf("ja" to "ダウンロード済み", "en" to "Downloaded Episodes", "fr" to "Épisodes téléchargés"),
+        "about" to mapOf("ja" to "アプリについて", "en" to "About", "fr" to "À propos"),
+        "language" to mapOf("ja" to "言語", "en" to "Language", "fr" to "Langue"),
+        "deck" to mapOf("ja" to "デッキ", "en" to "Deck", "fr" to "Paquet"),
     )
 
     fun s(key: String): String = strings[key]?.get(current) ?: strings[key]?.get("en") ?: key

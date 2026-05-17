@@ -1,5 +1,6 @@
 package com.janusplus.v2
 
+import android.view.KeyEvent
 import com.janusplus.Lang
 
 class SettingsState : GameState {
@@ -13,7 +14,9 @@ class SettingsState : GameState {
     private var contentW = 0f
     private var layoutDone = false
 
-    override fun init(app: App) {}
+    override fun init(app: App) {
+        app.scrollY = 0f
+    }
 
     private fun computeLayout(rc: RC) {
         pad = rc.dp(32f)
@@ -26,14 +29,20 @@ class SettingsState : GameState {
         layoutDone = true
     }
 
-    override fun update(app: App, touches: List<Touch>, keys: List<Int>) {}
+    override fun update(app: App, touches: List<Touch>, keys: List<Int>) {
+        for (key in keys) {
+            if (key == KeyEvent.KEYCODE_BACK) {
+                app.goBack()
+                return
+            }
+        }
+    }
 
     override fun draw(app: App, rc: RC) {
         if (!layoutDone) computeLayout(rc)
 
         val scrollY = app.scrollY
 
-        // Background
         rc.solid(0f, 0f, rc.w, rc.h, 0.039f, 0.039f, 0.102f)
 
         var y = pad - scrollY
@@ -45,51 +54,43 @@ class SettingsState : GameState {
         y += rc.dp(50f) + sectionGap
 
         // ── Account ──
-        y = drawSection(rc, y, "Account")
-        val username = "bruno"
-        y = drawRow(rc, y, Lang.s("logout"), username, 0.9f, 0.3f, 0.3f) {
-            // TODO: clear token, go to login
-        }
+        y = drawSection(rc, y, Lang.s("account"))
+        y = drawRow(rc, y, scrollY, Lang.s("logout"), "bruno", 0.9f, 0.3f, 0.3f)
         y += sectionGap
 
         // ── Server ──
-        y = drawSection(rc, y, "Server")
-        val serverUrl = app.api?.let { "canneji.duckdns.org" } ?: "—"
-        y = drawRow(rc, y, "Server URL", serverUrl)
-        y = drawRow(rc, y, "Check for Update", "") {
-            // TODO: check version
-        }
+        y = drawSection(rc, y, Lang.s("server"))
+        y = drawRow(rc, y, scrollY, Lang.s("server_url"), "canneji.duckdns.org")
+        y = drawRow(rc, y, scrollY, Lang.s("check_update"), "")
         y += sectionGap
 
         // ── Playback ──
         y = drawSection(rc, y, Lang.s("playback"))
-        y = drawRow(rc, y, "Hardware Decoding", "OFF")
+        y = drawRow(rc, y, scrollY, Lang.s("hardware_decoding"), "OFF")
         y += sectionGap
 
         // ── Subtitles ──
-        y = drawSection(rc, y, "Subtitles")
-        y = drawRow(rc, y, "Font", "Noto Sans JP")
-        y = drawRow(rc, y, "Font Size", "20px")
+        y = drawSection(rc, y, Lang.s("subtitles"))
+        y = drawRow(rc, y, scrollY, Lang.s("font"), "Noto Sans JP")
+        y = drawRow(rc, y, scrollY, Lang.s("font_size"), "20px")
         y += sectionGap
 
         // ── Anki ──
         y = drawSection(rc, y, "Anki")
-        y = drawRow(rc, y, "AnkiConnect", "http://127.0.0.1:8765")
-        y = drawRow(rc, y, "Deck", "Default")
-        y = drawRow(rc, y, "Note Type", "Basic")
+        y = drawRow(rc, y, scrollY, "AnkiConnect", "http://127.0.0.1:8765")
+        y = drawRow(rc, y, scrollY, Lang.s("deck"), "Default")
         y += sectionGap
 
         // ── Downloads ──
         y = drawSection(rc, y, Lang.s("downloads"))
-        y = drawRow(rc, y, "Downloaded Episodes", "0")
+        y = drawRow(rc, y, scrollY, Lang.s("downloaded_episodes"), "0")
         y += sectionGap
 
         // ── About ──
-        y = drawSection(rc, y, "About")
-        y = drawRow(rc, y, "Version", "0.7")
-        y = drawRow(rc, y, "Language", Lang.current.uppercase())
+        y = drawSection(rc, y, Lang.s("about"))
+        y = drawRow(rc, y, scrollY, "Version", "0.7")
+        y = drawRow(rc, y, scrollY, Lang.s("language"), Lang.current.uppercase())
 
-        // FPS
         rc.text("${app.fps}fps", rc.dp(8f), rc.dp(16f), rc.sp(10), 0.4f, 0.8f, 0.4f)
     }
 
@@ -99,7 +100,7 @@ class SettingsState : GameState {
         return y + rc.dp(32f)
     }
 
-    private fun drawRow(rc: RC, y: Float, label: String, value: String,
+    private fun drawRow(rc: RC, y: Float, scrollY: Float, label: String, value: String,
                         vr: Float = 0.533f, vg: Float = 0.533f, vb: Float = 0.533f,
                         action: (() -> Unit)? = null): Float {
         rc.text(label, pad, y + rc.dp(24f), labelSize, 1f, 1f, 1f)

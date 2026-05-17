@@ -44,8 +44,10 @@ class HomeState : GameState {
 
         // Header
         rc.text("Janus+", pad, pad + rc.dp(28f), rc.sp(28), 0.733f, 0.525f, 0.988f)
-        rc.text("⚙", rc.w - pad - rc.dp(24f), pad + rc.dp(28f), rc.sp(22), 0.533f, 0.533f, 0.533f)
-        rc.tappable(rc.w - pad - rc.dp(48f), pad, rc.dp(48f), rc.dp(48f)) {
+        val settingsLabel = Lang.s("settings")
+        val slW = rc.font.measureText(settingsLabel, rc.sp(14))
+        rc.text(settingsLabel, rc.w - pad - slW, pad + rc.dp(24f), rc.sp(14), 0.533f, 0.533f, 0.533f)
+        rc.tappable(rc.w - pad - slW - rc.dp(16f), pad, slW + rc.dp(32f), rc.dp(48f)) {
             app.transition(Screen.SETTINGS, SettingsState())
         }
 

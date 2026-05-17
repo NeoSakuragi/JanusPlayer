@@ -163,13 +163,13 @@ class SeriesState(private val item: JanusApi.LibraryItem) : GameState {
         val bBmp = pendingBannerBmp
         if (bBmp != null) {
             pendingBannerBmp = null
-            app.texArray.uploadLayer(TextureArray.LAYER_BANNER, bBmp)
+            app.texArray.uploadLayerNow(TextureArray.LAYER_BANNER, bBmp)
             bannerReady = true
         }
         val aBmp = pendingAtlasBmp
         if (aBmp != null) {
             pendingAtlasBmp = null
-            app.texArray.uploadLayer(atlasLayer, aBmp)
+            app.texArray.uploadLayerNow(atlasLayer, aBmp)
             atlasReady = true
         }
     }
