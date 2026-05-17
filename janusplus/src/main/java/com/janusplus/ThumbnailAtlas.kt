@@ -67,11 +67,6 @@ class ThumbnailAtlas {
             bmp.recycle()
         }
 
-        if (forLayer != layerIndex) {
-            atlas.recycle()
-            return
-        }
-
         pendingQueue.add(PendingAtlas(atlas, newMap, forLayer))
     }
 
