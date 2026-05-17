@@ -162,7 +162,7 @@ class SeriesState(private val item: JanusApi.LibraryItem) : GameState {
         } ?: item.title()
         rc.text("←", pad, ht + titleY, rc.sp(22), 0.533f, 0.533f, 0.533f)
         rc.tappable(0f, ht + titleY - rc.dp(20f), rc.dp(60f), rc.dp(60f)) {
-            app.transition(Screen.HOME, HomeState())
+            app.goBack()
         }
         rc.textClipped(title, pad + rc.dp(34f), ht + titleY, titleSize, contentMaxW, 1f, 1f, 1f)
 

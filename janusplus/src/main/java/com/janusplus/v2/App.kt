@@ -1,8 +1,12 @@
 package com.janusplus.v2
 
+import android.content.Context
 import android.opengl.GLES30
 import android.opengl.GLSurfaceView
 import android.opengl.Matrix
+import android.view.MotionEvent
+import android.view.VelocityTracker
+import android.widget.OverScroller
 import com.janusplus.FontAtlas
 import com.janusplus.QuadBatch
 import com.janusplus.ShaderProgram
@@ -117,7 +121,7 @@ class RC(
 
 // ── Main app ──
 
-class App(private val assets: android.content.res.AssetManager, val density: Float) : GLSurfaceView.Renderer {
+class App(private val context: Context, private val assets: android.content.res.AssetManager, val density: Float) : GLSurfaceView.Renderer {
 
     lateinit var shader: ShaderProgram
     lateinit var batch: QuadBatch
@@ -135,16 +139,22 @@ class App(private val assets: android.content.res.AssetManager, val density: Flo
     val touchQueue = ConcurrentLinkedQueue<Touch>()
     @Volatile var hitRects: List<HitRect> = emptyList()
 
-    // Scroll — updated directly from touch thread, read by GL thread
+    // Scroll — VelocityTracker + OverScroller, same physics as native Android
     @Volatile var scrollY = 0f
+    private val scroller = OverScroller(context)
+    private var velocityTracker: VelocityTracker? = null
     private var touchDownY = 0f
     private var scrollAtDown = 0f
     private var isTouchScrolling = false
+
+    // Navigation stack
+    private val backStack = mutableListOf<Pair<Screen, GameState>>()
 
     // State machine
     var currentScreen = Screen.HOME
     var currentState: GameState = HomeState()
     var pendingTransition: Pair<Screen, GameState>? = null
+    private var isBackNavigation = false
 
     // Shared data
     var api: JanusApi? = null
@@ -155,6 +165,14 @@ class App(private val assets: android.content.res.AssetManager, val density: Flo
 
     fun transition(screen: Screen, state: GameState) {
         pendingTransition = screen to state
+    }
+
+    fun goBack(): Boolean {
+        if (backStack.isEmpty()) return false
+        val prev = backStack.removeAt(backStack.lastIndex)
+        isBackNavigation = true
+        pendingTransition = prev
+        return true
     }
 
     override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
@@ -205,6 +223,10 @@ class App(private val assets: android.content.res.AssetManager, val density: Flo
         val trans = pendingTransition
         if (trans != null) {
             pendingTransition = null
+            if (!isBackNavigation) {
+                backStack.add(currentScreen to currentState)
+            }
+            isBackNavigation = false
             currentState.cleanup(this)
             currentScreen = trans.first
             currentState = trans.second
@@ -214,6 +236,11 @@ class App(private val assets: android.content.res.AssetManager, val density: Flo
         // Poll input
         val touches = mutableListOf<Touch>()
         while (true) { touches.add(touchQueue.poll() ?: break) }
+
+        // Scroll fling (OverScroller — same deceleration curve as native Android)
+        if (scroller.computeScrollOffset()) {
+            scrollY = scroller.currY.toFloat().coerceAtLeast(0f)
+        }
 
         // Update
         currentState.update(this, touches)
@@ -234,33 +261,51 @@ class App(private val assets: android.content.res.AssetManager, val density: Flo
         hitRects = rc.hitRects.toList()
     }
 
-    // Touch handling — called from main thread, scroll updates instantly
-    fun onTouch(action: Int, x: Float, y: Float): Boolean {
+    fun onTouchEvent(event: MotionEvent) {
+        val action = event.actionMasked
+        val x = event.x
+        val y = event.y
+
         when (action) {
-            0 -> { // ACTION_DOWN
+            MotionEvent.ACTION_DOWN -> {
+                scroller.forceFinished(true)
+                velocityTracker?.recycle()
+                velocityTracker = VelocityTracker.obtain()
+                velocityTracker?.addMovement(event)
                 touchDownY = y
                 scrollAtDown = scrollY
                 isTouchScrolling = false
             }
-            2 -> { // ACTION_MOVE
+            MotionEvent.ACTION_MOVE -> {
+                velocityTracker?.addMovement(event)
                 val dy = touchDownY - y
-                if (!isTouchScrolling && Math.abs(dy) > 8f) isTouchScrolling = true
+                if (!isTouchScrolling && Math.abs(dy) > 12f) isTouchScrolling = true
                 if (isTouchScrolling) {
                     scrollY = (scrollAtDown + dy).coerceAtLeast(0f)
                 }
             }
-            1 -> { // ACTION_UP
-                if (!isTouchScrolling) {
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                if (!isTouchScrolling && action == MotionEvent.ACTION_UP) {
                     for (hr in hitRects) {
                         if (x >= hr.x && x <= hr.x + hr.w && y >= hr.y && y <= hr.y + hr.h) {
                             hr.action()
-                            return true
+                            velocityTracker?.recycle(); velocityTracker = null
+                            return
                         }
                     }
                 }
+                if (isTouchScrolling) {
+                    velocityTracker?.apply {
+                        addMovement(event)
+                        computeCurrentVelocity(1000, 8000f * density)
+                        val vy = -yVelocity.toInt()
+                        scroller.fling(0, scrollY.toInt(), 0, vy,
+                            0, 0, 0, Int.MAX_VALUE / 2)
+                    }
+                }
                 isTouchScrolling = false
+                velocityTracker?.recycle(); velocityTracker = null
             }
         }
-        return true
     }
 }

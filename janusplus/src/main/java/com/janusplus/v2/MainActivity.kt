@@ -17,7 +17,7 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
-        app = App(assets, resources.displayMetrics.density)
+        app = App(this, assets, resources.displayMetrics.density)
 
         glView = GLSurfaceView(this)
         glView.setEGLContextClientVersion(3)
@@ -62,14 +62,13 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun dispatchTouchEvent(event: MotionEvent): Boolean {
-        val action = event.actionMasked
-        if (action == MotionEvent.ACTION_MOVE) {
-            for (i in 0 until event.historySize) {
-                app.onTouch(action, event.getHistoricalX(i), event.getHistoricalY(i))
-            }
-        }
-        app.onTouch(action, event.x, event.y)
+        app.onTouchEvent(event)
         return true
+    }
+
+    @Suppress("DEPRECATION")
+    override fun onBackPressed() {
+        if (!app.goBack()) super.onBackPressed()
     }
 
     override fun onResume() { super.onResume(); if (::glView.isInitialized) glView.onResume() }
