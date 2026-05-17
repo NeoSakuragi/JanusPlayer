@@ -21,7 +21,6 @@ class ThumbnailAtlas {
 
     fun pack(entries: List<Pair<String, Bitmap>>, forLayer: Int) {
         if (entries.isEmpty()) return
-        val ta = texArray ?: return
 
         val thumbW = entries.first().second.width
         val thumbH = entries.first().second.height
@@ -56,7 +55,7 @@ class ThumbnailAtlas {
             }
             canvas.drawBitmap(bmp, srcRect, Rect(x, y, x + thumbW, y + thumbH), null)
 
-            val layerSize = ta.size.toFloat()
+            val layerSize = (texArray?.size ?: 4096).toFloat()
             newMap[key] = ThumbUV(
                 x.toFloat() / layerSize,
                 y.toFloat() / layerSize,
