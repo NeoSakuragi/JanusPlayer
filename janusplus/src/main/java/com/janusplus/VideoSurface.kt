@@ -35,15 +35,13 @@ class VideoSurface {
 
     private var loggedMatrix = false
 
-    fun updateTexture() {
+    fun updateTexture(): Boolean {
         if (newFrame.getAndSet(false)) {
             surfaceTexture?.updateTexImage()
             surfaceTexture?.getTransformMatrix(transformMatrix)
-            if (!loggedMatrix) {
-                android.util.Log.e("VideoSurface", "Transform: [${transformMatrix.take(4).map { "%.2f".format(it) }}] [${transformMatrix.drop(4).take(4).map { "%.2f".format(it) }}] [${transformMatrix.drop(8).take(4).map { "%.2f".format(it) }}] [${transformMatrix.drop(12).map { "%.2f".format(it) }}]")
-                loggedMatrix = true
-            }
+            return true
         }
+        return false
     }
 
     fun bind() {

@@ -123,7 +123,9 @@ class PlayerState(
 
     override fun update(app: App, touches: List<Touch>, keys: List<Int>) {
         // Update video texture
-        app.videoSurface.updateTexture()
+        if (app.videoSurface.updateTexture()) {
+            firstFrameReceived = true
+        }
 
         // Find current cue
         val pos = positionMs
@@ -231,8 +233,12 @@ class PlayerState(
     override fun draw(app: App, rc: RC) {
         if (!layoutDone) computeLayout(rc)
 
-        // ── Video quad (full screen) ──
-        drawVideoQuad(app, rc)
+        // ── Video quad (full screen) — black until first frame
+        if (firstFrameReceived) {
+            drawVideoQuad(app, rc)
+        } else {
+            rc.solid(0f, 0f, rc.w, rc.h, 0f, 0f, 0f)
+        }
 
         // ── Subtitle (cue layer) ──
         if (currentCueText.isNotEmpty()) {
@@ -250,6 +256,7 @@ class PlayerState(
 
     @Volatile var videoWidth = 0
     @Volatile var videoHeight = 0
+    @Volatile var firstFrameReceived = false
 
     private fun drawVideoQuad(app: App, rc: RC) {
         // Flush any pending UI quads
