@@ -44,6 +44,10 @@ class HomeState : GameState {
 
         // Header
         rc.text("Janus+", pad, pad + rc.dp(28f), rc.sp(28), 0.733f, 0.525f, 0.988f)
+        rc.text("⚙", rc.w - pad - rc.dp(24f), pad + rc.dp(28f), rc.sp(22), 0.533f, 0.533f, 0.533f)
+        rc.tappable(rc.w - pad - rc.dp(48f), pad, rc.dp(48f), rc.dp(48f)) {
+            app.transition(Screen.SETTINGS, SettingsState())
+        }
 
         var sectionY = pad + rc.dp(56f)
 
