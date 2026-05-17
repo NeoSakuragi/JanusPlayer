@@ -251,10 +251,10 @@ class App(private val context: Context, private val assets: android.content.res.
         // Update — may queue texture uploads
         currentState.update(this, touches)
 
-        // Process all uploads AFTER update, BEFORE draw
-        texArray.processUploads()
+        // Process atlas results first (may queue to texArray), then flush all GL uploads
         coverAtlas.uploadIfNeeded()
         thumbAtlas.uploadIfNeeded()
+        texArray.processUploads()
 
         // Draw
         GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT)
