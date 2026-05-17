@@ -28,6 +28,7 @@ class MainActivity : AppCompatActivity() {
         // Load library on background thread
         thread {
             val api = JanusApi("https://canneji.duckdns.org/janus")
+            api.cacheDir = cacheDir
             val result = api.login("bruno", "janus2026")
             if (result != null) {
                 app.api = api

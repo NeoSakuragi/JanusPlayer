@@ -252,11 +252,48 @@ class JanusApi(private val baseUrl: String) {
         val atlasEtc2: ByteArray?
     )
 
+    var cacheDir: java.io.File? = null
+
     fun fetchPageBlob(itemId: String, seasonNum: Int): PageBlob? {
-        val request = authRequest("$baseUrl/api/page/$itemId/$seasonNum").build()
-        val response = try { client.newCall(request).execute() } catch (_: Exception) { return null }
-        if (!response.isSuccessful) return null
-        val bytes = response.body?.bytes() ?: return null
+        val cacheFile = cacheDir?.let { java.io.File(it, "pages/${itemId}_s${seasonNum}.bin") }
+        val etagFile = cacheDir?.let { java.io.File(it, "pages/${itemId}_s${seasonNum}.etag") }
+
+        var bytes: ByteArray
+        if (cacheFile != null && cacheFile.exists()) {
+            val storedEtag = if (etagFile?.exists() == true) etagFile.readText() else null
+            if (storedEtag != null) {
+                bytes = try {
+                    val req = authRequest("$baseUrl/api/page/$itemId/$seasonNum")
+                        .header("If-None-Match", storedEtag).build()
+                    val resp = client.newCall(req).execute()
+                    if (resp.code == 304) {
+                        cacheFile.readBytes()
+                    } else if (resp.isSuccessful) {
+                        val fetched = resp.body?.bytes() ?: cacheFile.readBytes()
+                        cacheFile.writeBytes(fetched)
+                        resp.header("ETag")?.let { etagFile?.writeText(it) }
+                        fetched
+                    } else {
+                        cacheFile.readBytes()
+                    }
+                } catch (_: Exception) {
+                    cacheFile.readBytes()
+                }
+            } else {
+                bytes = cacheFile.readBytes()
+            }
+        } else {
+            val request = authRequest("$baseUrl/api/page/$itemId/$seasonNum").build()
+            val response = try { client.newCall(request).execute() } catch (_: Exception) { return null }
+            if (!response.isSuccessful) return null
+            val fetched = response.body?.bytes() ?: return null
+            if (cacheFile != null) {
+                cacheFile.parentFile?.mkdirs()
+                cacheFile.writeBytes(fetched)
+                response.header("ETag")?.let { etagFile?.writeText(it) }
+            }
+            bytes = fetched
+        }
         if (bytes.size < 4) return null
 
         var off = 0

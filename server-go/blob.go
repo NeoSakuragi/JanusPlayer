@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
@@ -73,7 +74,7 @@ func warmBlobCache() {
 	log.Printf("Blob cache warmed")
 }
 
-// GET /api/page/{item_id}/{season} — pre-built page blob
+// GET /api/page/{item_id}/{season} — pre-built page blob with ETag support
 func handlePage(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, "/api/page/")
 	parts := strings.Split(path, "/")
@@ -84,14 +85,42 @@ func handlePage(w http.ResponseWriter, r *http.Request) {
 	itemID := parts[0]
 	season := parts[1]
 	key := fmt.Sprintf("page:%s:%s", itemID, season)
-	serveBlob(w, key, func() []byte {
+
+	// Load or cache the blob
+	var data []byte
+	if cached, ok := blobCache.Load(key); ok {
+		data = cached.([]byte)
+	} else {
 		filename := fmt.Sprintf("%s_s%s.bin", itemID, season)
-		data, err := os.ReadFile(filepath.Join(dataDir, "pages", filename))
+		var err error
+		data, err = os.ReadFile(filepath.Join(dataDir, "pages", filename))
 		if err != nil {
-			return nil
+			http.Error(w, "not found", 404)
+			return
 		}
-		return data
-	})
+		blobCache.Store(key, data)
+	}
+
+	// ETag based on content hash (computed once, cached alongside)
+	etagKey := key + ":etag"
+	var etag string
+	if cached, ok := blobCache.Load(etagKey); ok {
+		etag = cached.(string)
+	} else {
+		hash := sha256.Sum256(data)
+		etag = fmt.Sprintf(`"%x"`, hash[:8])
+		blobCache.Store(etagKey, etag)
+	}
+
+	w.Header().Set("ETag", etag)
+	if match := r.Header.Get("If-None-Match"); match == etag {
+		w.WriteHeader(304)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Content-Length", fmt.Sprintf("%d", len(data)))
+	w.Write(data)
 }
 
 func handleBlob(w http.ResponseWriter, r *http.Request) {
