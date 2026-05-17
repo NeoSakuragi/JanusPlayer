@@ -121,7 +121,7 @@ class PlayerState(
             val poller = object : Runnable {
                 override fun run() {
                     if (!alive || app.exoPlayer == null) return
-                    positionMs = player.currentPosition
+                    if (!isDraggingSeekbar) positionMs = player.currentPosition
                     durationMs = player.duration.coerceAtLeast(0)
                     isPlaying = player.isPlaying
                     isBuffering = player.playbackState == androidx.media3.common.Player.STATE_BUFFERING
