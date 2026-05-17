@@ -71,6 +71,9 @@ class PlayerState(
     private var lastTapTime = 0L
     private var lastTapX = 0f
 
+    // Seekbar drag
+    private var isDraggingSeekbar = false
+
     private var startTime = System.nanoTime()
 
     // Layout
@@ -210,9 +213,38 @@ class PlayerState(
             }
         }
 
-        // Touch handling
+        // Touch handling — all actions (DOWN=0, MOVE=2, UP=1)
         for (t in touches) {
-            if (t.action == 1) handleTap(app, t.x, t.y)
+            when (t.action) {
+                0 -> { // ACTION_DOWN
+                    // Check if starting a seekbar drag
+                    if ((mode == Mode.CONTROLS || mode == Mode.WORD_NAV) && screenW > 0) {
+                        val seekTop = barY - 36f
+                        val seekBot = barY + 48f
+                        if (t.y >= seekTop && t.y <= seekBot && t.x >= pad && t.x <= screenW - pad) {
+                            isDraggingSeekbar = true
+                            val progress = ((t.x - pad) / (screenW - pad * 2)).coerceIn(0f, 1f)
+                            seekTo((durationMs * progress).toLong().coerceIn(0, durationMs))
+                        }
+                    }
+                }
+                2 -> { // ACTION_MOVE
+                    if (isDraggingSeekbar && screenW > 0) {
+                        val progress = ((t.x - pad) / (screenW - pad * 2)).coerceIn(0f, 1f)
+                        positionMs = (durationMs * progress).toLong().coerceIn(0, durationMs)
+                    }
+                }
+                1 -> { // ACTION_UP
+                    if (isDraggingSeekbar) {
+                        isDraggingSeekbar = false
+                        val progress = ((t.x - pad) / (screenW - pad * 2)).coerceIn(0f, 1f)
+                        seekTo((durationMs * progress).toLong().coerceIn(0, durationMs))
+                        controlsTimer = 0f
+                    } else {
+                        handleTap(app, t.x, t.y)
+                    }
+                }
+            }
         }
 
         // D-pad handling
@@ -450,9 +482,10 @@ class PlayerState(
         val furiganaExtra = if (readingMode == ReadingMode.ADVANCED && superCues.isNotEmpty()) lineH * deltaFurigana else 0f
         val totalH = totalTextH + furiganaExtra
 
-        // Position: centered horizontally, above seekbar with offset
-        val controlsH = if (mode == Mode.CONTROLS || mode == Mode.WORD_NAV) rc.dp(90f) else rc.dp(40f)
-        val baseY = rc.h - controlsH - deltaYShift * rc.density
+        // Position: bottom of cue = top of seekbar bbox + padding, ALWAYS
+        val seekbarTopY = barY - rc.dp(24f)
+        val cueBottomPad = rc.dp(8f)
+        val baseY = seekbarTopY - cueBottomPad - deltaYShift * rc.density
         val topY = baseY - totalH
 
         // ── Background shade ──

@@ -319,6 +319,12 @@ class App(private val context: Context, private val assets: android.content.res.
         val x = event.x
         val y = event.y
 
+        // Player mode: queue ALL touch events directly, no scroll handling
+        if (currentScreen == Screen.PLAYER) {
+            touchQueue.add(Touch(action, x, y))
+            return
+        }
+
         when (action) {
             MotionEvent.ACTION_DOWN -> {
                 scroller.forceFinished(true)
@@ -339,7 +345,6 @@ class App(private val context: Context, private val assets: android.content.res.
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                 if (!isTouchScrolling && action == MotionEvent.ACTION_UP) {
-                    // Check hit rects first
                     var hitFound = false
                     for (hr in hitRects) {
                         if (x >= hr.x && x <= hr.x + hr.w && y >= hr.y && y <= hr.y + hr.h) {
@@ -348,7 +353,6 @@ class App(private val context: Context, private val assets: android.content.res.
                             break
                         }
                     }
-                    // Also queue to touchQueue for states that handle taps directly (PlayerState)
                     if (!hitFound) {
                         touchQueue.add(Touch(1, x, y))
                     }
