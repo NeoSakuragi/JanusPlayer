@@ -245,6 +245,40 @@ class JanusApi(private val baseUrl: String) {
         return entries
     }
 
+    data class PageBlob(
+        val metadataJson: String,
+        val bannerW: Int, val bannerH: Int, val bannerEtc2: ByteArray?,
+        val atlasW: Int, val atlasH: Int, val atlasCols: Int, val thumbCount: Int,
+        val atlasEtc2: ByteArray?
+    )
+
+    fun fetchPageBlob(itemId: String, seasonNum: Int): PageBlob? {
+        val request = authRequest("$baseUrl/api/page/$itemId/$seasonNum").build()
+        val response = try { client.newCall(request).execute() } catch (_: Exception) { return null }
+        if (!response.isSuccessful) return null
+        val bytes = response.body?.bytes() ?: return null
+        if (bytes.size < 4) return null
+
+        var off = 0
+        val metaLen = readInt(bytes, off); off += 4
+        val metaJson = String(bytes, off, metaLen, Charsets.UTF_8); off += metaLen
+
+        val bannerW = readInt(bytes, off); off += 4
+        val bannerH = readInt(bytes, off); off += 4
+        val bannerLen = readInt(bytes, off); off += 4
+        val bannerEtc2 = if (bannerLen > 0) bytes.copyOfRange(off, off + bannerLen) else null
+        off += bannerLen
+
+        val atlasW = readInt(bytes, off); off += 4
+        val atlasH = readInt(bytes, off); off += 4
+        val atlasCols = readInt(bytes, off); off += 4
+        val thumbCount = readInt(bytes, off); off += 4
+        val atlasLen = readInt(bytes, off); off += 4
+        val atlasEtc2 = if (atlasLen > 0) bytes.copyOfRange(off, off + atlasLen) else null
+
+        return PageBlob(metaJson, bannerW, bannerH, bannerEtc2, atlasW, atlasH, atlasCols, thumbCount, atlasEtc2)
+    }
+
     fun coverUrl(itemId: String) = "$baseUrl/api/covers/$itemId.jpg"
     fun bannerUrl(itemId: String) = "$baseUrl/api/covers/$itemId-banner.jpg"
 

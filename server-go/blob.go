@@ -73,6 +73,27 @@ func warmBlobCache() {
 	log.Printf("Blob cache warmed")
 }
 
+// GET /api/page/{item_id}/{season} — pre-built page blob
+func handlePage(w http.ResponseWriter, r *http.Request) {
+	path := strings.TrimPrefix(r.URL.Path, "/api/page/")
+	parts := strings.Split(path, "/")
+	if len(parts) != 2 {
+		http.Error(w, "not found", 404)
+		return
+	}
+	itemID := parts[0]
+	season := parts[1]
+	key := fmt.Sprintf("page:%s:%s", itemID, season)
+	serveBlob(w, key, func() []byte {
+		filename := fmt.Sprintf("%s_s%s.bin", itemID, season)
+		data, err := os.ReadFile(filepath.Join(dataDir, "pages", filename))
+		if err != nil {
+			return nil
+		}
+		return data
+	})
+}
+
 func handleBlob(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, "/api/blob/")
 	parts := strings.Split(path, "/")

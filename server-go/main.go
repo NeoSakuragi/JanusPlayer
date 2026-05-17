@@ -55,6 +55,7 @@ func main() {
 
 	// Packed blob endpoints
 	mux.HandleFunc("/api/blob/", handleBlob)
+	mux.HandleFunc("/api/page/", handlePage)
 
 	// Supercharged SRT
 	mux.HandleFunc("/api/super-srt/", handleSuperSRT)

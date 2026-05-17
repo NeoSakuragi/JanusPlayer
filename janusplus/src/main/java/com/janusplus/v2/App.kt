@@ -11,6 +11,7 @@ import com.janusplus.FontAtlas
 import com.janusplus.QuadBatch
 import com.janusplus.ShaderProgram
 import com.janusplus.TextureArray
+import com.janusplus.CompressedTextureArray
 import com.janusplus.ThumbnailAtlas
 import com.janusplus.VideoSurface
 import com.janusplus.JanusApi
@@ -86,6 +87,12 @@ class RC(
         return true
     }
 
+    // ETC2 compressed quads — layer offset 10 signals the shader to use uTexEtc2
+    fun etc2Quad(x: Float, y: Float, w: Float, h: Float,
+                 u0: Float, v0: Float, u1: Float, v1: Float, etc2Layer: Int) {
+        batch.addQuad(x, y, w, h, u0, v0, u1, v1, layer = (10 + etc2Layer).toFloat())
+    }
+
     fun banner(x: Float, y: Float, w: Float, h: Float, bannerW: Int, bannerH: Int): Boolean {
         if (bannerW == 0 || bannerH == 0) return false
         val texSize = texArray.size.toFloat()
@@ -127,6 +134,7 @@ class App(private val context: Context, private val assets: android.content.res.
     lateinit var batch: QuadBatch
     lateinit var font: FontAtlas
     lateinit var texArray: TextureArray
+    lateinit var etc2Array: CompressedTextureArray
     val coverAtlas = ThumbnailAtlas()
     val thumbAtlas = ThumbnailAtlas()
     val videoSurface = VideoSurface()
@@ -193,6 +201,9 @@ class App(private val context: Context, private val assets: android.content.res.
         font = FontAtlas(assets)
         font.initGL(texArray)
 
+        etc2Array = CompressedTextureArray(4096, 4)
+        etc2Array.initGL()
+
         coverAtlas.texArray = texArray
         coverAtlas.layerIndex = TextureArray.LAYER_COVERS
         thumbAtlas.texArray = texArray
@@ -247,11 +258,14 @@ class App(private val context: Context, private val assets: android.content.res.
 
         // Draw
         GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT)
+        etc2Array.processUploads()
         shader.use()
         GLES30.glUniformMatrix4fv(shader.uProj, 1, false, projMatrix, 0)
         GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
         GLES30.glUniform1i(shader.uTex, 0)
         texArray.bind()
+        etc2Array.bind(GLES30.GL_TEXTURE1)
+        GLES30.glUniform1i(shader.uTexEtc2, 1)
         batch.begin()
 
         val rc = RC(batch, font, texArray, coverAtlas, thumbAtlas, width, height, density)
