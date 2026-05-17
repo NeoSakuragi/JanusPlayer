@@ -78,7 +78,7 @@ class PlayerState(
             val handler = android.os.Handler(android.os.Looper.getMainLooper())
             val poller = object : Runnable {
                 override fun run() {
-                    if (app.exoPlayer == null) return
+                    if (!alive || app.exoPlayer == null) return
                     positionMs = player.currentPosition
                     durationMs = player.duration.coerceAtLeast(0)
                     isPlaying = player.isPlaying
@@ -289,7 +289,7 @@ class PlayerState(
 
         // Video quad with OES UVs (transform matrix handles orientation)
         rc.batch.begin()
-        rc.batch.addQuad(qx, qy, qw, qh, 0f, 0f, 1f, 1f, layer = 0f)
+        rc.batch.addQuad(qx, qy, qw, qh, 0f, 1f, 1f, 0f, layer = 0f)
         rc.batch.flush()
 
         // Switch back to main shader for UI overlay
@@ -398,10 +398,14 @@ class PlayerState(
         appRef?.onMainThread?.invoke(Runnable { appRef?.exoPlayer?.seekTo(ms) })
     }
 
+    @Volatile private var alive = true
+
     override fun cleanup(app: App) {
+        alive = false
         app.onMainThread?.invoke(Runnable {
             app.exoPlayer?.stop()
             app.exoPlayer?.clearMediaItems()
+            app.exoPlayer?.setVideoSurface(null)
         })
         appRef = null
     }
