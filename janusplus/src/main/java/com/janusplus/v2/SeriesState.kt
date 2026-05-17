@@ -112,7 +112,7 @@ class SeriesState(private val item: JanusApi.LibraryItem) : GameState {
             thumbHPx = header.thumbH.toFloat()
 
             // Fetch full episode data for playback (filenames, subtitles)
-            val seasonData = api.fetchSeasonBlob(item.id, 1)
+            val seasonData = api.fetchSeason(item.id, 1)
             if (alive && seasonData != null) fullEpisodes = seasonData.episodes
         }
 

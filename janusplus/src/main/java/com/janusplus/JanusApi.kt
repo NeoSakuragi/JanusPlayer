@@ -325,7 +325,7 @@ class JanusApi(private val baseUrl: String) {
         ((bytes[off + 3].toInt() and 0xFF) shl 24)
 
     private fun parseEpisode(obj: JSONObject): Episode = Episode(
-        season = obj.getInt("season"), episode = obj.getInt("episode"),
+        season = obj.optInt("season", 1), episode = obj.getInt("episode"),
         filename = obj.getString("filename"), durationSec = obj.getDouble("duration_sec"),
         watchProgressSec = obj.optDouble("watch_progress_sec", 0.0),
         completed = obj.optBoolean("completed", false),
