@@ -88,12 +88,13 @@ class GLRenderer(
         lastFrameTime = frameStart
         frameCount++
 
-        // Upload phase
+        // Upload phase — all VRAM writes happen here, before any rendering
         val uploadStart = System.nanoTime()
         textures.processUploads()
         texArray.processUploads()
         thumbAtlas.uploadIfNeeded()
         state.coverAtlas.uploadIfNeeded()
+        font.uploadDirtyGlyphs()
         lastUploadMs = (System.nanoTime() - uploadStart) / 1_000_000f
 
         state.seriesScroll.update(dt)
@@ -109,96 +110,13 @@ class GLRenderer(
         texArray.bind()
 
         if (state.screen == Screen.PLAYING) {
-            // ── GAME LOOP: poll → process → render ──
+            // ── TICK ──
+            Engine.tick()
 
-            // 1. Poll player state
-            val playerPos = GameLoop.playerPositionMs
-            val playerDur = GameLoop.playerDurationMs
-            val playerPlaying = GameLoop.playerIsPlaying
+            // ── UPDATE ──
+            Engine.updatePlayer()
 
-            // 2. Poll input
-            val touches = mutableListOf<GameLoop.TouchEvent>()
-            while (true) { touches.add(GameLoop.touchQueue.poll() ?: break) }
-
-            // 3. Process logic
-            val seekBarY = PlayerScreen.seekBarY
-            val seekBarX = PlayerScreen.seekBarX
-            val seekBarW = PlayerScreen.seekBarW
-
-            for (t in touches) {
-                val inSeekZone = PlayerScreen.showControls && seekBarW > 0 && t.y > seekBarY - 80f && t.y < seekBarY + 80f
-
-                when (t.action) {
-                    0 -> { // ACTION_DOWN
-                        if (inSeekZone) {
-                            GameLoop.isDragging = true
-                            GameLoop.cmdPause = true
-                            val frac = ((t.x - seekBarX) / seekBarW).coerceIn(0f, 1f)
-                            GameLoop.dragPositionMs = (frac * playerDur).toLong()
-                        } else if (PlayerScreen.showTrackList) {
-                            // handled on UP
-                        }
-                    }
-                    2 -> { // ACTION_MOVE
-                        if (GameLoop.isDragging && seekBarW > 0) {
-                            val frac = ((t.x - seekBarX) / seekBarW).coerceIn(0f, 1f)
-                            GameLoop.dragPositionMs = (frac * playerDur).toLong()
-                        }
-                    }
-                    1 -> { // ACTION_UP
-                        if (GameLoop.isDragging) {
-                            val frac = ((t.x - seekBarX) / seekBarW).coerceIn(0f, 1f)
-                            GameLoop.cmdSeek = (frac * playerDur).toLong()
-                            GameLoop.cmdPlay = true
-                            GameLoop.isDragging = false
-                        } else {
-                            // Check hit rects
-                            PlayerScreen.lastTapX = t.x
-                            var handled = false
-                            for (hr in inputHandler?.hitRects ?: emptyList()) {
-                                if (t.x >= hr.x && t.x <= hr.x + hr.w && t.y >= hr.y && t.y <= hr.y + hr.h) {
-                                    hr.action()
-                                    handled = true
-                                    break
-                                }
-                            }
-                            if (!handled) {
-                                if (PlayerScreen.showTrackList) {
-                                    PlayerScreen.showTrackList = false
-                                } else if (PlayerScreen.showControls) {
-                                    if (playerPlaying) GameLoop.cmdPause = true else GameLoop.cmdPlay = true
-                                } else {
-                                    PlayerScreen.toggleControls()
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Update player screen state
-            if (GameLoop.isDragging) {
-                PlayerScreen.positionMs = GameLoop.dragPositionMs
-                PlayerScreen.isPaused = true
-                PlayerScreen.controlsTimer = System.currentTimeMillis()
-            } else {
-                PlayerScreen.positionMs = playerPos
-                PlayerScreen.durationMs = playerDur
-                PlayerScreen.isPaused = !playerPlaying
-            }
-
-            // Auto-hide controls
-            if (PlayerScreen.showControls && playerPlaying && !GameLoop.isDragging &&
-                System.currentTimeMillis() - PlayerScreen.controlsTimer > 5000) {
-                PlayerScreen.showControls = false
-            }
-
-            // Subtitle change (still via callback since it needs network)
-            val pendingSub = PlayerScreen.pendingSubChange
-            if (pendingSub != null) { PlayerScreen.pendingSubChange = null; onSubChange?.invoke(pendingSub) }
-            // Commands (seek, pause, play, back) are handled by the main thread loop directly
-
-            // 4. Render
+            // ── RENDER ──
             GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT)
 
             // Video quad
@@ -210,8 +128,8 @@ class GLRenderer(
             GLES30.glUniform1i(shader.uTexExt, 0)
             videoSurface.bind()
             batch.begin()
-            val vw = PlayerScreen.videoWidth.toFloat()
-            val vh = PlayerScreen.videoHeight.toFloat()
+            val vw = Engine.videoWidth.toFloat()
+            val vh = Engine.videoHeight.toFloat()
             val qx: Float; val qy: Float; val qw: Float; val qh: Float
             if (vw > 0 && vh > 0) {
                 val videoAspect = vw / vh
@@ -233,10 +151,13 @@ class GLRenderer(
             batch.begin()
             val rc = ctx
             rc.hitRects.clear()
-            PlayerScreen.render(rc)
+            renderPlayerUI(rc)
             batch.flush()
-            inputHandler?.hitRects?.clear()
-            inputHandler?.hitRects?.addAll(rc.hitRects)
+            Engine.setHitRects(rc.hitRects.toList())
+
+            // Subtitle change callback (needs network)
+            val subCmd = Engine.cmdLoadSub
+            if (subCmd != null) { Engine.cmdLoadSub = null; onSubChange?.invoke(subCmd) }
             return
         }
 
@@ -266,8 +187,7 @@ class GLRenderer(
         batch.flush()
         lastFlushMs = (System.nanoTime() - flushStart) / 1_000_000f
 
-        inputHandler?.hitRects?.clear()
-        inputHandler?.hitRects?.addAll(rc.hitRects)
+        inputHandler?.hitRects = rc.hitRects.toList()
 
         val tapped = state.pendingTap
         if (tapped != null) {
@@ -316,6 +236,111 @@ class GLRenderer(
             frameCount = 0
             fpsTimer = frameStart
         }
+    }
+
+    private fun renderPlayerUI(rc: RenderCtx) {
+        val pad = rc.dp(32f)
+        val pos = Engine.displayPosition
+        val dur = Engine.displayDuration
+        val paused = Engine.displayPaused
+        val progress = if (dur > 0) pos.toFloat() / dur else 0f
+
+        // Subtitle
+        Engine.currentCueText?.let { text ->
+            val sizePx = rc.sp(28)
+            val lines = text.split("\n")
+            val lineH = rc.font.textHeight(sizePx)
+            val totalH = lines.size * lineH * 1.2f
+            val baseY = rc.h - rc.dp(80f) - totalH
+            for ((i, line) in lines.withIndex()) {
+                val textW = rc.font.measureText(line, sizePx)
+                val x = (rc.w - textW) / 2f
+                val y = baseY + i * lineH * 1.2f
+                rc.solid(x - rc.dp(12f), y - rc.dp(6f), textW + rc.dp(24f), lineH + rc.dp(12f), 0f, 0f, 0f, 0.65f)
+                rc.text(line, x, y + lineH * 0.8f, sizePx, 1f, 1f, 1f)
+            }
+        }
+
+        if (!Engine.showControls && !paused) return
+
+        // Top/bottom gradients
+        rc.gradient(0f, 0f, rc.w, rc.dp(100f),
+            floatArrayOf(0f, 0f, 0f, 0.7f), floatArrayOf(0f, 0f, 0f, 0.7f),
+            floatArrayOf(0f, 0f, 0f, 0f), floatArrayOf(0f, 0f, 0f, 0f))
+        rc.gradient(0f, rc.h - rc.dp(140f), rc.w, rc.dp(140f),
+            floatArrayOf(0f, 0f, 0f, 0f), floatArrayOf(0f, 0f, 0f, 0f),
+            floatArrayOf(0f, 0f, 0f, 0.8f), floatArrayOf(0f, 0f, 0f, 0.8f))
+
+        // Pause icon
+        if (paused) {
+            val cx = rc.w / 2f; val cy = rc.h / 2f
+            rc.solid(cx - rc.dp(40f), cy - rc.dp(40f), rc.dp(80f), rc.dp(80f), 0f, 0f, 0f, 0.4f)
+            rc.solid(cx - rc.dp(16f), cy - rc.dp(24f), rc.dp(10f), rc.dp(48f), 1f, 1f, 1f, 0.9f)
+            rc.solid(cx + rc.dp(6f), cy - rc.dp(24f), rc.dp(10f), rc.dp(48f), 1f, 1f, 1f, 0.9f)
+        }
+
+        // Top buttons
+        val btnY = rc.dp(20f); val btnH = rc.dp(40f); val btnW = rc.dp(50f)
+        rc.solid(pad, btnY, btnW, btnH, 0.165f, 0.165f, 0.227f, 0.8f)
+        rc.text("←", pad + rc.dp(16f), btnY + btnH * 0.7f, rc.sp(18), 1f, 1f, 1f)
+        rc.tappable(pad, btnY, btnW, btnH) { Engine.cmdBack = true }
+
+        var rx = rc.w - pad
+        rx -= btnW
+        rc.solid(rx, btnY, btnW, btnH, 0.165f, 0.165f, 0.227f, 0.8f)
+        rc.text("CC", rx + rc.dp(12f), btnY + btnH * 0.7f, rc.sp(13), 1f, 1f, 1f)
+        rc.tappable(rx, btnY, btnW, btnH) {
+            Engine.showTrackList = true; Engine.trackListType = "subs"
+            Engine.trackListItems = Engine.subtitleTracks.map { "${it.language} · ${it.label}" }.ifEmpty { listOf("None") }
+        }
+        rx -= btnW + rc.dp(8f)
+        rc.solid(rx, btnY, btnW, btnH, 0.165f, 0.165f, 0.227f, 0.8f)
+        rc.text("♪", rx + rc.dp(16f), btnY + btnH * 0.7f, rc.sp(16), 1f, 1f, 1f)
+        rc.tappable(rx, btnY, btnW, btnH) {
+            Engine.showTrackList = true; Engine.trackListType = "audio"
+            Engine.trackListItems = Engine.audioTrackNames.ifEmpty { listOf("Track 1") }
+        }
+
+        // Seekbar
+        val seekY = rc.h - rc.dp(64f)
+        val seekW = rc.w - pad * 2
+        Engine.seekBarX = pad; Engine.seekBarY = seekY; Engine.seekBarW = seekW
+        rc.solid(pad, seekY, seekW, rc.dp(6f), 0.27f, 0.27f, 0.27f, 0.8f)
+        rc.solid(pad, seekY, seekW * progress, rc.dp(6f), 0.733f, 0.525f, 0.988f)
+        val posText = formatTime(pos); val durText = formatTime(dur)
+        rc.text(posText, pad, seekY - rc.dp(18f), rc.sp(12), 1f, 1f, 1f, 0.8f)
+        val durW = rc.font.measureText(durText, rc.sp(12))
+        rc.text(durText, pad + seekW - durW, seekY - rc.dp(18f), rc.sp(12), 0.67f, 0.67f, 0.67f, 0.8f)
+
+        // Track list
+        if (Engine.showTrackList) {
+            val panelW = rc.dp(320f); val panelX = rc.w - panelW; val itemH = rc.dp(48f)
+            rc.solid(0f, 0f, rc.w, rc.h, 0f, 0f, 0f, 0.4f)
+            rc.solid(panelX, 0f, panelW, rc.h, 0.063f, 0.063f, 0.110f)
+            val title = if (Engine.trackListType == "audio") "Audio" else "Subtitles"
+            rc.text(title, panelX + rc.dp(20f), rc.dp(44f), rc.sp(18), 0.733f, 0.525f, 0.988f)
+            for ((i, item) in Engine.trackListItems.withIndex()) {
+                val y = rc.dp(68f) + i * itemH
+                val selected = when (Engine.trackListType) {
+                    "audio" -> i == Engine.selectedAudioIdx; "subs" -> i == Engine.selectedSubIdx; else -> false
+                }
+                if (selected) rc.solid(panelX + rc.dp(8f), y, panelW - rc.dp(16f), itemH, 0.15f, 0.15f, 0.22f)
+                rc.text((if (selected) "● " else "  ") + item, panelX + rc.dp(20f), y + itemH * 0.65f, rc.sp(14),
+                    if (selected) 0.733f else 0.8f, if (selected) 0.525f else 0.8f, if (selected) 0.988f else 0.8f)
+                rc.tappable(panelX, y, panelW, itemH) {
+                    when (Engine.trackListType) {
+                        "audio" -> Engine.selectedAudioIdx = i
+                        "subs" -> { Engine.selectedSubIdx = i; Engine.cmdLoadSub = i }
+                    }
+                    Engine.showTrackList = false
+                }
+            }
+        }
+    }
+
+    private fun formatTime(ms: Long): String {
+        val s = ms / 1000; val h = s / 3600; val m = (s % 3600) / 60; val sec = s % 60
+        return if (h > 0) "%d:%02d:%02d".format(h, m, sec) else "%d:%02d".format(m, sec)
     }
 
     var inputHandler: InputHandler? = null

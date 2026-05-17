@@ -14,7 +14,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 FONTS_DIR = Path("app/src/main/assets/fonts")
 OUTPUT_DIR = Path("janusplus/src/main/assets/baked_fonts")
-ATLAS_SIZE = 2048
+ATLAS_SIZE = 4096
 
 # Character ranges to bake
 RANGES = [
@@ -38,7 +38,7 @@ FONTS = {
     "shippori": "ShipporiMincho-Regular.ttf",
 }
 
-SIZES = [20, 28, 36]  # px sizes matching sp values at ~2x density
+SIZES = [40]  # bake at large size, scale down at render time
 
 
 def collect_codepoints():

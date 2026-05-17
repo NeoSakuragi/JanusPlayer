@@ -99,11 +99,6 @@ class JanusPlusActivity : AppCompatActivity() {
             runOnUiThread {
                 renderer.thumbAtlas.clear()
                 state.bannerReady = false
-                // Clear thumb+banner layers to black so stale pixels don't flash
-                val black = android.graphics.Bitmap.createBitmap(1, 1, android.graphics.Bitmap.Config.ARGB_8888)
-                black.setPixel(0, 0, 0xFF000000.toInt())
-                renderer.texArray.uploadLayer(TextureArray.LAYER_THUMBS, black.copy(android.graphics.Bitmap.Config.ARGB_8888, false))
-                renderer.texArray.uploadLayer(TextureArray.LAYER_BANNER, black)
                 state.openItem(item)
                 loadDetail(item)
             }
@@ -128,7 +123,7 @@ class JanusPlusActivity : AppCompatActivity() {
             if (pause) player?.pause() else player?.play()
         }
         renderer.onSubChange = { idx ->
-            val sub = PlayerScreen.subtitleTracks.getOrNull(idx)
+            val sub = Engine.subtitleTracks.getOrNull(idx)
             val itemId = state.selectedItem?.id
             if (sub != null && itemId != null) loadSubtitle(itemId, sub.srtFile)
         }
@@ -171,7 +166,7 @@ class JanusPlusActivity : AppCompatActivity() {
             .setUsage(androidx.media3.common.C.USAGE_MEDIA)
             .setContentType(androidx.media3.common.C.AUDIO_CONTENT_TYPE_MOVIE)
             .build()
-        PlayerScreen.reset()
+        Engine.resetPlayer()
         val exo = ExoPlayer.Builder(this)
             .setMediaSourceFactory(mediaSourceFactory)
             .setAudioAttributes(audioAttrs, false)
@@ -179,8 +174,8 @@ class JanusPlusActivity : AppCompatActivity() {
         exo.setVideoSurface(renderer.videoSurface.surface)
         exo.addListener(object : androidx.media3.common.Player.Listener {
             override fun onVideoSizeChanged(size: androidx.media3.common.VideoSize) {
-                PlayerScreen.videoWidth = size.width
-                PlayerScreen.videoHeight = size.height
+                Engine.extVideoWidth = size.width
+                Engine.extVideoHeight = size.height
                 Log.i(TAG, "Video size: ${size.width}x${size.height}")
             }
             override fun onTracksChanged(tracks: androidx.media3.common.Tracks) {
@@ -195,7 +190,7 @@ class JanusPlusActivity : AppCompatActivity() {
                         }
                     }
                 }
-                if (audioNames.isNotEmpty()) PlayerScreen.audioTrackNames = audioNames
+                if (audioNames.isNotEmpty()) Engine.audioTrackNames = audioNames
                 Log.i(TAG, "Audio tracks: $audioNames")
             }
         })
@@ -216,10 +211,10 @@ class JanusPlusActivity : AppCompatActivity() {
                     val seasonData = api?.fetchSeason(item.id, season)
                     val episode = seasonData?.episodes?.find { it.episode == epNum }
                     if (episode != null && episode.subtitles.isNotEmpty()) {
-                        PlayerScreen.subtitleTracks = episode.subtitles
+                        Engine.subtitleTracks = episode.subtitles
                         val jaIdx = episode.subtitles.indexOfFirst { it.language == "ja" }
                         val subIdx = if (jaIdx >= 0) jaIdx else 0
-                        PlayerScreen.selectedSubIdx = subIdx
+                        Engine.selectedSubIdx = subIdx
                         loadSubtitle(item.id, episode.subtitles[subIdx].srtFile)
                     }
                 } catch (e: Exception) {
@@ -228,23 +223,20 @@ class JanusPlusActivity : AppCompatActivity() {
             }
         }
 
-        // Main thread loop: feed player state to GameLoop, execute commands
+        // Main thread: feed player state, execute commands from Engine
         val mainLoop = object : Runnable {
             override fun run() {
                 val p = player ?: return
-                // Feed state — skip position while dragging
-                if (!GameLoop.isDragging) {
-                    GameLoop.playerPositionMs = p.currentPosition
-                    GameLoop.playerIsPlaying = p.isPlaying
-                }
-                GameLoop.playerDurationMs = p.duration.coerceAtLeast(0)
-                // Execute commands from game loop
-                val seekMs = GameLoop.cmdSeek
-                if (seekMs != null) { GameLoop.cmdSeek = null; p.seekTo(seekMs) }
-                if (GameLoop.cmdPause) { GameLoop.cmdPause = false; p.pause() }
-                if (GameLoop.cmdPlay) { GameLoop.cmdPlay = false; p.play() }
-                // Back
-                if (PlayerScreen.pendingBack) { PlayerScreen.pendingBack = false; stopPlayer(); return }
+                // Feed
+                Engine.extPlayerPosition = p.currentPosition
+                Engine.extPlayerDuration = p.duration.coerceAtLeast(0)
+                Engine.extPlayerPlaying = p.isPlaying
+                // Execute
+                val seekMs = Engine.cmdSeek
+                if (seekMs != null) { Engine.cmdSeek = null; p.seekTo(seekMs) }
+                if (Engine.cmdPause) { Engine.cmdPause = false; p.pause() }
+                if (Engine.cmdPlay) { Engine.cmdPlay = false; p.play() }
+                if (Engine.cmdBack) { Engine.cmdBack = false; stopPlayer(); return }
                 glView.postDelayed(this, 16)
             }
         }
@@ -262,7 +254,7 @@ class JanusPlusActivity : AppCompatActivity() {
                 if (response.isSuccessful) {
                     val srt = response.body?.string() ?: ""
                     val cues = SrtParser.parse(srt)
-                    PlayerScreen.subtitleCues = cues
+                    Engine.subtitleCues = cues
                     Log.i(TAG, "Loaded ${cues.size} subtitle cues from $srtFile")
                 }
                 response.close()
@@ -276,7 +268,7 @@ class JanusPlusActivity : AppCompatActivity() {
         player?.setVideoSurface(null)
         player?.release()
         player = null
-        PlayerScreen.reset()
+        Engine.resetPlayer()
         state.screen = state.returnScreen
         state.playingUrl = null
     }
@@ -403,64 +395,54 @@ class JanusPlusActivity : AppCompatActivity() {
 
     private fun loadDetail(item: JanusApi.LibraryItem) {
         val currentApi = api ?: return
-        Log.i(TAG, "Loading detail for ${item.id} (${item.type})")
+        val isSeries = item.type.equals("TV_SERIES", ignoreCase = true) || item.type.equals("series", ignoreCase = true)
+        val season = state.selectedSeason
+
+        // Each fetch is independent, runs in parallel, writes result atomically
+        // The render loop picks up whatever is available each frame
+
+        // 1. Hero blob (synopsis, seasons, banner image)
         thread {
             val blob = currentApi.fetchHeroBlob(item.id)
-            Log.i(TAG, "Hero blob: ${if (blob != null) "OK, seasons=${blob.seasons.size}" else "null"}")
             if (blob != null) {
                 state.heroBlob = blob
-                state.detailLoading = false
-
-                // Upload banner image
                 blob.bannerBytes?.let { bytes ->
                     val bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
-                    if (bmp != null) renderer.textures.enqueue("banner_${item.id}", bmp)
-                }
-                blob.coverBytes?.let { bytes ->
-                    if (!renderer.textures.has("cover_${item.id}")) {
-                        val bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
-                        if (bmp != null) renderer.textures.enqueue("cover_${item.id}", bmp)
-                    }
-                }
-            }
-
-            if (item.type.equals("TV_SERIES", ignoreCase = true) || item.type.equals("series", ignoreCase = true)) {
-                val season = state.selectedSeason
-                val cards = currentApi.fetchSeasonCards(item.id, season)
-                Log.i(TAG, "Season cards: ${cards?.episodes?.size ?: "null"}")
-                if (cards != null) state.seasonCards = cards
-
-                val thumbs = currentApi.fetchThumbsBlob(item.id, season)
-                Log.i(TAG, "Thumbs: ${thumbs.size}")
-                val decoded = mutableListOf<Pair<String, android.graphics.Bitmap>>()
-                // Thumbnails first to set the cell size
-                for (entry in thumbs) {
-                    val bmp = BitmapFactory.decodeByteArray(entry.data, 0, entry.data.size)
-                    if (bmp != null) decoded.add("thumb_${item.id}_${entry.episode}" to bmp)
-                }
-                // Banner gets its own texture array layer at full resolution
-                blob?.bannerBytes?.let { bytes ->
-                    val bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
                     if (bmp != null) {
-                        state.bannerW = bmp.width
-                        state.bannerH = bmp.height
-                        renderer.texArray.uploadLayer(3, bmp) // queued, processed on GL thread
+                        state.bannerW = bmp.width; state.bannerH = bmp.height
+                        renderer.texArray.uploadLayer(TextureArray.LAYER_BANNER, bmp)
                         state.bannerReady = true
                     }
                 }
-                if (decoded.isNotEmpty()) {
-                    renderer.thumbAtlas.pack(decoded)
-                }
+            }
+        }
 
-                // Fetch watch progress from full season endpoint
+        if (isSeries) {
+            // 2. Season cards (episode titles, durations)
+            thread {
+                val cards = currentApi.fetchSeasonCards(item.id, season)
+                if (cards != null) state.seasonCards = cards
+            }
+
+            // 3. Thumbnails
+            thread {
+                val thumbs = currentApi.fetchThumbsBlob(item.id, season)
+                val decoded = thumbs.mapNotNull { entry ->
+                    val bmp = BitmapFactory.decodeByteArray(entry.data, 0, entry.data.size)
+                    if (bmp != null) "thumb_${item.id}_${entry.episode}" to bmp else null
+                }
+                if (decoded.isNotEmpty()) renderer.thumbAtlas.pack(decoded)
+            }
+
+            // 4. Watch progress
+            thread {
                 try {
                     val fullSeason = currentApi.fetchSeason(item.id, season)
                     if (fullSeason != null) {
                         val progress = HashMap<Int, Pair<Double, Boolean>>()
                         for (ep in fullSeason.episodes) {
-                            if (ep.watchProgressSec > 0 || ep.completed) {
+                            if (ep.watchProgressSec > 0 || ep.completed)
                                 progress[ep.episode] = ep.watchProgressSec to ep.completed
-                            }
                         }
                         state.episodeProgress = progress
                     }
@@ -616,11 +598,32 @@ class JanusPlusActivity : AppCompatActivity() {
             }
         }
         if (state.screen == Screen.PLAYING) {
-            // Just queue the event — game loop processes it
-            GameLoop.touchQueue.add(GameLoop.TouchEvent(event.action, event.x, event.y, System.currentTimeMillis()))
+            Engine.queueTouch(event.action, event.x, event.y)
             return true
         }
-        if (input.handleTouch(event)) return true
+        if (input.handleTouch(event)) {
+            val tapped = state.pendingTap
+            if (tapped != null) {
+                Log.e(TAG, "TAP→OPEN ${System.currentTimeMillis()}")
+                state.pendingTap = null
+                renderer.thumbAtlas.clear()
+                state.bannerReady = false
+                state.openItem(tapped)
+                loadDetail(tapped)
+                Log.e(TAG, "OPEN DONE ${System.currentTimeMillis()}")
+            }
+            val seasonChange = state.pendingSeasonChange
+            if (seasonChange != null) {
+                state.pendingSeasonChange = null
+                state.selectedSeason = seasonChange
+                state.seasonCards = null
+                state.episodeFocus = 0
+                state.episodeProgress.clear()
+                renderer.thumbAtlas.clear()
+                loadSeasonData(state.selectedItem ?: return true, seasonChange)
+            }
+            return true
+        }
         return super.onTouchEvent(event)
     }
 

@@ -18,22 +18,18 @@ class TextureArray(val size: Int = 2048, val layerCount: Int = 4) {
 
     var textureId = 0; private set
     private val uploadQueue = ConcurrentLinkedQueue<Pair<Int, Bitmap>>()
-    private var reusableBuf: ByteBuffer? = null
-    private var reusablePadBmp: Bitmap? = null
 
     fun initGL() {
         val ids = IntArray(1)
         GLES30.glGenTextures(1, ids, 0)
         textureId = ids[0]
         GLES30.glBindTexture(GLES30.GL_TEXTURE_2D_ARRAY, textureId)
-        val mipLevels = (kotlin.math.log2(size.toFloat()) + 1).toInt()
-        GLES30.glTexStorage3D(GLES30.GL_TEXTURE_2D_ARRAY, mipLevels, GLES30.GL_RGBA8,
-            size, size, layerCount)
-        GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D_ARRAY, GLES30.GL_TEXTURE_MIN_FILTER, GLES30.GL_LINEAR_MIPMAP_LINEAR)
+        GLES30.glTexImage3D(GLES30.GL_TEXTURE_2D_ARRAY, 0, GLES30.GL_RGBA,
+            size, size, layerCount, 0, GLES30.GL_RGBA, GLES30.GL_UNSIGNED_BYTE, null)
+        GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D_ARRAY, GLES30.GL_TEXTURE_MIN_FILTER, GLES30.GL_LINEAR)
         GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D_ARRAY, GLES30.GL_TEXTURE_MAG_FILTER, GLES30.GL_LINEAR)
         GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D_ARRAY, GLES30.GL_TEXTURE_WRAP_S, GLES30.GL_CLAMP_TO_EDGE)
         GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D_ARRAY, GLES30.GL_TEXTURE_WRAP_T, GLES30.GL_CLAMP_TO_EDGE)
-        Log.i("TexArray", "Created ${size}x${size}x$layerCount array")
     }
 
     fun uploadLayer(layer: Int, bitmap: Bitmap) {
@@ -46,32 +42,16 @@ class TextureArray(val size: Int = 2048, val layerCount: Int = 4) {
             val src = if (bmp.config != Bitmap.Config.ARGB_8888)
                 bmp.copy(Bitmap.Config.ARGB_8888, false).also { bmp.recycle() } else bmp
 
-            val padded = if (src.width == size && src.height == size) src
-            else {
-                var p = reusablePadBmp
-                if (p == null || p.isRecycled) {
-                    p = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
-                    reusablePadBmp = p
-                }
-                p.eraseColor(0)
-                android.graphics.Canvas(p).drawBitmap(src, 0f, 0f, null)
-                src.recycle()
-                p
-            }
-
-            val bufSize = size * size * 4
-            val buf = reusableBuf ?: ByteBuffer.allocateDirect(bufSize).order(ByteOrder.nativeOrder())
-            reusableBuf = buf
-            buf.clear()
-            padded.copyPixelsToBuffer(buf)
+            // Upload only the actual bitmap size — no padding to 4096
+            val w = src.width; val h = src.height
+            val buf = ByteBuffer.allocateDirect(w * h * 4).order(ByteOrder.nativeOrder())
+            src.copyPixelsToBuffer(buf)
             buf.position(0)
             GLES30.glBindTexture(GLES30.GL_TEXTURE_2D_ARRAY, textureId)
             GLES30.glTexSubImage3D(GLES30.GL_TEXTURE_2D_ARRAY, 0,
-                0, 0, layer, size, size, 1,
+                0, 0, layer, w, h, 1,
                 GLES30.GL_RGBA, GLES30.GL_UNSIGNED_BYTE, buf)
-            GLES30.glGenerateMipmap(GLES30.GL_TEXTURE_2D_ARRAY)
-            if (padded !== reusablePadBmp) padded.recycle()
-            Log.i("TexArray", "Uploaded layer $layer")
+            src.recycle()
         }
     }
 

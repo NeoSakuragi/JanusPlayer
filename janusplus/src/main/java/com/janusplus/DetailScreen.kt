@@ -21,6 +21,16 @@ object DetailScreen {
 
         // Episode grid (series only)
         val cards = state.seasonCards?.episodes ?: emptyList()
+        if (cards.isEmpty() && state.screen == Screen.SERIES_DETAIL) {
+            // Skeleton placeholders while loading
+            val gridY = heroH - scrollY + rc.dp(16f)
+            val skeletonW = (rc.w - pad * 2 - rc.dp(12f) * 5) / 6
+            val skeletonH = skeletonW / 1.33f + rc.dp(50f)
+            for (i in 0 until 6) {
+                val x = pad + i * (skeletonW + rc.dp(12f))
+                rc.solid(x, gridY, skeletonW, skeletonH, 0.102f, 0.102f, 0.180f, 0.5f)
+            }
+        }
         if (cards.isNotEmpty() && state.screen == Screen.SERIES_DETAIL) {
             renderEpisodeGrid(rc, cards, heroH - scrollY)
         }
@@ -58,8 +68,11 @@ object DetailScreen {
         val state = rc.state
         val d = rc.dimens
 
-        // Banner — dedicated layer 3 at full resolution
-        rc.banner(0f, heroTop, rc.w, heroH)
+        // Banner or cover as backdrop
+        if (!rc.banner(0f, heroTop, rc.w, heroH)) {
+            val itemId = state.selectedItem?.id
+            if (itemId != null) rc.cover("cover_$itemId", 0f, heroTop, rc.w, heroH)
+        }
 
         // Gradient overlays
         val bg = floatArrayOf(0.039f, 0.039f, 0.102f)

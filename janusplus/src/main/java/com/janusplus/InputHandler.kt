@@ -17,7 +17,7 @@ class InputHandler(private val state: AppState) {
     var screenWidth = 0f
     var screenHeight = 0f
 
-    val hitRects = mutableListOf<HitRect>()
+    @Volatile var hitRects: List<HitRect> = emptyList()
     private fun hitTestRow(y: Float): HomeRow {
         return if (y < state.moviesRowY) HomeRow.SERIES else HomeRow.MOVIES
     }
