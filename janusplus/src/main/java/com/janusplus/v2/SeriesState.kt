@@ -56,6 +56,7 @@ class SeriesState(private val item: JanusApi.LibraryItem) : GameState {
     private var lineH = 0f; private var layoutDone = false
 
     override fun init(app: App) {
+        alive = true
         bannerReady = false
         atlasReady = false
         pageData = null
