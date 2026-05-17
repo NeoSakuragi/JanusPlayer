@@ -74,7 +74,7 @@ class PlayerState(
             player.prepare()
             player.playWhenReady = true
 
-            // Position polling
+            // Position + video size polling
             val handler = android.os.Handler(android.os.Looper.getMainLooper())
             val poller = object : Runnable {
                 override fun run() {
@@ -82,6 +82,11 @@ class PlayerState(
                     positionMs = player.currentPosition
                     durationMs = player.duration.coerceAtLeast(0)
                     isPlaying = player.isPlaying
+                    val format = player.videoFormat
+                    if (format != null && videoWidth == 0) {
+                        videoWidth = format.width
+                        videoHeight = format.height
+                    }
                     handler.postDelayed(this, 200)
                 }
             }
@@ -248,11 +253,19 @@ class PlayerState(
         rc.text("${app.fps}fps", rc.dp(8f), rc.dp(16f), rc.sp(10), 0.4f, 0.8f, 0.4f)
     }
 
+    @Volatile var videoWidth = 0
+    @Volatile var videoHeight = 0
+
     private fun drawVideoQuad(app: App, rc: RC) {
-        // Flush any pending UI quads first
+        // Flush any pending UI quads
         rc.batch.flush()
 
-        // Switch to external OES shader for video
+        // Black background behind video
+        // (drawn with main shader, already active)
+        rc.solid(0f, 0f, rc.w, rc.h, 0f, 0f, 0f)
+        rc.batch.flush()
+
+        // Switch to external OES shader
         app.shader.useExternal()
         GLES30.glUniformMatrix4fv(app.shader.uProjExt, 1, false, app.projMatrix, 0)
         GLES30.glUniformMatrix4fv(app.shader.uTexMatExt, 1, false, app.videoSurface.transformMatrix, 0)
@@ -260,10 +273,11 @@ class PlayerState(
         GLES30.glUniform1i(app.shader.uTexExt, 0)
         app.videoSurface.bind()
 
-        // Video quad — full screen, correct aspect ratio
-        val videoW = 16f; val videoH = 9f // TODO: get from player
+        // Letterbox to correct aspect ratio
+        val vw = if (videoWidth > 0) videoWidth.toFloat() else 4f
+        val vh = if (videoHeight > 0) videoHeight.toFloat() else 3f
+        val videoAspect = vw / vh
         val screenAspect = rc.w / rc.h
-        val videoAspect = videoW / videoH
         val qx: Float; val qy: Float; val qw: Float; val qh: Float
         if (screenAspect > videoAspect) {
             qh = rc.h; qw = qh * videoAspect
@@ -273,11 +287,12 @@ class PlayerState(
             qx = 0f; qy = (rc.h - qh) / 2f
         }
 
-        // Huawei UVs: (0,1) → (1,0) for correct orientation
-        rc.batch.addQuad(qx, qy, qw, qh, 0f, 1f, 1f, 0f, layer = 0f)
+        // Video quad with OES UVs (transform matrix handles orientation)
+        rc.batch.begin()
+        rc.batch.addQuad(qx, qy, qw, qh, 0f, 0f, 1f, 1f, layer = 0f)
         rc.batch.flush()
 
-        // Switch back to main shader
+        // Switch back to main shader for UI overlay
         app.shader.use()
         GLES30.glUniformMatrix4fv(app.shader.uProj, 1, false, app.projMatrix, 0)
         GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
@@ -285,6 +300,7 @@ class PlayerState(
         app.texArray.bind()
         app.etc2Array.bind(GLES30.GL_TEXTURE1)
         GLES30.glUniform1i(app.shader.uTexEtc2, 1)
+        rc.batch.begin()
     }
 
     private fun drawSubtitle(rc: RC, text: String) {
