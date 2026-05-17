@@ -117,7 +117,8 @@ class HomeState : GameState {
         }
 
         // FPS
-        rc.text("${app.fps}fps", rc.dp(8f), rc.dp(16f), rc.sp(10), 0.4f, 0.8f, 0.4f)
+        rc.text("${app.fps}fps cov=${app.coverAtlas.isReady()} layer=${app.coverAtlas.layerIndex} uvs=${app.coverAtlas.getUV("cover_${if (seriesList.isNotEmpty()) seriesList[0].id else "?"}") != null}",
+            rc.dp(8f), rc.dp(16f), rc.sp(10), 0.4f, 0.8f, 0.4f)
     }
 
     override fun cleanup(app: App) {}

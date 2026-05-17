@@ -204,12 +204,44 @@ class App(private val context: Context, private val assets: android.content.res.
         etc2Array = CompressedTextureArray(4096, 4)
         etc2Array.initGL()
 
+        // GL context was (re)created — all texture data is gone
         coverAtlas.texArray = texArray
         coverAtlas.layerIndex = TextureArray.LAYER_COVERS
+        coverAtlas.invalidate()
         thumbAtlas.texArray = texArray
         thumbAtlas.layerIndex = texArray.nextThumbLayer()
+        thumbAtlas.invalidate()
 
         videoSurface.initGL()
+
+        // Re-fetch covers since GPU textures are gone
+        val api = api
+        if (api != null && library.isNotEmpty()) {
+            val items = library
+            val client = okhttp3.OkHttpClient.Builder()
+                .connectTimeout(10, java.util.concurrent.TimeUnit.SECONDS)
+                .readTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
+                .build()
+            kotlin.concurrent.thread {
+                val entries = mutableListOf<Pair<String, android.graphics.Bitmap>>()
+                for (item in items) {
+                    try {
+                        val request = okhttp3.Request.Builder().url(api.coverUrl(item.id))
+                            .header("Authorization", "Bearer ${api.token}").build()
+                        val response = client.newCall(request).execute()
+                        if (response.isSuccessful) {
+                            val bytes = response.body?.bytes()
+                            if (bytes != null) {
+                                val bmp = android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                                if (bmp != null) entries.add("cover_${item.id}" to bmp)
+                            }
+                        }
+                        response.close()
+                    } catch (_: Exception) {}
+                }
+                if (entries.isNotEmpty()) coverAtlas.pack(entries, coverAtlas.layerIndex)
+            }
+        }
 
         currentState.init(this)
     }

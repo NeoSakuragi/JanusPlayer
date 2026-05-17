@@ -86,6 +86,12 @@ class ThumbnailAtlas {
 
     fun isReady(): Boolean = ready
 
+    // GL context lost — texture data gone, need re-upload
+    fun invalidate() {
+        ready = false
+        while (true) { (pendingQueue.poll() ?: break).bitmap.recycle() }
+    }
+
     fun clear() {
         uvMap = HashMap()
         ready = false
