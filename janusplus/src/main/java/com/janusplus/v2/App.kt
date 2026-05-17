@@ -239,11 +239,6 @@ class App(private val context: Context, private val assets: android.content.res.
             currentState.init(this)
         }
 
-        // Uploads
-        texArray.processUploads()
-        coverAtlas.uploadIfNeeded()
-        thumbAtlas.uploadIfNeeded()
-
         // Poll input
         val touches = mutableListOf<Touch>()
         while (true) { touches.add(touchQueue.poll() ?: break) }
@@ -253,8 +248,13 @@ class App(private val context: Context, private val assets: android.content.res.
             scrollY = scroller.currY.toFloat().coerceAtLeast(0f)
         }
 
-        // Update
+        // Update — may queue texture uploads
         currentState.update(this, touches)
+
+        // Process all uploads AFTER update, BEFORE draw
+        texArray.processUploads()
+        coverAtlas.uploadIfNeeded()
+        thumbAtlas.uploadIfNeeded()
 
         // Draw
         GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT)
