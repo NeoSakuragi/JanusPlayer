@@ -119,38 +119,47 @@ def build_page_blob(db, item_id, season):
     """Build a single page blob for item+season."""
     # Get item metadata
     item = db.execute(
-        "SELECT title_en, title_ja, synopsis_en, synopsis_ja, synopsis_fr, episode_count, type FROM items WHERE id=?",
+        "SELECT title_en, title_ja, episode_count, type FROM items WHERE id=?",
         (item_id,),
     ).fetchone()
     if not item:
         return None
 
+    # Get localized item metadata
+    locales = {}
+    for row in db.execute("SELECT language, title, synopsis FROM item_locales WHERE item_id=?", (item_id,)):
+        locales[row[0]] = {"title": row[1] or "", "synopsis": row[2] or ""}
+
     # Get episodes for this season
     episodes = db.execute(
-        "SELECT episode, title_en, duration_sec, synopsis_en, synopsis_ja, synopsis_fr FROM episodes WHERE item_id=? AND season=? ORDER BY episode",
+        "SELECT episode, title_en, duration_sec FROM episodes WHERE item_id=? AND season=? ORDER BY episode",
         (item_id, season),
     ).fetchall()
     if not episodes:
         return None
 
+    # Get episode locales
+    ep_locales = {}
+    for row in db.execute(
+        "SELECT episode, language, title, synopsis FROM episode_locales WHERE item_id=? AND season=?",
+        (item_id, season),
+    ):
+        ep_locales.setdefault(row[0], {})[row[1]] = {"title": row[2] or "", "synopsis": row[3] or ""}
+
     meta = {
         "id": item_id,
         "titleEn": item[0],
         "titleJa": item[1],
-        "synopsisEn": item[2],
-        "synopsisJa": item[3],
-        "synopsisFr": item[4],
-        "episodeCount": item[5],
-        "type": item[6],
+        "episodeCount": item[2],
+        "type": item[3],
         "season": season,
+        "locales": locales,
         "episodes": [
             {
                 "episode": ep[0],
                 "titleEn": ep[1] or "",
                 "durationSec": ep[2] or 0,
-                "synopsisEn": ep[3] or "",
-                "synopsisJa": ep[4] or "",
-                "synopsisFr": ep[5] or "",
+                "locales": ep_locales.get(ep[0], {}),
             }
             for ep in episodes
         ],
@@ -173,36 +182,47 @@ def build_page_blob(db, item_id, season):
             if found:
                 break
 
-    atlas_etc2 = b""
+    atlas_jpeg = b""
     atlas_w = atlas_h = atlas_cols = 0
     if thumb_paths:
         with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
             atlas_png = tmp.name
         try:
             atlas_w, atlas_h, atlas_cols = build_atlas_png(thumb_paths, atlas_png)
-            atlas_etc2 = compress_etc2(atlas_png)
-            print(f"  Atlas: {atlas_w}x{atlas_h}, {atlas_cols} cols, {len(atlas_etc2)} bytes ETC2")
+            img = Image.open(atlas_png).convert("RGB")
+            with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as jtmp:
+                img.save(jtmp.name, "JPEG", quality=85)
+                atlas_jpeg = open(jtmp.name, "rb").read()
+                os.unlink(jtmp.name)
+            print(f"  Atlas: {atlas_w}x{atlas_h}, {atlas_cols} cols, {len(atlas_jpeg)/1024:.0f} KB JPEG")
         finally:
             os.unlink(atlas_png)
 
-    # Compress banner
+    # Banner JPEG
     banner_w = banner_h = 0
-    banner_etc2 = b""
-    banner = compress_banner(item_id)
-    if banner:
-        banner_w, banner_h, banner_etc2 = banner
-        print(f"  Banner: {banner_w}x{banner_h}, {len(banner_etc2)} bytes ETC2")
+    banner_jpeg = b""
+    banner_path = COVERS_DIR / f"{item_id}-banner.jpg"
+    if not banner_path.exists():
+        banner_path = COVERS_DIR / f"{item_id}-banner.png"
+    if banner_path.exists():
+        img = Image.open(banner_path)
+        banner_w, banner_h = img.width, img.height
+        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
+            img.save(tmp.name, "JPEG", quality=85)
+            banner_jpeg = open(tmp.name, "rb").read()
+            os.unlink(tmp.name)
+        print(f"  Banner: {banner_w}x{banner_h}, {len(banner_jpeg)/1024:.0f} KB JPEG")
 
-    # Header blob: metadata + banner (small, ~300KB-1MB)
+    # Header blob: metadata + banner JPEG (small)
     header = bytearray()
     header += struct.pack("<I", len(meta_json))
     header += meta_json
-    header += struct.pack("<III", banner_w, banner_h, len(banner_etc2))
-    header += banner_etc2
+    header += struct.pack("<III", banner_w, banner_h, len(banner_jpeg))
+    header += banner_jpeg
     header += struct.pack("<IIII", atlas_w, atlas_h, atlas_cols, len(thumb_paths))
 
-    # Atlas blob: just the ETC2 compressed thumbnail atlas (large, 1-10MB)
-    return bytes(header), atlas_etc2
+    # Atlas blob: JPEG thumbnail atlas
+    return bytes(header), atlas_jpeg
 
 
 def main():
