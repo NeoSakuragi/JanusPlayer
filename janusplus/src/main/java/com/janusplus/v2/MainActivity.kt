@@ -86,6 +86,11 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun dispatchKeyEvent(event: android.view.KeyEvent): Boolean {
+        if (event.keyCode == android.view.KeyEvent.KEYCODE_VOLUME_UP ||
+            event.keyCode == android.view.KeyEvent.KEYCODE_VOLUME_DOWN ||
+            event.keyCode == android.view.KeyEvent.KEYCODE_VOLUME_MUTE) {
+            return super.dispatchKeyEvent(event)
+        }
         if (event.action == android.view.KeyEvent.ACTION_DOWN) {
             app.keyQueue.add(event.keyCode)
             return true
