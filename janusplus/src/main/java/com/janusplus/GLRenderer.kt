@@ -66,7 +66,7 @@ class GLRenderer(
 
         // Wire atlases to texture array
         thumbAtlas.texArray = texArray
-        thumbAtlas.layerIndex = TextureArray.LAYER_THUMBS
+        thumbAtlas.layerIndex = TextureArray.LAYER_THUMB_FIRST
         state.coverAtlas.texArray = texArray
         state.coverAtlas.layerIndex = TextureArray.LAYER_COVERS
 

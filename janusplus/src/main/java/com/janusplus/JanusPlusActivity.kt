@@ -385,7 +385,7 @@ class JanusPlusActivity : AppCompatActivity() {
                 } catch (_: Exception) {}
             }
             if (entries.isNotEmpty()) {
-                state.coverAtlas.pack(entries)
+                state.coverAtlas.pack(entries, state.coverAtlas.layerIndex)
                 Log.i(TAG, "Cover atlas packed: ${entries.size} covers")
             }
         }
@@ -429,7 +429,7 @@ class JanusPlusActivity : AppCompatActivity() {
                     val bmp = BitmapFactory.decodeByteArray(entry.data, 0, entry.data.size)
                     if (bmp != null) "thumb_${item.id}_${entry.episode}" to bmp else null
                 }
-                if (decoded.isNotEmpty()) renderer.thumbAtlas.pack(decoded)
+                if (decoded.isNotEmpty()) renderer.thumbAtlas.pack(decoded, renderer.thumbAtlas.layerIndex)
             }
 
             // 4. Watch progress
@@ -524,7 +524,7 @@ class JanusPlusActivity : AppCompatActivity() {
                 val bmp = BitmapFactory.decodeByteArray(entry.data, 0, entry.data.size)
                 if (bmp != null) "thumb_${item.id}_${entry.episode}" to bmp else null
             }
-            if (decoded.isNotEmpty()) renderer.thumbAtlas.pack(decoded)
+            if (decoded.isNotEmpty()) renderer.thumbAtlas.pack(decoded, renderer.thumbAtlas.layerIndex)
 
             try {
                 val fullSeason = currentApi.fetchSeason(item.id, season)

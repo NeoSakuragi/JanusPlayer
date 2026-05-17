@@ -57,7 +57,7 @@ class MainActivity : AppCompatActivity() {
                     response.close()
                 } catch (_: Exception) {}
             }
-            if (entries.isNotEmpty()) app.coverAtlas.pack(entries)
+            if (entries.isNotEmpty()) app.coverAtlas.pack(entries, app.coverAtlas.layerIndex)
         }
     }
 

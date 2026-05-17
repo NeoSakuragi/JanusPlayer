@@ -187,7 +187,7 @@ class App(private val context: Context, private val assets: android.content.res.
         batch = QuadBatch()
         batch.initGL()
 
-        texArray = TextureArray(4096, 4)
+        texArray = TextureArray(4096, TextureArray.LAYER_THUMB_FIRST + TextureArray.LAYER_THUMB_COUNT)
         texArray.initGL()
 
         font = FontAtlas(assets)
@@ -196,7 +196,7 @@ class App(private val context: Context, private val assets: android.content.res.
         coverAtlas.texArray = texArray
         coverAtlas.layerIndex = TextureArray.LAYER_COVERS
         thumbAtlas.texArray = texArray
-        thumbAtlas.layerIndex = TextureArray.LAYER_THUMBS
+        thumbAtlas.layerIndex = texArray.nextThumbLayer()
 
         videoSurface.initGL()
 
@@ -214,11 +214,6 @@ class App(private val context: Context, private val assets: android.content.res.
         frameCount++
         if (now - fpsTimer > 1_000_000_000L) { fps = frameCount; frameCount = 0; fpsTimer = now }
 
-        // Uploads
-        texArray.processUploads()
-        coverAtlas.uploadIfNeeded()
-        thumbAtlas.uploadIfNeeded()
-
         // Transition
         val trans = pendingTransition
         if (trans != null) {
@@ -232,6 +227,11 @@ class App(private val context: Context, private val assets: android.content.res.
             currentState = trans.second
             currentState.init(this)
         }
+
+        // Uploads
+        texArray.processUploads()
+        coverAtlas.uploadIfNeeded()
+        thumbAtlas.uploadIfNeeded()
 
         // Poll input
         val touches = mutableListOf<Touch>()

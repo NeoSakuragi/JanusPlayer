@@ -3,28 +3,29 @@ package com.janusplus
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Rect
-import android.opengl.GLES30
-import android.opengl.GLUtils
+import java.util.concurrent.atomic.AtomicReference
 
 class ThumbnailAtlas {
 
     data class ThumbUV(val u0: Float, val v0: Float, val u1: Float, val v1: Float,
                        val srcAspect: Float = 1f)
 
-    private val uvMap = HashMap<String, ThumbUV>()
-    private var ready = false
-    var layerIndex = TextureArray.LAYER_COVERS
+    data class PackResult(val uvMap: HashMap<String, ThumbUV>, val bitmap: Bitmap, val layer: Int)
+
+    @Volatile private var uvMap = HashMap<String, ThumbUV>()
+    @Volatile private var ready = false
+    @Volatile var layerIndex = 0
     var texArray: TextureArray? = null
 
-    @Volatile var pendingBitmap: Bitmap? = null
+    // Background thread writes here; GL thread reads and applies
+    private val pendingResult = AtomicReference<PackResult?>(null)
 
-    fun pack(entries: List<Pair<String, Bitmap>>) {
+    fun pack(entries: List<Pair<String, Bitmap>>, forLayer: Int) {
         if (entries.isEmpty()) return
 
         val thumbW = entries.first().second.width
         val thumbH = entries.first().second.height
         val count = entries.size
-        android.util.Log.i("ThumbAtlas", "Packing $count entries at ${thumbW}x${thumbH}")
 
         val cols = kotlin.math.ceil(kotlin.math.sqrt(count.toDouble())).toInt()
         val rows = (count + cols - 1) / cols
@@ -33,6 +34,7 @@ class ThumbnailAtlas {
 
         val atlas = Bitmap.createBitmap(atlasW, atlasH, Bitmap.Config.RGB_565)
         val canvas = Canvas(atlas)
+        val newMap = HashMap<String, ThumbUV>(count * 2)
 
         for ((i, pair) in entries.withIndex()) {
             val (key, bmp) = pair
@@ -41,7 +43,6 @@ class ThumbnailAtlas {
             val x = col * thumbW
             val y = row * thumbH
 
-            // Center-crop: compute source rect to preserve aspect ratio
             val srcAspect = bmp.width.toFloat() / bmp.height.toFloat()
             val dstAspect = thumbW.toFloat() / thumbH.toFloat()
             val srcRect = if (srcAspect > dstAspect) {
@@ -54,29 +55,34 @@ class ThumbnailAtlas {
                 Rect(0, off, bmp.width, off + visH)
             }
             canvas.drawBitmap(bmp, srcRect, Rect(x, y, x + thumbW, y + thumbH), null)
-            bmp.recycle()
 
-            // UVs relative to the texture array layer size (2048), not the packed atlas size
             val layerSize = texArray?.size?.toFloat() ?: atlasW.toFloat()
-            uvMap[key] = ThumbUV(
+            newMap[key] = ThumbUV(
                 x.toFloat() / layerSize,
                 y.toFloat() / layerSize,
                 (x + thumbW).toFloat() / layerSize,
                 (y + thumbH).toFloat() / layerSize,
                 srcAspect = bmp.width.toFloat() / bmp.height.toFloat(),
             )
+            bmp.recycle()
         }
 
-        pendingBitmap = atlas
+        // Atomically publish result — GL thread will only apply if layer matches current
+        val old = pendingResult.getAndSet(PackResult(newMap, atlas, forLayer))
+        old?.bitmap?.recycle()
     }
 
+    // Called on GL thread only
     fun uploadIfNeeded() {
-        if (needsClear) { needsClear = false; ready = false }
-        val bmp = pendingBitmap ?: return
-        pendingBitmap = null
+        val result = pendingResult.getAndSet(null) ?: return
+        // Only apply if this result is for the current layer (not a stale page)
+        if (result.layer != layerIndex) {
+            result.bitmap.recycle()
+            return
+        }
         val ta = texArray ?: return
-        android.util.Log.i("ThumbAtlas", "Uploading layer $layerIndex: ${bmp.width}x${bmp.height}")
-        ta.uploadLayer(layerIndex, bmp)
+        ta.uploadLayer(result.layer, result.bitmap)
+        uvMap = result.uvMap
         ready = true
     }
 
@@ -84,17 +90,15 @@ class ThumbnailAtlas {
 
     fun isReady(): Boolean = ready
 
-    @Volatile var needsClear = false
-
     fun clear() {
-        uvMap.clear()
+        uvMap = HashMap()
         ready = false
-        needsClear = true
-        pendingBitmap?.recycle()
-        pendingBitmap = null
+        pendingResult.getAndSet(null)?.bitmap?.recycle()
+        val ta = texArray
+        if (ta != null) {
+            layerIndex = ta.nextThumbLayer()
+        }
     }
-
-    // No GL cleanup needed — texture array layer is reused
 
     private fun nextPow2(v: Int): Int {
         var n = v - 1

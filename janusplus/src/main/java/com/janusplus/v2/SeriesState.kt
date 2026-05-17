@@ -13,6 +13,8 @@ class SeriesState(private val item: JanusApi.LibraryItem) : GameState {
     @Volatile var bannerW = 0
     @Volatile var bannerH = 0
     @Volatile var bannerReady = false
+    @Volatile var alive = true
+    private var startTime = System.nanoTime()
 
     // ── Fixed layout — computed once in init, never changes ──
 
@@ -46,15 +48,22 @@ class SeriesState(private val item: JanusApi.LibraryItem) : GameState {
     private var layoutDone = false
 
     override fun init(app: App) {
+        app.thumbAtlas.clear()
+        bannerReady = false
+        heroBlob = null
+        seasonCards = null
+        startTime = System.nanoTime()
+
         val api = app.api ?: return
 
         thread {
             val blob = api.fetchHeroBlob(item.id)
+            if (!alive) return@thread
             if (blob != null) {
                 heroBlob = blob
                 blob.bannerBytes?.let { bytes ->
                     val bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
-                    if (bmp != null) {
+                    if (bmp != null && alive) {
                         bannerW = bmp.width; bannerH = bmp.height
                         app.texArray.uploadLayer(TextureArray.LAYER_BANNER, bmp)
                         bannerReady = true
@@ -65,16 +74,18 @@ class SeriesState(private val item: JanusApi.LibraryItem) : GameState {
 
         thread {
             val cards = api.fetchSeasonCards(item.id, 1)
-            if (cards != null) seasonCards = cards
+            if (alive && cards != null) seasonCards = cards
         }
 
+        val thumbLayer = app.thumbAtlas.layerIndex
         thread {
             val thumbs = api.fetchThumbsBlob(item.id, 1)
+            if (!alive) return@thread
             val decoded = thumbs.mapNotNull { entry ->
                 val bmp = BitmapFactory.decodeByteArray(entry.data, 0, entry.data.size)
                 if (bmp != null) "thumb_${item.id}_${entry.episode}" to bmp else null
             }
-            if (decoded.isNotEmpty()) app.thumbAtlas.pack(decoded)
+            if (alive && decoded.isNotEmpty()) app.thumbAtlas.pack(decoded, thumbLayer)
         }
     }
 
@@ -134,6 +145,8 @@ class SeriesState(private val item: JanusApi.LibraryItem) : GameState {
 
         val scrollY = app.scrollY
         val blob = heroBlob
+        val elapsed = (System.nanoTime() - startTime) / 1_000_000_000f
+        val pulse = (0.08f + 0.04f * kotlin.math.sin(elapsed * 3f).toFloat())
 
         // ── Background ──
         rc.solid(0f, 0f, rc.w, rc.h, 0.039f, 0.039f, 0.102f)
@@ -143,7 +156,7 @@ class SeriesState(private val item: JanusApi.LibraryItem) : GameState {
         if (bannerReady) {
             rc.banner(0f, ht, rc.w, heroH, bannerW, bannerH)
         } else {
-            rc.cover("cover_${item.id}", 0f, ht, rc.w, heroH)
+            rc.solid(0f, ht, rc.w, heroH, pulse, pulse, pulse + 0.02f)
         }
 
         // Gradients
@@ -216,8 +229,9 @@ class SeriesState(private val item: JanusApi.LibraryItem) : GameState {
                 rc.text("${(card.durationSec / 60).toInt()} min", x + textPad,
                     y + thumbH + rc.dp(38f), cardDurSize, 0.533f, 0.533f, 0.533f)
             } else {
-                // Skeleton — same position, just gray
-                rc.solid(x, y, cardW, thumbH, 0.133f, 0.133f, 0.200f, 0.5f)
+                // Skeleton — pulsating
+                rc.solid(x, y, cardW, thumbH, pulse, pulse, pulse + 0.02f)
+                rc.solid(x, y + thumbH, cardW, cardH - thumbH, pulse * 0.7f, pulse * 0.7f, pulse * 0.7f)
             }
         }
 
@@ -226,6 +240,7 @@ class SeriesState(private val item: JanusApi.LibraryItem) : GameState {
     }
 
     override fun cleanup(app: App) {
+        alive = false
         app.thumbAtlas.clear()
         app.scrollY = 0f
         bannerReady = false

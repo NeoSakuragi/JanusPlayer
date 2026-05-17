@@ -12,8 +12,17 @@ class TextureArray(val size: Int = 2048, val layerCount: Int = 4) {
     companion object {
         const val LAYER_FONT = 0
         const val LAYER_COVERS = 1
-        const val LAYER_THUMBS = 2
-        const val LAYER_BANNER = 3
+        const val LAYER_BANNER = 2
+        const val LAYER_THUMB_FIRST = 3
+        const val LAYER_THUMB_COUNT = 3
+    }
+
+    private var nextThumbSlot = 0
+
+    fun nextThumbLayer(): Int {
+        val layer = LAYER_THUMB_FIRST + (nextThumbSlot % LAYER_THUMB_COUNT)
+        nextThumbSlot++
+        return layer
     }
 
     var textureId = 0; private set
