@@ -278,9 +278,14 @@ class JanusApi(private val baseUrl: String) {
         var bytes = fetchCached("$baseUrl/api/page/$itemId/$seasonNum/header", cache, etag) ?: return null
         return try {
             parsePageHeader(bytes)
-        } catch (_: Exception) {
-            // Stale cache format — delete and refetch
+        } catch (e: Exception) {
+            Log.e("JanusApi", "Header parse failed, refetching: ${e.message}")
             cache?.delete(); etag?.delete()
+            // Also delete stale atlas cache
+            cacheDir?.let {
+                java.io.File(it, "pages/${itemId}_s${seasonNum}.atlas").delete()
+                java.io.File(it, "pages/${itemId}_s${seasonNum}.atlas.etag").delete()
+            }
             bytes = fetchCached("$baseUrl/api/page/$itemId/$seasonNum/header", cache, etag) ?: return null
             try { parsePageHeader(bytes) } catch (_: Exception) { null }
         }
