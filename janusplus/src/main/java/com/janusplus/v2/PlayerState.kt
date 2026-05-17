@@ -96,6 +96,9 @@ class PlayerState(
     // Settings panel
     private var settingsFocus = 0
     private var settingsRows = listOf<SettingsRow>()
+    private var settingsScrollY = 0f
+    private var settingsDragY = 0f
+    private var settingsDragging = false
 
     data class SettingsRow(val label: String, val value: String, val icon: String,
                            val indent: Boolean = false, val selected: Boolean = false,
@@ -230,12 +233,22 @@ class PlayerState(
                         isDraggingSeekbar = true
                         val progress = ((t.x - seekbarRect[0]) / seekbarRect[2]).coerceIn(0f, 1f)
                         seekTo((durationMs * progress).toLong().coerceIn(0, durationMs))
+                    } else if (mode == Mode.SETTINGS) {
+                        settingsDragY = t.y
+                        settingsDragging = false
                     }
                 }
                 2 -> { // ACTION_MOVE
                     if (isDraggingSeekbar && screenW > 0) {
                         val progress = ((t.x - pad) / (screenW - pad * 2)).coerceIn(0f, 1f)
                         positionMs = (durationMs * progress).toLong().coerceIn(0, durationMs)
+                    } else if (mode == Mode.SETTINGS) {
+                        val dy = settingsDragY - t.y
+                        if (!settingsDragging && Math.abs(dy) > 8f) settingsDragging = true
+                        if (settingsDragging) {
+                            settingsScrollY = (settingsScrollY + dy).coerceAtLeast(0f)
+                            settingsDragY = t.y
+                        }
                     }
                 }
                 1 -> { // ACTION_UP
@@ -245,6 +258,8 @@ class PlayerState(
                         seekTo((durationMs * progress).toLong().coerceIn(0, durationMs))
                         mode = Mode.PLAYING
                         play()
+                    } else if (settingsDragging) {
+                        settingsDragging = false
                     } else {
                         handleTap(app, t.x, t.y)
                     }
@@ -365,10 +380,10 @@ class PlayerState(
         x >= r[0] && y >= r[1] && x <= r[0] + r[2] && y <= r[1] + r[3]
 
     private fun handleTap(app: App, x: Float, y: Float) {
-        // Priority 1: Settings panel — tap outside to close
+        // Priority 1: Settings panel — tap outside to close + resume
         if (mode == Mode.SETTINGS) {
             val panelX = screenW - screenW * 0.35f
-            if (x < panelX) { mode = Mode.CONTROLS; controlsTimer = 0f }
+            if (x < panelX) { mode = Mode.PLAYING; settingsScrollY = 0f; play() }
             return
         }
 
@@ -798,7 +813,7 @@ class PlayerState(
         val rowH = rc.dp(44f)
         val labelSize = rc.sp(14)
         val valueSize = rc.sp(13)
-        var y = rc.dp(56f)
+        var y = rc.dp(56f) - settingsScrollY
 
         for ((idx, row) in settingsRows.withIndex()) {
             val focused = idx == settingsFocus
