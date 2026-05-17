@@ -31,8 +31,8 @@ PAGES_DIR = DATA_DIR / "pages"
 THUMBS_DIR = DATA_DIR / "thumbs"
 COVERS_DIR = DATA_DIR / "covers"
 
-THUMB_W = 300
-THUMB_H = 168
+THUMB_W = 400
+THUMB_H = 224
 PVR_HEADER_SIZE = 52
 
 
@@ -61,8 +61,15 @@ def build_atlas_png(thumb_paths, output_path):
     count = len(thumb_paths)
     cols = math.ceil(math.sqrt(count))
     rows = math.ceil(count / cols)
+    # Ensure atlas fits within 4096x4096 texture
+    max_cols = 4096 // THUMB_W
+    if cols > max_cols:
+        cols = max_cols
+        rows = math.ceil(count / cols)
     atlas_w = round_up_4(cols * THUMB_W)
     atlas_h = round_up_4(rows * THUMB_H)
+    if atlas_h > 4096:
+        print(f"  WARN: atlas {atlas_w}x{atlas_h} exceeds 4096 height!")
 
     atlas = Image.new("RGBA", (atlas_w, atlas_h), (0, 0, 0, 255))
 

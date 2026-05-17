@@ -1,22 +1,44 @@
 package com.janusplus.v2
 
-import android.graphics.BitmapFactory
+import com.janusplus.CompressedTextureArray
 import com.janusplus.JanusApi
 import com.janusplus.Lang
-import com.janusplus.TextureArray
+import org.json.JSONObject
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import kotlin.concurrent.thread
 
 class SeriesState(private val item: JanusApi.LibraryItem) : GameState {
 
-    @Volatile var heroBlob: JanusApi.HeroBlob? = null
-    @Volatile var seasonCards: JanusApi.SeasonCards? = null
+    // Page blob data — set atomically from background thread
+    data class PageData(
+        val titleEn: String, val titleJa: String,
+        val synopsisEn: String, val synopsisJa: String,
+        val episodeCount: Int,
+        val episodes: List<EpisodeCard>,
+    )
+    data class EpisodeCard(val episode: Int, val titleEn: String, val durationSec: Int)
+
+    @Volatile var pageData: PageData? = null
     @Volatile var bannerW = 0
     @Volatile var bannerH = 0
+    @Volatile var bannerLayer = -1
     @Volatile var bannerReady = false
+    @Volatile var atlasW = 0
+    @Volatile var atlasH = 0
+    @Volatile var atlasCols = 0
+    @Volatile var atlasLayer = -1
+    @Volatile var atlasReady = false
     @Volatile var alive = true
+
+    // Pending ETC2 uploads — background thread sets, GL thread consumes
+    data class Etc2Upload(val layer: Int, val w: Int, val h: Int, val data: ByteBuffer)
+    @Volatile var pendingBanner: Etc2Upload? = null
+    @Volatile var pendingAtlas: Etc2Upload? = null
+
     private var startTime = System.nanoTime()
 
-    // ── Fixed layout — computed once in init, never changes ──
+    // ── Fixed layout ──
 
     private var pad = 0f
     private var heroH = 0f
@@ -35,8 +57,8 @@ class SeriesState(private val item: JanusApi.LibraryItem) : GameState {
     private var gridSpacing = 0f
     private var textPad = 0f
     private var contentMaxW = 0f
+    private var dp50 = 100f
 
-    // Sizes in pixels
     private var titleSize = 0
     private var btnTextSize = 0
     private var metaSize = 0
@@ -44,48 +66,62 @@ class SeriesState(private val item: JanusApi.LibraryItem) : GameState {
     private var cardTitleSize = 0
     private var cardDurSize = 0
     private var lineH = 0f
-
     private var layoutDone = false
 
     override fun init(app: App) {
-        app.thumbAtlas.clear()
         bannerReady = false
-        heroBlob = null
-        seasonCards = null
+        atlasReady = false
+        pageData = null
         startTime = System.nanoTime()
+
+        // Grab layers from the ETC2 ring buffer
+        bannerLayer = CompressedTextureArray.LAYER_BANNER
+        atlasLayer = app.etc2Array.nextThumbLayer()
 
         val api = app.api ?: return
 
         thread {
-            val blob = api.fetchHeroBlob(item.id)
+            val blob = api.fetchPageBlob(item.id, 1) ?: return@thread
             if (!alive) return@thread
-            if (blob != null) {
-                heroBlob = blob
-                blob.bannerBytes?.let { bytes ->
-                    val bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
-                    if (bmp != null && alive) {
-                        bannerW = bmp.width; bannerH = bmp.height
-                        app.texArray.uploadLayer(TextureArray.LAYER_BANNER, bmp)
-                        bannerReady = true
-                    }
-                }
+
+            // Parse metadata
+            val json = JSONObject(blob.metadataJson)
+            val eps = json.getJSONArray("episodes")
+            val cards = (0 until eps.length()).map { i ->
+                val e = eps.getJSONObject(i)
+                EpisodeCard(e.getInt("episode"), e.optString("titleEn", ""), e.optInt("durationSec", 0))
             }
-        }
-
-        thread {
-            val cards = api.fetchSeasonCards(item.id, 1)
-            if (alive && cards != null) seasonCards = cards
-        }
-
-        val thumbLayer = app.thumbAtlas.layerIndex
-        thread {
-            val thumbs = api.fetchThumbsBlob(item.id, 1)
+            val data = PageData(
+                titleEn = json.optString("titleEn", ""),
+                titleJa = json.optString("titleJa", ""),
+                synopsisEn = json.optString("synopsisEn", ""),
+                synopsisJa = json.optString("synopsisJa", ""),
+                episodeCount = json.optInt("episodeCount", cards.size),
+                episodes = cards,
+            )
             if (!alive) return@thread
-            val decoded = thumbs.mapNotNull { entry ->
-                val bmp = BitmapFactory.decodeByteArray(entry.data, 0, entry.data.size)
-                if (bmp != null) "thumb_${item.id}_${entry.episode}" to bmp else null
+            pageData = data
+
+            // Queue ETC2 banner upload
+            if (blob.bannerEtc2 != null && blob.bannerW > 0) {
+                val buf = ByteBuffer.allocateDirect(blob.bannerEtc2.size).order(ByteOrder.nativeOrder())
+                buf.put(blob.bannerEtc2)
+                buf.position(0)
+                bannerW = blob.bannerW
+                bannerH = blob.bannerH
+                pendingBanner = Etc2Upload(bannerLayer, blob.bannerW, blob.bannerH, buf)
             }
-            if (alive && decoded.isNotEmpty()) app.thumbAtlas.pack(decoded, thumbLayer)
+
+            // Queue ETC2 atlas upload
+            if (blob.atlasEtc2 != null && blob.atlasW > 0) {
+                val buf = ByteBuffer.allocateDirect(blob.atlasEtc2.size).order(ByteOrder.nativeOrder())
+                buf.put(blob.atlasEtc2)
+                buf.position(0)
+                atlasW = blob.atlasW
+                atlasH = blob.atlasH
+                atlasCols = blob.atlasCols
+                pendingAtlas = Etc2Upload(atlasLayer, blob.atlasW, blob.atlasH, buf)
+            }
         }
     }
 
@@ -102,7 +138,6 @@ class SeriesState(private val item: JanusApi.LibraryItem) : GameState {
 
         lineH = rc.font.textHeight(synopsisSize)
 
-        // Fixed positions from top
         titleY = heroH - rc.dp(120f)
         btnY = titleY + rc.dp(40f)
         btnW = rc.dp(200f)
@@ -112,31 +147,33 @@ class SeriesState(private val item: JanusApi.LibraryItem) : GameState {
         synopsisH = lineH * 2 * 1.3f
         gridY = synopsisY + synopsisH
 
-        // Grid layout
         gridSpacing = rc.dp(12f)
         textPad = rc.dp(8f)
         val availW = rc.w - pad * 2
         gridCols = ((availW + gridSpacing) / (rc.dp(160f) + gridSpacing)).toInt().coerceAtLeast(1)
         cardW = (availW - gridSpacing * (gridCols - 1)) / gridCols
-        thumbH = cardW / 1.33f  // 4:3 default, updated when atlas arrives
+        thumbH = cardW / (400f / 224f)
         cardH = thumbH + rc.dp(50f)
 
         contentMaxW = (rc.w * 0.6f).coerceAtMost(rc.w - pad * 2)
-        rc_dp50 = rc.dp(50f)
+        dp50 = rc.dp(50f)
 
         layoutDone = true
     }
 
-    private var rc_dp50 = 100f
-
     override fun update(app: App, touches: List<Touch>) {
-        val cards = seasonCards?.episodes
-        if (cards != null && cards.isNotEmpty()) {
-            val uv = app.thumbAtlas.getUV("thumb_${item.id}_${cards.first().episode}")
-            if (uv != null && thumbH != cardW / uv.srcAspect) {
-                thumbH = cardW / uv.srcAspect
-                cardH = thumbH + rc_dp50
-            }
+        // Process pending ETC2 uploads on GL thread
+        val banner = pendingBanner
+        if (banner != null) {
+            pendingBanner = null
+            app.etc2Array.uploadCompressedLayer(banner.layer, banner.w, banner.h, banner.data)
+            bannerReady = true
+        }
+        val atlas = pendingAtlas
+        if (atlas != null) {
+            pendingAtlas = null
+            app.etc2Array.uploadCompressedLayer(atlas.layer, atlas.w, atlas.h, atlas.data)
+            atlasReady = true
         }
     }
 
@@ -144,17 +181,30 @@ class SeriesState(private val item: JanusApi.LibraryItem) : GameState {
         if (!layoutDone) computeLayout(rc)
 
         val scrollY = app.scrollY
-        val blob = heroBlob
+        val data = pageData
         val elapsed = (System.nanoTime() - startTime) / 1_000_000_000f
         val pulse = (0.08f + 0.04f * kotlin.math.sin(elapsed * 3f).toFloat())
 
         // ── Background ──
         rc.solid(0f, 0f, rc.w, rc.h, 0.039f, 0.039f, 0.102f)
 
-        // ── Hero (fixed: 0 to heroH) ──
+        // ── Hero ──
         val ht = -scrollY
-        if (bannerReady) {
-            rc.banner(0f, ht, rc.w, heroH, bannerW, bannerH)
+        if (bannerReady && bannerW > 0) {
+            // ETC2 banner — compute center-crop UVs
+            val texSize = app.etc2Array.size.toFloat()
+            val srcAspect = bannerW.toFloat() / bannerH
+            val dstAspect = rc.w / heroH
+            val maxU = bannerW / texSize; val maxV = bannerH / texSize
+            val cu0: Float; val cv0: Float; val cu1: Float; val cv1: Float
+            if (srcAspect < dstAspect) {
+                val f = srcAspect / dstAspect; val crop = maxV * (1f - f) / 2f
+                cu0 = 0f; cu1 = maxU; cv0 = crop; cv1 = maxV - crop
+            } else {
+                val f = dstAspect / srcAspect; val crop = maxU * (1f - f) / 2f
+                cv0 = 0f; cv1 = maxV; cu0 = crop; cu1 = maxU - crop
+            }
+            rc.etc2Quad(0f, ht, rc.w, heroH, cu0, cv0, cu1, cv1, bannerLayer)
         } else {
             rc.solid(0f, ht, rc.w, heroH, pulse, pulse, pulse + 0.02f)
         }
@@ -167,40 +217,42 @@ class SeriesState(private val item: JanusApi.LibraryItem) : GameState {
         rc.gradient(0f, ht, rc.w * 0.4f, heroH,
             floatArrayOf(bg[0], bg[1], bg[2], 0.87f), clear, clear, floatArrayOf(bg[0], bg[1], bg[2], 0.87f))
 
-        // ── Title (fixed: titleY) ──
-        val title = blob?.let { b ->
+        // ── Title ──
+        val title = if (data != null) {
             val lang = Lang.current
-            b.locales[lang]?.title?.takeIf { it.isNotEmpty() }
-                ?: if (lang == "ja") b.titleJa.ifEmpty { b.titleEn } else b.titleEn
-        } ?: item.title()
+            if (lang == "ja" && data.titleJa.isNotEmpty()) data.titleJa else data.titleEn
+        } else item.title()
         rc.text("←", pad, ht + titleY, rc.sp(22), 0.533f, 0.533f, 0.533f)
         rc.tappable(0f, ht + titleY - rc.dp(20f), rc.dp(60f), rc.dp(60f)) {
             app.goBack()
         }
         rc.textClipped(title, pad + rc.dp(34f), ht + titleY, titleSize, contentMaxW, 1f, 1f, 1f)
 
-        // ── Play button (fixed: btnY) ──
+        // ── Play button ──
         rc.solid(pad, ht + btnY, btnW, btnH, 0.733f, 0.525f, 0.988f)
         rc.text(Lang.s("play"), pad + rc.dp(20f), ht + btnY + rc.dp(30f), btnTextSize, 1f, 1f, 1f)
 
-        // ── Metadata (fixed: metaY) ──
-        if (blob != null) {
-            rc.text(Lang.s("episodes", blob.episodeCount), pad, ht + metaY, metaSize, 0.533f, 0.533f, 0.533f)
+        // ── Metadata ──
+        if (data != null) {
+            rc.text(Lang.s("episodes", data.episodeCount), pad, ht + metaY, metaSize, 0.533f, 0.533f, 0.533f)
         }
 
-        // ── Synopsis (fixed: synopsisY, fixed height: synopsisH) ──
-        val synText = blob?.let { b ->
+        // ── Synopsis ──
+        val synText = if (data != null) {
             val lang = Lang.current
-            b.locales[lang]?.synopsis?.takeIf { it.isNotEmpty() }
-                ?: when (lang) { "ja" -> b.synopsisJa.ifEmpty { b.synopsisEn }; else -> b.synopsisEn }
-        } ?: ""
+            if (lang == "ja" && data.synopsisJa.isNotEmpty()) data.synopsisJa else data.synopsisEn
+        } else ""
         if (synText.isNotEmpty()) {
             rc.textWrapped(synText, pad, ht + synopsisY, synopsisSize, contentMaxW, 2, 0.733f, 0.733f, 0.733f)
         }
 
-        // ── Episode grid (fixed: gridY, each card at deterministic position) ──
-        val cards = seasonCards?.episodes ?: emptyList()
-        val cardCount = if (cards.isNotEmpty()) cards.size else 12 // skeleton count
+        // ── Episode grid ──
+        val episodes = data?.episodes ?: emptyList()
+        val cardCount = if (episodes.isNotEmpty()) episodes.size else 12
+
+        val texSize = app.etc2Array.size.toFloat()
+        val thumbW = 400f  // matches build_etc2.py THUMB_W
+        val thumbHPx = 224f  // matches build_etc2.py THUMB_H
 
         for (i in 0 until cardCount) {
             val col = i % gridCols
@@ -210,39 +262,42 @@ class SeriesState(private val item: JanusApi.LibraryItem) : GameState {
 
             if (y + cardH < 0 || y > rc.h) continue
 
-            // Card background — always at this position
             rc.solid(x, y, cardW, cardH, 0.102f, 0.102f, 0.180f)
 
-            if (i < cards.size) {
-                val card = cards[i]
+            if (i < episodes.size) {
+                val ep = episodes[i]
 
-                // Thumbnail placeholder + actual
                 rc.solid(x, y, cardW, thumbH, 0.133f, 0.133f, 0.200f)
-                rc.thumb("thumb_${item.id}_${card.episode}", x, y, cardW, thumbH)
 
-                // Title
-                val titleStr = "${card.episode}. ${card.title()}"
+                // ETC2 atlas thumbnail
+                if (atlasReady && atlasCols > 0) {
+                    val atlasCol = i % atlasCols
+                    val atlasRow = i / atlasCols
+                    val u0 = (atlasCol * thumbW) / texSize
+                    val v0 = (atlasRow * thumbHPx) / texSize
+                    val u1 = ((atlasCol + 1) * thumbW) / texSize
+                    val v1 = ((atlasRow + 1) * thumbHPx) / texSize
+                    rc.etc2Quad(x, y, cardW, thumbH, u0, v0, u1, v1, atlasLayer)
+                }
+
+                val titleStr = "${ep.episode}. ${ep.titleEn}"
                 rc.textClipped(titleStr, x + textPad, y + thumbH + rc.dp(22f), cardTitleSize,
                     cardW - textPad * 2, 1f, 1f, 1f)
-
-                // Duration
-                rc.text("${(card.durationSec / 60).toInt()} min", x + textPad,
+                rc.text("${ep.durationSec / 60} min", x + textPad,
                     y + thumbH + rc.dp(38f), cardDurSize, 0.533f, 0.533f, 0.533f)
             } else {
-                // Skeleton — pulsating
                 rc.solid(x, y, cardW, thumbH, pulse, pulse, pulse + 0.02f)
                 rc.solid(x, y + thumbH, cardW, cardH - thumbH, pulse * 0.7f, pulse * 0.7f, pulse * 0.7f)
             }
         }
 
-        // FPS
         rc.text("${app.fps}fps", rc.dp(8f), rc.dp(16f), rc.sp(10), 0.4f, 0.8f, 0.4f)
     }
 
     override fun cleanup(app: App) {
         alive = false
-        app.thumbAtlas.clear()
         app.scrollY = 0f
         bannerReady = false
+        atlasReady = false
     }
 }
