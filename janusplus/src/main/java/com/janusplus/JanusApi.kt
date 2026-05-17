@@ -255,23 +255,11 @@ class JanusApi(private val baseUrl: String) {
     var cacheDir: java.io.File? = null
 
     private fun fetchCached(url: String, cacheFile: java.io.File?, etagFile: java.io.File?): ByteArray? {
+        // Cache hit → return immediately, zero network
         if (cacheFile != null && cacheFile.exists()) {
-            val storedEtag = if (etagFile?.exists() == true) etagFile.readText() else null
-            if (storedEtag != null) {
-                try {
-                    val req = authRequest(url).header("If-None-Match", storedEtag).build()
-                    val resp = client.newCall(req).execute()
-                    if (resp.code == 304) return cacheFile.readBytes()
-                    if (resp.isSuccessful) {
-                        val fetched = resp.body?.bytes() ?: return cacheFile.readBytes()
-                        cacheFile.writeBytes(fetched)
-                        resp.header("ETag")?.let { etagFile?.writeText(it) }
-                        return fetched
-                    }
-                } catch (_: Exception) { }
-            }
             return cacheFile.readBytes()
         }
+        // Cache miss → fetch from network
         val request = authRequest(url).build()
         val response = try { client.newCall(request).execute() } catch (_: Exception) { return null }
         if (!response.isSuccessful) return null
