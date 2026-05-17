@@ -26,7 +26,7 @@ class SettingsState : GameState {
         layoutDone = true
     }
 
-    override fun update(app: App, touches: List<Touch>) {}
+    override fun update(app: App, touches: List<Touch>, keys: List<Int>) {}
 
     override fun draw(app: App, rc: RC) {
         if (!layoutDone) computeLayout(rc)

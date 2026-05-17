@@ -85,6 +85,14 @@ class MainActivity : AppCompatActivity() {
         return true
     }
 
+    override fun dispatchKeyEvent(event: android.view.KeyEvent): Boolean {
+        if (event.action == android.view.KeyEvent.ACTION_DOWN) {
+            app.keyQueue.add(event.keyCode)
+            return true
+        }
+        return super.dispatchKeyEvent(event)
+    }
+
     @Suppress("DEPRECATION")
     override fun onBackPressed() {
         if (!app.goBack()) super.onBackPressed()

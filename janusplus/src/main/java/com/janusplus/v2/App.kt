@@ -30,7 +30,7 @@ enum class Screen { HOME, SERIES, MOVIE, SETTINGS, PLAYER }
 
 interface GameState {
     fun init(app: App)
-    fun update(app: App, touches: List<Touch>)
+    fun update(app: App, touches: List<Touch>, keys: List<Int>)
     fun draw(app: App, rc: RC)
     fun cleanup(app: App)
 }
@@ -145,6 +145,7 @@ class App(private val context: Context, private val assets: android.content.res.
 
     // Input
     val touchQueue = ConcurrentLinkedQueue<Touch>()
+    val keyQueue = ConcurrentLinkedQueue<Int>()
     @Volatile var hitRects: List<HitRect> = emptyList()
 
     // Scroll — VelocityTracker + OverScroller, same physics as native Android
@@ -278,6 +279,8 @@ class App(private val context: Context, private val assets: android.content.res.
         // Poll input
         val touches = mutableListOf<Touch>()
         while (true) { touches.add(touchQueue.poll() ?: break) }
+        val keys = mutableListOf<Int>()
+        while (true) { keys.add(keyQueue.poll() ?: break) }
 
         // Scroll fling (OverScroller — same deceleration curve as native Android)
         if (scroller.computeScrollOffset()) {
@@ -285,7 +288,7 @@ class App(private val context: Context, private val assets: android.content.res.
         }
 
         // Update — may queue texture uploads
-        currentState.update(this, touches)
+        currentState.update(this, touches, keys)
 
         // Process pending atlases (sets uvMap+ready), then flush GL uploads
         coverAtlas.processPending()

@@ -116,7 +116,7 @@ class PlayerState(
         layoutDone = true
     }
 
-    override fun update(app: App, touches: List<Touch>) {
+    override fun update(app: App, touches: List<Touch>, keys: List<Int>) {
         // Update video texture
         app.videoSurface.updateTexture()
 
@@ -138,8 +138,57 @@ class PlayerState(
 
         // Touch handling
         for (t in touches) {
-            if (t.action == 1) { // ACTION_UP
-                handleTap(app, t.x, t.y)
+            if (t.action == 1) handleTap(app, t.x, t.y)
+        }
+
+        // D-pad handling
+        for (key in keys) {
+            handleKey(app, key)
+        }
+    }
+
+    private fun handleKey(app: App, keyCode: Int) {
+        when (keyCode) {
+            android.view.KeyEvent.KEYCODE_DPAD_CENTER, android.view.KeyEvent.KEYCODE_ENTER -> {
+                when (mode) {
+                    Mode.PLAYING -> { mode = Mode.CONTROLS; controlsTimer = 0f; pause() }
+                    Mode.CONTROLS -> { mode = Mode.PLAYING; play() }
+                    Mode.WORD_NAV -> { /* mine word */ }
+                }
+            }
+            android.view.KeyEvent.KEYCODE_DPAD_LEFT -> {
+                when (mode) {
+                    Mode.PLAYING -> { SrtParser.prevCueBefore(cues, positionMs)?.let { seekTo(it.startMs) } }
+                    Mode.CONTROLS -> seekRelative(-10000)
+                    Mode.WORD_NAV -> { /* prev word */ }
+                }
+            }
+            android.view.KeyEvent.KEYCODE_DPAD_RIGHT -> {
+                when (mode) {
+                    Mode.PLAYING -> { SrtParser.nextCueAfter(cues, positionMs)?.let { seekTo(it.startMs) } }
+                    Mode.CONTROLS -> seekRelative(10000)
+                    Mode.WORD_NAV -> { /* next word */ }
+                }
+            }
+            android.view.KeyEvent.KEYCODE_DPAD_UP -> {
+                when (mode) {
+                    Mode.PLAYING -> { mode = Mode.CONTROLS; controlsTimer = 0f; pause() }
+                    Mode.CONTROLS -> if (cues.isNotEmpty()) { mode = Mode.WORD_NAV }
+                    Mode.WORD_NAV -> { mode = Mode.CONTROLS; controlsTimer = 0f }
+                }
+            }
+            android.view.KeyEvent.KEYCODE_DPAD_DOWN -> {
+                when (mode) {
+                    Mode.PLAYING -> if (cues.isNotEmpty()) { mode = Mode.WORD_NAV; pause() } else { mode = Mode.CONTROLS; controlsTimer = 0f; pause() }
+                    Mode.CONTROLS -> { mode = Mode.PLAYING; play() }
+                    Mode.WORD_NAV -> { mode = Mode.CONTROLS; controlsTimer = 0f }
+                }
+            }
+            android.view.KeyEvent.KEYCODE_BACK -> {
+                when (mode) {
+                    Mode.CONTROLS, Mode.WORD_NAV -> { mode = Mode.PLAYING; play() }
+                    Mode.PLAYING -> { cleanup(app); app.goBack() }
+                }
             }
         }
     }

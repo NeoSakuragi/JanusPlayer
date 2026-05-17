@@ -150,7 +150,7 @@ class SeriesState(private val item: JanusApi.LibraryItem) : GameState {
         layoutDone = true
     }
 
-    override fun update(app: App, touches: List<Touch>) {
+    override fun update(app: App, touches: List<Touch>, keys: List<Int>) {
         // Recalculate card height when thumb dimensions arrive
         if (layoutDone && cardW > 0) {
             val newThumbH = cardW / (thumbWPx / thumbHPx)
