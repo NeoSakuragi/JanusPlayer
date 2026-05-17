@@ -44,25 +44,34 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun loadCovers(api: JanusApi, items: List<JanusApi.LibraryItem>) {
-        val client = okhttp3.OkHttpClient()
+        val client = okhttp3.OkHttpClient.Builder()
+            .connectTimeout(10, java.util.concurrent.TimeUnit.SECONDS)
+            .readTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
+            .build()
         thread {
-            val entries = mutableListOf<Pair<String, android.graphics.Bitmap>>()
-            for (item in items) {
-                try {
-                    val request = okhttp3.Request.Builder().url(api.coverUrl(item.id))
-                        .header("Authorization", "Bearer ${api.token}").build()
-                    val response = client.newCall(request).execute()
-                    if (response.isSuccessful) {
-                        val bytes = response.body?.bytes()
-                        if (bytes != null) {
-                            val bmp = android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
-                            if (bmp != null) entries.add("cover_${item.id}" to bmp)
+            for (attempt in 1..5) {
+                val entries = mutableListOf<Pair<String, android.graphics.Bitmap>>()
+                for (item in items) {
+                    try {
+                        val request = okhttp3.Request.Builder().url(api.coverUrl(item.id))
+                            .header("Authorization", "Bearer ${api.token}").build()
+                        val response = client.newCall(request).execute()
+                        if (response.isSuccessful) {
+                            val bytes = response.body?.bytes()
+                            if (bytes != null) {
+                                val bmp = android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                                if (bmp != null) entries.add("cover_${item.id}" to bmp)
+                            }
                         }
-                    }
-                    response.close()
-                } catch (_: Exception) {}
+                        response.close()
+                    } catch (_: Exception) {}
+                }
+                if (entries.isNotEmpty()) {
+                    app.coverAtlas.pack(entries, app.coverAtlas.layerIndex)
+                    break
+                }
+                Thread.sleep(3000)
             }
-            if (entries.isNotEmpty()) app.coverAtlas.pack(entries, app.coverAtlas.layerIndex)
         }
     }
 

@@ -135,7 +135,7 @@ class App(private val context: Context, private val assets: android.content.res.
     lateinit var font: FontAtlas
     lateinit var texArray: TextureArray
     lateinit var etc2Array: CompressedTextureArray
-    val coverAtlas = ThumbnailAtlas()
+    val coverAtlas = ThumbnailAtlas().apply { layerIndex = TextureArray.LAYER_COVERS }
     val thumbAtlas = ThumbnailAtlas()
     val videoSurface = VideoSurface()
 
