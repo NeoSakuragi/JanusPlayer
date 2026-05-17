@@ -92,8 +92,6 @@ class GLRenderer(
         val uploadStart = System.nanoTime()
         textures.processUploads()
         texArray.processUploads()
-        thumbAtlas.uploadIfNeeded()
-        state.coverAtlas.uploadIfNeeded()
         lastUploadMs = (System.nanoTime() - uploadStart) / 1_000_000f
 
         state.seriesScroll.update(dt)

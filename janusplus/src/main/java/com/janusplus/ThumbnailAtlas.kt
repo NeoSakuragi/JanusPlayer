@@ -3,25 +3,20 @@ package com.janusplus
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Rect
-import java.util.concurrent.atomic.AtomicReference
 
 class ThumbnailAtlas {
 
     data class ThumbUV(val u0: Float, val v0: Float, val u1: Float, val v1: Float,
                        val srcAspect: Float = 1f)
 
-    data class PackResult(val uvMap: HashMap<String, ThumbUV>, val bitmap: Bitmap, val layer: Int)
-
     @Volatile private var uvMap = HashMap<String, ThumbUV>()
     @Volatile private var ready = false
     @Volatile var layerIndex = 0
     var texArray: TextureArray? = null
 
-    // Background thread writes here; GL thread reads and applies
-    private val pendingResult = AtomicReference<PackResult?>(null)
-
     fun pack(entries: List<Pair<String, Bitmap>>, forLayer: Int) {
         if (entries.isEmpty()) return
+        val ta = texArray ?: return
 
         val thumbW = entries.first().second.width
         val thumbH = entries.first().second.height
@@ -56,7 +51,7 @@ class ThumbnailAtlas {
             }
             canvas.drawBitmap(bmp, srcRect, Rect(x, y, x + thumbW, y + thumbH), null)
 
-            val layerSize = texArray?.size?.toFloat() ?: atlasW.toFloat()
+            val layerSize = ta.size.toFloat()
             newMap[key] = ThumbUV(
                 x.toFloat() / layerSize,
                 y.toFloat() / layerSize,
@@ -67,22 +62,15 @@ class ThumbnailAtlas {
             bmp.recycle()
         }
 
-        // Atomically publish result — GL thread will only apply if layer matches current
-        val old = pendingResult.getAndSet(PackResult(newMap, atlas, forLayer))
-        old?.bitmap?.recycle()
-    }
-
-    // Called on GL thread only
-    fun uploadIfNeeded() {
-        val result = pendingResult.getAndSet(null) ?: return
-        // Only apply if this result is for the current layer (not a stale page)
-        if (result.layer != layerIndex) {
-            result.bitmap.recycle()
+        // Stale check — if page changed while packing, discard
+        if (forLayer != layerIndex) {
+            atlas.recycle()
             return
         }
-        val ta = texArray ?: return
-        ta.uploadLayer(result.layer, result.bitmap)
-        uvMap = result.uvMap
+
+        // Queue directly to texture array — processUploads() does the GL call
+        ta.uploadLayer(forLayer, atlas)
+        uvMap = newMap
         ready = true
     }
 
@@ -93,7 +81,6 @@ class ThumbnailAtlas {
     fun clear() {
         uvMap = HashMap()
         ready = false
-        pendingResult.getAndSet(null)?.bitmap?.recycle()
         val ta = texArray
         if (ta != null) {
             layerIndex = ta.nextThumbLayer()
