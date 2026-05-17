@@ -47,6 +47,8 @@ class PlayerState(
     private var lastTapTime = 0L
     private var lastTapX = 0f
 
+    private var startTime = System.nanoTime()
+
     // Layout
     private var pad = 0f
     private var barH = 0f
@@ -82,12 +84,13 @@ class PlayerState(
                     positionMs = player.currentPosition
                     durationMs = player.duration.coerceAtLeast(0)
                     isPlaying = player.isPlaying
+                    isBuffering = player.playbackState == androidx.media3.common.Player.STATE_BUFFERING
                     val format = player.videoFormat
                     if (format != null && videoWidth == 0) {
                         videoWidth = format.width
                         videoHeight = format.height
                     }
-                    handler.postDelayed(this, 200)
+                    handler.postDelayed(this, if (isBuffering) 50 else 200)
                 }
             }
             handler.postDelayed(poller, 200)
@@ -240,6 +243,15 @@ class PlayerState(
             rc.solid(0f, 0f, rc.w, rc.h, 0f, 0f, 0f)
         }
 
+        // Buffering indicator
+        if (isBuffering || !firstFrameReceived) {
+            val elapsed = (System.nanoTime() - startTime) / 1_000_000_000f
+            val pulse = 0.5f + 0.3f * kotlin.math.sin(elapsed * 4f).toFloat()
+            val loadText = Lang.s("loading")
+            val tw = rc.font.measureText(loadText, rc.sp(16))
+            rc.text(loadText, (rc.w - tw) / 2f, rc.h / 2f, rc.sp(16), pulse, pulse, pulse)
+        }
+
         // ── Subtitle (cue layer) ──
         if (currentCueText.isNotEmpty()) {
             drawSubtitle(rc, currentCueText)
@@ -257,6 +269,7 @@ class PlayerState(
     @Volatile var videoWidth = 0
     @Volatile var videoHeight = 0
     @Volatile var firstFrameReceived = false
+    @Volatile var isBuffering = true
 
     private fun drawVideoQuad(app: App, rc: RC) {
         // Flush any pending UI quads
