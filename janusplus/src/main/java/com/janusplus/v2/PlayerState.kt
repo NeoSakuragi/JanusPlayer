@@ -145,6 +145,10 @@ class PlayerState(
     // Condensed mode
     var condensedMode = false
 
+    // Track selection
+    private var selectedAudioIdx = 0
+    private var selectedSubLang = "ja"
+
     // Font selection
     var currentFontIdx = 0
     val fontNames = listOf("Noto Sans", "Noto Serif", "Shippori")
@@ -972,14 +976,34 @@ class PlayerState(
     private fun buildSettingsRows() {
         val rows = mutableListOf<SettingsRow>()
 
-        // Audio tracks section
+        // Audio tracks from ExoPlayer
         rows.add(SettingsRow("Audio", "", "audio"))
+        val player = appRef?.exoPlayer
+        if (player != null) {
+            var trackIdx = 0
+            for (group in player.currentTracks.groups) {
+                if (group.type != androidx.media3.common.C.TRACK_TYPE_AUDIO) continue
+                for (i in 0 until group.length) {
+                    val format = group.getTrackFormat(i)
+                    val label = format.label ?: format.language?.uppercase() ?: "Track ${trackIdx + 1}"
+                    val selected = group.isTrackSelected(i)
+                    val idx = trackIdx
+                    rows.add(SettingsRow(label, format.language ?: "", "", indent = true, selected = selected) {
+                        selectAudioTrack(idx)
+                    })
+                    trackIdx++
+                }
+            }
+        }
 
-        // Subtitle tracks section
+        // Subtitle tracks
         rows.add(SettingsRow("Subtitle", "", "subs"))
         for (sub in episode.subtitles) {
             rows.add(SettingsRow(sub.label, sub.language, "", indent = true,
-                selected = true) { /* select sub track */ })
+                selected = sub.language == selectedSubLang) {
+                selectedSubLang = sub.language
+                loadSubtitleTrack(sub)
+            })
         }
 
         // Reading mode
@@ -1261,6 +1285,45 @@ class PlayerState(
     private fun seekTo(ms: Long) {
         positionMs = ms
         appRef?.onMainThread?.invoke(Runnable { appRef?.exoPlayer?.seekTo(ms) })
+    }
+
+    @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
+    private fun selectAudioTrack(idx: Int) {
+        appRef?.onMainThread?.invoke(Runnable {
+            val player = appRef?.exoPlayer ?: return@Runnable
+            var trackIdx = 0
+            for (group in player.currentTracks.groups) {
+                if (group.type != androidx.media3.common.C.TRACK_TYPE_AUDIO) continue
+                for (i in 0 until group.length) {
+                    if (trackIdx == idx) {
+                        player.trackSelectionParameters = player.trackSelectionParameters.buildUpon()
+                            .setOverrideForType(androidx.media3.common.TrackSelectionOverride(group.mediaTrackGroup, i))
+                            .build()
+                        selectedAudioIdx = idx
+                        return@Runnable
+                    }
+                    trackIdx++
+                }
+            }
+        })
+    }
+
+    private fun loadSubtitleTrack(sub: JanusApi.SubTrack) {
+        val api = appRef?.api ?: return
+        val token = api.token ?: ""
+        val url = "$baseUrl/api/subs/${item.id}/${sub.srtFile}"
+        kotlin.concurrent.thread {
+            try {
+                val request = okhttp3.Request.Builder().url(url)
+                    .header("Authorization", "Bearer $token").build()
+                val response = okhttp3.OkHttpClient().newCall(request).execute()
+                if (response.isSuccessful) {
+                    val text = response.body?.string() ?: ""
+                    cues = SrtParser.parse(text)
+                }
+                response.close()
+            } catch (_: Exception) {}
+        }
     }
 
     private fun kickBlitThread(app: App, rc: RC) {

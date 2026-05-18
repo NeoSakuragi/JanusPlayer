@@ -5,6 +5,7 @@ import android.os.Bundle
 import android.view.MotionEvent
 import android.view.WindowManager
 import androidx.appcompat.app.AppCompatActivity
+import com.janusplus.AppUpdater
 import com.janusplus.JanusApi
 import kotlin.concurrent.thread
 
@@ -62,6 +63,7 @@ class MainActivity : AppCompatActivity() {
                 val result = api.login("bruno", "janus2026")
                 if (result != null) {
                     app.api = api
+                    checkForUpdate(api)
                     val library = api.fetchLibrary()
                     app.library = library
                     if (debugPlay != null) {
@@ -133,6 +135,25 @@ class MainActivity : AppCompatActivity() {
         android.util.Log.d("DEBUG", "Direct play: ${item.titleEn} EP${ep.episode}")
         val baseUrl = "https://canneji.duckdns.org/janus"
         app.transition(Screen.PLAYER, PlayerState(item, ep, baseUrl))
+    }
+
+    private fun checkForUpdate(api: JanusApi) {
+        val updater = AppUpdater(this, "https://canneji.duckdns.org/janus")
+        updater.token = api.token
+        updater.checkForUpdate { info ->
+            if (info != null) {
+                runOnUiThread {
+                    android.app.AlertDialog.Builder(this)
+                        .setTitle("Update Available")
+                        .setMessage("Janus+ v${info.versionName} is available. Install now?")
+                        .setPositiveButton("Install") { _, _ ->
+                            updater.downloadAndInstall(info)
+                        }
+                        .setNegativeButton("Later", null)
+                        .show()
+                }
+            }
+        }
     }
 
     override fun dispatchTouchEvent(event: MotionEvent): Boolean {
