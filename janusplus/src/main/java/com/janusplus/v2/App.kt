@@ -245,7 +245,8 @@ class App(val context: Context, private val assets: android.content.res.AssetMan
         defaultTypeface = try { android.graphics.Typeface.createFromAsset(assets, "fonts/NotoSansJP-Regular.ttf") }
                           catch (_: Exception) { android.graphics.Typeface.DEFAULT }
         android.util.Log.i("App", "GL max: ${maxTexSize[0]}, layers: ${maxLayers[0]}")
-        texArray = TextureArray(4096, TextureArray.LAYER_THUMB_FIRST + TextureArray.LAYER_THUMB_COUNT)
+        val uiTexSize = if (isTV) 2048 else 4096
+        texArray = TextureArray(uiTexSize, TextureArray.LAYER_THUMB_FIRST + TextureArray.LAYER_THUMB_COUNT)
         texArray.initGL()
 
         font = FontAtlas(assets)
