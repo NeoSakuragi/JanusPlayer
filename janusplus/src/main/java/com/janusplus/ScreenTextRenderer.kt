@@ -93,16 +93,12 @@ class ScreenTextRenderer {
         }
     }
 
-    fun draw(batch: QuadBatch, w: Float, h: Float) {
+    fun bindAndEnqueue(batch: QuadBatch, w: Float, h: Float) {
         if (textureId == 0) return
-        batch.flush()
         GLES30.glActiveTexture(GLES30.GL_TEXTURE2)
         GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, textureId)
         GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
-        batch.begin()
         batch.addQuad(0f, 0f, w, h, 0f, 0f, 1f, 1f, layer = -1f)
-        batch.flush()
-        batch.begin()
     }
 
     private fun uploadTexture() {

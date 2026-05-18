@@ -229,7 +229,7 @@ class App(val context: Context, private val assets: android.content.res.AssetMan
     }
 
     override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
-        swapIntervalSet = false
+        swapIntervalFrames = 0
         android.opengl.EGL14.eglSwapInterval(android.opengl.EGL14.eglGetCurrentDisplay(), 1)
 
         GLES30.glClearColor(0.039f, 0.039f, 0.102f, 1f)
@@ -332,12 +332,13 @@ class App(val context: Context, private val assets: android.content.res.AssetMan
     private var lastFrameNano = 0L
     private var frameIntervalMs = 0f
 
-    private var swapIntervalSet = false
+    private var swapIntervalFrames = 0
 
     override fun onDrawFrame(gl: GL10?) {
-        if (!swapIntervalSet) {
+        // Re-apply swap interval for first 10 frames after every surface creation
+        if (swapIntervalFrames < 10) {
             android.opengl.EGL14.eglSwapInterval(android.opengl.EGL14.eglGetCurrentDisplay(), 1)
-            swapIntervalSet = true
+            swapIntervalFrames++
         }
         val now = System.nanoTime()
         if (lastFrameNano > 0) frameIntervalMs = frameIntervalMs * 0.9f + (now - lastFrameNano) / 1_000_000f * 0.1f
@@ -408,18 +409,21 @@ class App(val context: Context, private val assets: android.content.res.AssetMan
         val rc = RC(batch, font, texArray, coverAtlas, thumbAtlas, width, height, density, einkMode, str, defaultTypeface)
         currentState.draw(this, rc)
 
+        // Upload text bitmap + add overlay quad to batch (no extra flush)
+        val strT0 = System.nanoTime()
+        str?.endFrame()
+        str?.bindAndEnqueue(batch, width, height)
+        val strMs = (System.nanoTime() - strT0) / 1_000_000f
+
+        // Single flush — everything in one draw call
         val flushT0 = System.nanoTime()
         batch.flush()
-
-        // Draw CPU-rendered text overlay AFTER all GL quads (borders, covers, etc.)
-        screenTextRenderer?.endFrame()
-        screenTextRenderer?.draw(batch, width, height)
         val flushMs = (System.nanoTime() - flushT0) / 1_000_000f
         hitRects = rc.hitRects.toList()
 
         val totalMs = (System.nanoTime() - now) / 1_000_000f
         if (frameCount % 60 == 0) {
-            android.util.Log.d("PERF", "[$currentScreen] interval:${"%.1f".format(frameIntervalMs)}ms work:${"%.1f".format(totalMs)}ms flush:${"%.1f".format(flushMs)}ms vidTex:${"%.1f".format(videoSurface.lastUpdateMs)}ms quads:${batch.lastQuadCount}")
+            android.util.Log.d("PERF", "[$currentScreen] interval:${"%.1f".format(frameIntervalMs)}ms work:${"%.1f".format(totalMs)}ms flush:${"%.1f".format(flushMs)}ms str:${"%.1f".format(strMs)}ms quads:${batch.lastQuadCount}")
         }
     }
 

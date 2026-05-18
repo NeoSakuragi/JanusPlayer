@@ -1341,19 +1341,11 @@ class PlayerState(
         // Store subtitle rect for tap detection
         subtitleRect = floatArrayOf(subX, subY, subW, subH)
 
-        // Bind subtitle texture to unit 2 (reuse uTexVideo sampler) and draw quad
-        rc.batch.flush()
+        // Bind subtitle texture to unit 2 and add quad to batch (no extra flush)
         GLES30.glActiveTexture(GLES30.GL_TEXTURE2)
         GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, subtitleBmp.textureId)
         GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
-
-        rc.batch.begin()
         rc.batch.addQuad(subX, subY, subW, subH, 0f, 0f, 1f, 1f, layer = -1f)
-        rc.batch.flush()
-
-        // Rebind video texture
-        GLES30.glActiveTexture(GLES30.GL_TEXTURE2)
-        app.videoSurface.bindRgb()
         GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
         rc.batch.begin()
     }
@@ -1439,13 +1431,13 @@ class PlayerState(
     private fun drawVideoQuad(app: App, rc: RC) {
         val bt = app.blitThread
         if (bt == null || !bt.frameReady) return
-        // Rebind FBO texture (blit thread may have recreated it)
+        // Video quad must flush separately since subtitle will rebind unit 2
         GLES30.glActiveTexture(GLES30.GL_TEXTURE2)
         app.videoSurface.bindRgb()
         GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
-        // Fullscreen quad sampling from uTexVideo (layer = -1)
-        // FBO has OpenGL origin (Y=0 at bottom), flip V: top=1, bottom=0
         rc.batch.addQuad(0f, 0f, rc.w, rc.h, 0f, 1f, 1f, 0f, layer = -1f)
+        rc.batch.flush()
+        rc.batch.begin()
     }
 
     @Volatile private var alive = true
