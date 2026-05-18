@@ -1254,7 +1254,8 @@ class PlayerState(
     private fun drawVideoQuad(app: App, rc: RC) {
         if (!videoBlitDone) return
         // Fullscreen quad sampling from uTexVideo (layer = -1 triggers sampler2D path in shader)
-        rc.batch.addQuad(0f, 0f, rc.w, rc.h, 0f, 0f, 1f, 1f, layer = -1f)
+        // FBO has OpenGL origin (Y=0 at bottom), flip V: top=1, bottom=0
+        rc.batch.addQuad(0f, 0f, rc.w, rc.h, 0f, 1f, 1f, 0f, layer = -1f)
     }
 
     @Volatile private var alive = true
