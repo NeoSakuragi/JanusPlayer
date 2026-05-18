@@ -10,6 +10,13 @@ class ShaderProgram {
     var uTex = -1; private set
     var uTexEtc2 = -1; private set
     var uTexVideo = -1; private set
+    var uSdfThreshold = -1; private set
+    var uSdfSmoothing = -1; private set
+    var uOutlineWidth = -1; private set
+    var uOutlineColor = -1; private set
+    var uShadowOffset = -1; private set
+    var uShadowColor = -1; private set
+    var uFontLayerMax = -1; private set
 
     fun compile() {
         val vert = loadShader(GLES30.GL_VERTEX_SHADER, VERT_SRC)
@@ -31,6 +38,13 @@ class ShaderProgram {
         uTex = GLES30.glGetUniformLocation(programId, "uTex")
         uTexEtc2 = GLES30.glGetUniformLocation(programId, "uTexEtc2")
         uTexVideo = GLES30.glGetUniformLocation(programId, "uTexVideo")
+        uSdfThreshold = GLES30.glGetUniformLocation(programId, "uSdfThreshold")
+        uSdfSmoothing = GLES30.glGetUniformLocation(programId, "uSdfSmoothing")
+        uOutlineWidth = GLES30.glGetUniformLocation(programId, "uOutlineWidth")
+        uOutlineColor = GLES30.glGetUniformLocation(programId, "uOutlineColor")
+        uShadowOffset = GLES30.glGetUniformLocation(programId, "uShadowOffset")
+        uShadowColor = GLES30.glGetUniformLocation(programId, "uShadowColor")
+        uFontLayerMax = GLES30.glGetUniformLocation(programId, "uFontLayerMax")
     }
 
     fun use() = GLES30.glUseProgram(programId)
@@ -100,13 +114,43 @@ in vec4 vColor;
 uniform mediump sampler2DArray uTex;
 uniform mediump sampler2DArray uTexEtc2;
 uniform mediump sampler2D uTexVideo;
+uniform float uSdfThreshold;
+uniform float uSdfSmoothing;
+uniform float uOutlineWidth;
+uniform vec4 uOutlineColor;
+uniform vec2 uShadowOffset;
+uniform vec4 uShadowColor;
+uniform float uFontLayerMax;
 out vec4 fragColor;
 void main() {
     if (vUVL.z < 0.0) {
         fragColor = texture(uTexVideo, vUVL.xy) * vColor;
     } else if (vUVL.z >= 10.0) {
         fragColor = texture(uTexEtc2, vec3(vUVL.xy, vUVL.z - 10.0)) * vColor;
+    } else if (vUVL.z < uFontLayerMax) {
+        // SDF text rendering
+        float dist = texture(uTex, vUVL).r;
+        float fillAlpha = smoothstep(uSdfThreshold - uSdfSmoothing, uSdfThreshold + uSdfSmoothing, dist);
+        vec4 fill = vec4(vColor.rgb, vColor.a * fillAlpha);
+
+        if (uOutlineWidth > 0.0) {
+            float outT = uSdfThreshold - uOutlineWidth;
+            float outAlpha = smoothstep(outT - uSdfSmoothing, outT + uSdfSmoothing, dist);
+            vec4 outline = vec4(uOutlineColor.rgb, uOutlineColor.a * outAlpha);
+            fill = mix(outline, fill, fillAlpha);
+        }
+
+        if (uShadowColor.a > 0.0) {
+            vec2 shadowUV = vUVL.xy - uShadowOffset;
+            float shadowDist = texture(uTex, vec3(shadowUV, vUVL.z)).r;
+            float shadowAlpha = smoothstep(uSdfThreshold - uSdfSmoothing, uSdfThreshold + uSdfSmoothing, shadowDist);
+            vec4 shadow = vec4(uShadowColor.rgb, uShadowColor.a * shadowAlpha);
+            fragColor = mix(shadow, fill, fill.a);
+        } else {
+            fragColor = fill;
+        }
     } else {
+        // Regular RGBA (covers, thumbnails)
         fragColor = texture(uTex, vUVL) * vColor;
     }
 }"""

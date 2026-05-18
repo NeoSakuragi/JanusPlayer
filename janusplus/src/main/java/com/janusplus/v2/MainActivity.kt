@@ -54,6 +54,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         // Load library on background thread with retry
+        val debugPlay = intent.getStringExtra("play") // e.g. "maison-ikkoku/1" or "dbz/200"
         thread {
             val api = JanusApi("https://canneji.duckdns.org/janus")
             api.cacheDir = cacheDir
@@ -63,7 +64,11 @@ class MainActivity : AppCompatActivity() {
                     app.api = api
                     val library = api.fetchLibrary()
                     app.library = library
-                    loadCovers(api, library)
+                    if (debugPlay != null) {
+                        launchDirectPlayer(api, library, debugPlay)
+                    } else {
+                        loadCovers(api, library)
+                    }
                     break
                 }
                 Thread.sleep(2000)
@@ -101,6 +106,33 @@ class MainActivity : AppCompatActivity() {
                 Thread.sleep(3000)
             }
         }
+    }
+
+    private fun launchDirectPlayer(api: JanusApi, library: List<JanusApi.LibraryItem>, spec: String) {
+        val parts = spec.split("/")
+        val query = parts[0].lowercase()
+        val epNum = parts.getOrNull(1)?.toIntOrNull() ?: 1
+
+        val item = library.firstOrNull { it.titleEn.lowercase().contains(query) || it.id.contains(query) }
+        if (item == null) { android.util.Log.e("DEBUG", "No item matching '$query'"); return }
+
+        val hero = api.fetchHeroBlob(item.id)
+        val episode = hero?.episode
+        if (episode == null) { android.util.Log.e("DEBUG", "No episode data for ${item.id}"); return }
+
+        // If requested ep differs from hero's default, fetch the right season
+        val ep = if (episode.episode != epNum) {
+            val seasonCards = api.fetchSeasonCards(item.id, episode.season)
+            val targetCard = seasonCards?.episodes?.firstOrNull { it.episode == epNum }
+            if (targetCard != null) {
+                episode.copy(episode = epNum, filename = episode.filename.replace(
+                    Regex("\\d+\\.mkv$"), "$epNum.mkv"))
+            } else episode
+        } else episode
+
+        android.util.Log.d("DEBUG", "Direct play: ${item.titleEn} EP${ep.episode}")
+        val baseUrl = "https://canneji.duckdns.org/janus"
+        app.transition(Screen.PLAYER, PlayerState(item, ep, baseUrl))
     }
 
     override fun dispatchTouchEvent(event: MotionEvent): Boolean {

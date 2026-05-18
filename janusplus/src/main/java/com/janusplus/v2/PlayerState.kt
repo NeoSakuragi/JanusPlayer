@@ -31,7 +31,7 @@ class PlayerState(
     @Volatile var isPlaying = true
 
     // Debug
-    var debugBoxes = false
+    var debugBoxes = true
 
     // Reading mode
     var readingMode = ReadingMode.PRO
@@ -141,10 +141,39 @@ class PlayerState(
     // Condensed mode
     var condensedMode = false
 
+    // Font selection
+    var currentFontIdx = 0
+    val fontNames = listOf("Noto Sans", "Noto Serif", "Shippori")
+
+    private fun savePrefs() {
+        val app = appRef ?: return
+        app.context.getSharedPreferences("player_prefs", android.content.Context.MODE_PRIVATE).edit()
+            .putFloat("df", deltaFurigana)
+            .putFloat("dr", deltaRow)
+            .putFloat("ds", deltaSpacing)
+            .putFloat("dy", deltaYShift)
+            .putInt("font_size", subFontSize)
+            .putInt("reading_mode", readingMode.ordinal)
+            .putBoolean("condensed", condensedMode)
+            .putInt("font_idx", currentFontIdx)
+            .apply()
+    }
+
     override fun init(app: App) {
         appRef = app
         mode = Mode.PLAYING
         controlsTimer = 0f
+
+        // Load persisted settings
+        val prefs = app.context.getSharedPreferences("player_prefs", android.content.Context.MODE_PRIVATE)
+        deltaFurigana = prefs.getFloat("df", 0.7f)
+        deltaRow = prefs.getFloat("dr", 1.4f)
+        deltaSpacing = prefs.getFloat("ds", 0f)
+        deltaYShift = prefs.getFloat("dy", 0f)
+        subFontSize = prefs.getInt("font_size", 32)
+        readingMode = ReadingMode.entries.getOrNull(prefs.getInt("reading_mode", 3)) ?: ReadingMode.PRO
+        condensedMode = prefs.getBoolean("condensed", false)
+        currentFontIdx = prefs.getInt("font_idx", 0)
 
         val api = app.api ?: return
         val videoUrl = "$baseUrl/api/video/${item.id}/${episode.filename}"
@@ -680,11 +709,12 @@ class PlayerState(
 
         // Debug: char bounding boxes (red)
         if (debugBoxes) {
+            val dbgT = rc.dp(2f)
             for (b in layout.boxes) {
-                rc.solid(b.x, b.y, b.w, 1f, 1f, 0f, 0f, 0.6f)
-                rc.solid(b.x, b.y + b.h, b.w, 1f, 1f, 0f, 0f, 0.6f)
-                rc.solid(b.x, b.y, 1f, b.h, 1f, 0f, 0f, 0.6f)
-                rc.solid(b.x + b.w, b.y, 1f, b.h, 1f, 0f, 0f, 0.6f)
+                rc.solid(b.x, b.y, b.w, dbgT, 1f, 0f, 0f, 0.8f)
+                rc.solid(b.x, b.y + b.h - dbgT, b.w, dbgT, 1f, 0f, 0f, 0.8f)
+                rc.solid(b.x, b.y, dbgT, b.h, 1f, 0f, 0f, 0.8f)
+                rc.solid(b.x + b.w - dbgT, b.y, dbgT, b.h, 1f, 0f, 0f, 0.8f)
             }
         }
 
@@ -699,12 +729,13 @@ class PlayerState(
 
         // Debug: furigana bounding boxes (blue)
         if (debugBoxes) {
+            val dbgT = rc.dp(2f)
             for (f in layout.furis) {
                 val fy = f.y - layout.furiAscent
-                rc.solid(f.x, fy, f.displayW, 1f, 0f, 0.4f, 1f, 0.6f)
-                rc.solid(f.x, fy + layout.furiH, f.displayW, 1f, 0f, 0.4f, 1f, 0.6f)
-                rc.solid(f.x, fy, 1f, layout.furiH, 0f, 0.4f, 1f, 0.6f)
-                rc.solid(f.x + f.displayW, fy, 1f, layout.furiH, 0f, 0.4f, 1f, 0.6f)
+                rc.solid(f.x, fy, f.displayW, dbgT, 0f, 0.4f, 1f, 0.8f)
+                rc.solid(f.x, fy + layout.furiH - dbgT, f.displayW, dbgT, 0f, 0.4f, 1f, 0.8f)
+                rc.solid(f.x, fy, dbgT, layout.furiH, 0f, 0.4f, 1f, 0.8f)
+                rc.solid(f.x + f.displayW - dbgT, fy, dbgT, layout.furiH, 0f, 0.4f, 1f, 0.8f)
             }
         }
     }
@@ -837,10 +868,9 @@ class PlayerState(
         contentH += rc.dp(32f)
         contentH += padP  // bottom padding
 
-        // Position above subtitle
-        val subTopY = rc.h - rc.dp(60f) - deltaYShift * rc.density -
-            rc.font.textHeight(rc.sp(subFontSize)) * currentCueText.split("\n").size * deltaRow
-        val popupY = (subTopY - contentH - rc.dp(12f)).coerceAtLeast(rc.dp(8f))
+        // Position above subtitle — use actual shade rect
+        val subTop = subtitleRect[1]
+        val popupY = (subTop - contentH - rc.dp(8f)).coerceAtLeast(rc.dp(8f))
 
         // ── Store AABB for tap detection ──
         dictPopupRect = floatArrayOf(popupX, popupY, popupW, contentH)
@@ -925,32 +955,37 @@ class PlayerState(
 
         // Reading mode
         rows.add(SettingsRow("Reading Mode", readingMode.name, "mode") {
-            cycleReadingMode()
+            cycleReadingMode(); savePrefs()
+        })
+
+        // Font
+        rows.add(SettingsRow("Font", fontNames[currentFontIdx], "font") {
+            currentFontIdx = (currentFontIdx + 1) % fontNames.size; savePrefs()
         })
 
         // Font size
         rows.add(SettingsRow("Font Size", "${subFontSize}sp", "size") {
-            cycleFontSize()
+            cycleFontSize(); savePrefs()
         })
 
         // Condensed mode
         rows.add(SettingsRow("Condensed", if (condensedMode) "ON" else "OFF", "cond") {
-            condensedMode = !condensedMode
+            condensedMode = !condensedMode; savePrefs()
         })
 
         // Typography sliders
         rows.add(SettingsRow("DF (Furigana)", "%.1f".format(deltaFurigana), "DF",
             isSlider = true, sliderRange = 0.3f to 1.5f, sliderValue = deltaFurigana,
-            onSlide = { deltaFurigana = it }))
+            onSlide = { deltaFurigana = it; savePrefs() }))
         rows.add(SettingsRow("DR (Row Space)", "%.1f".format(deltaRow), "DR",
-            isSlider = true, sliderRange = 1.0f to 3.0f, sliderValue = deltaRow,
-            onSlide = { deltaRow = it }))
+            isSlider = true, sliderRange = 0.5f to 2.0f, sliderValue = deltaRow,
+            onSlide = { deltaRow = it; savePrefs() }))
         rows.add(SettingsRow("DS (Letter Space)", "%.1f".format(deltaSpacing), "DS",
             isSlider = true, sliderRange = -4f to 8f, sliderValue = deltaSpacing,
-            onSlide = { deltaSpacing = it }))
+            onSlide = { deltaSpacing = it; savePrefs() }))
         rows.add(SettingsRow("DY (Y Offset)", "%.0f".format(deltaYShift), "DY",
             isSlider = true, sliderRange = -50f to 50f, sliderValue = deltaYShift,
-            onSlide = { deltaYShift = it }))
+            onSlide = { deltaYShift = it; savePrefs() }))
 
         settingsRows = rows
     }
@@ -1051,7 +1086,7 @@ class PlayerState(
         val row = settingsRows.getOrNull(settingsFocus) ?: return
         when (row.icon) {
             "DF" -> { deltaFurigana = (deltaFurigana - 0.1f).coerceIn(0.3f, 1.5f); buildSettingsRows() }
-            "DR" -> { deltaRow = (deltaRow - 0.1f).coerceIn(1.0f, 3.0f); buildSettingsRows() }
+            "DR" -> { deltaRow = (deltaRow - 0.1f).coerceIn(0.5f, 2.0f); buildSettingsRows() }
             "DS" -> { deltaSpacing = (deltaSpacing - 0.5f).coerceIn(-4f, 8f); buildSettingsRows() }
             "DY" -> { deltaYShift = (deltaYShift - 5f).coerceIn(-50f, 50f); buildSettingsRows() }
         }
@@ -1061,7 +1096,7 @@ class PlayerState(
         val row = settingsRows.getOrNull(settingsFocus) ?: return
         when (row.icon) {
             "DF" -> { deltaFurigana = (deltaFurigana + 0.1f).coerceIn(0.3f, 1.5f); buildSettingsRows() }
-            "DR" -> { deltaRow = (deltaRow + 0.1f).coerceIn(1.0f, 3.0f); buildSettingsRows() }
+            "DR" -> { deltaRow = (deltaRow + 0.1f).coerceIn(0.5f, 2.0f); buildSettingsRows() }
             "DS" -> { deltaSpacing = (deltaSpacing + 0.5f).coerceIn(-4f, 8f); buildSettingsRows() }
             "DY" -> { deltaYShift = (deltaYShift + 5f).coerceIn(-50f, 50f); buildSettingsRows() }
         }

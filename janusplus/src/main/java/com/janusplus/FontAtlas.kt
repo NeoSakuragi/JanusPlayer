@@ -21,7 +21,7 @@ class FontAtlas(private val assets: AssetManager) {
     var texArray: TextureArray? = null
     var baseLayer = TextureArray.LAYER_FONT
     var pageCount = 0
-    private var bakedSize = 48
+    private var bakedSize = 32  // SDF cell size
     private var bakedAscent = 0f
     private var bakedDescent = 0f
 
@@ -34,7 +34,7 @@ class FontAtlas(private val assets: AssetManager) {
         texArray = texArr
         atlasSize = texArr.size
 
-        val name = "noto_sans_$bakedSize"
+        val name = "noto_sans_sdf"
         try {
             val binStream = assets.open("baked_fonts/$name.bin")
             val bytes = binStream.readBytes()

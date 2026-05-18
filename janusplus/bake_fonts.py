@@ -33,6 +33,8 @@ RANGES = [
 
 FONTS = {
     "noto_sans": "NotoSansJP-Regular.ttf",
+    "noto_serif": "NotoSerifJP-Regular.ttf",
+    "shippori": "ShipporiMincho-Regular.ttf",
 }
 
 
