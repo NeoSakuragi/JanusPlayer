@@ -30,6 +30,9 @@ class PlayerState(
     @Volatile var durationMs = 0L
     @Volatile var isPlaying = true
 
+    // Debug
+    var debugBoxes = false
+
     // Reading mode
     var readingMode = ReadingMode.PRO
 
@@ -62,6 +65,27 @@ class PlayerState(
     // Character bounding boxes (screen space) for tap detection
     private var charBoxes = listOf<CharBox>()
     data class CharBox(val x: Float, val y: Float, val w: Float, val h: Float, val charIdx: Int)
+
+    // Cached cue layout — rebuilt only when cue text, reading mode, or typography changes
+    private var cachedCueText = ""
+    private var cachedReadingMode = ReadingMode.PRO
+    private var cachedDF = 0f; private var cachedDR = 0f; private var cachedDS = 0f; private var cachedDY = 0f
+    private var cachedCueLayout: CueLayout? = null
+
+    data class CueCharDraw(val ch: String, val x: Float, val y: Float)
+    data class CueFuriDraw(val text: String, val x: Float, val y: Float, val size: Int, val scaleX: Float, val displayW: Float)
+    data class CueLayout(
+        val chars: List<CueCharDraw>,
+        val furis: List<CueFuriDraw>,
+        val boxes: List<CharBox>,
+        val shadeRect: FloatArray,
+        val lineInfos: List<Triple<String, Float, Int>>,  // text, lineY, globalStart — for highlight
+        val fontSize: Int,
+        val lineH: Float,
+        val furiH: Float,
+        val furiAscent: Float,
+        val ascent: Float
+    )
 
     // Controls
     private var controlsTimer = 0f
@@ -200,10 +224,11 @@ class PlayerState(
     }
 
     override fun update(app: App, touches: List<Touch>, keys: List<Int>) {
-        // Update video texture
+        val t0 = System.nanoTime()
         if (app.videoSurface.updateTexture()) {
             firstFrameReceived = true
         }
+        dbgUpdate = dbgUpdate * 0.9f + (System.nanoTime() - t0) / 1_000_000f * 0.1f
 
         // Find current cue — only while playing (don't wipe selection while paused)
         if (mode == Mode.PLAYING) {
@@ -456,15 +481,25 @@ class PlayerState(
         }
     }
 
+    private var dbgVideo = 0f; private var dbgCue = 0f; private var dbgControls = 0f
+    private var dbgDict = 0f; private var dbgUpdate = 0f; private var dbgFrameCount = 0
+
     override fun draw(app: App, rc: RC) {
         if (!layoutDone) computeLayout(rc)
 
-        // ── Video quad (full screen) — black until first frame
+        // Blit OES → FBO on new video frames (decoupled from render loop)
+        // videoSurface.skipUpdate only for debugging
+        blitVideoIfNeeded(app, rc)
+
+        var t0 = System.nanoTime()
+
+        // ── Video quad (from FBO, regular texture — no OES in main pass) ──
         if (firstFrameReceived) {
             drawVideoQuad(app, rc)
         } else {
             rc.solid(0f, 0f, rc.w, rc.h, 0f, 0f, 0f)
         }
+        var t1 = System.nanoTime(); dbgVideo = dbgVideo * 0.9f + (t1 - t0) / 1_000_000f * 0.1f; t0 = t1
 
         // Buffering spinner
         if (isBuffering || !firstFrameReceived) {
@@ -483,68 +518,68 @@ class PlayerState(
             }
         }
 
-        // ── Controls overlay (BEHIND subtitles) ──
+        // ── Controls ──
         if (mode == Mode.PAUSED) {
             drawControls(app, rc)
         }
+        t1 = System.nanoTime(); dbgControls = dbgControls * 0.9f + (t1 - t0) / 1_000_000f * 0.1f; t0 = t1
 
-        // ── Subtitle (cue layer, ON TOP of controls) ──
+        // ── Subtitle ──
         if (currentCueText.isNotEmpty()) {
             drawCueLayer(rc)
         }
+        t1 = System.nanoTime(); dbgCue = dbgCue * 0.9f + (t1 - t0) / 1_000_000f * 0.1f; t0 = t1
 
-        // ── Dictionary popup (above subtitle, only when word selected) ──
+        // ── Dictionary popup ──
         if (mode == Mode.PAUSED && hlStart >= 0) {
             drawDictPopup(rc)
         } else {
             dictPopupVisible = false
         }
+        t1 = System.nanoTime(); dbgDict = dbgDict * 0.9f + (t1 - t0) / 1_000_000f * 0.1f; t0 = t1
 
         // ── Settings panel ──
         if (mode == Mode.SETTINGS) {
             drawSettingsPanel(rc)
         }
 
-        // ── FPS ──
-        rc.text("${app.fps}fps", rc.dp(8f), rc.dp(16f), rc.sp(10), 0.4f, 0.8f, 0.4f)
+        // ── Timing overlay ──
+        val y0 = rc.dp(16f)
+        val sz = rc.sp(10)
+        val timingStr = "${app.fps}fps  upd:${"%.1f".format(dbgUpdate)}  vid:${"%.1f".format(dbgVideo)}  cue:${"%.1f".format(dbgCue)}  ctrl:${"%.1f".format(dbgControls)}  dict:${"%.1f".format(dbgDict)}"
+        rc.text(timingStr, rc.dp(8f), y0, sz, 0.4f, 0.8f, 0.4f)
+
+        // Log every 60 frames
+        dbgFrameCount++
+        if (dbgFrameCount % 60 == 0) {
+            android.util.Log.d("PERF", timingStr)
+        }
     }
 
     // ── Cue Layer (subtitle rendering with reading modes) ──
 
-    private fun drawCueLayer(rc: RC) {
+    private fun buildCueLayout(rc: RC): CueLayout {
         val text = currentCueText
         val fontSize = rc.sp(subFontSize)
         val lineH = rc.font.textHeight(fontSize)
         val furiganaSize = rc.sp((subFontSize * 0.45f).toInt())
+        val ascent = rc.font.textAscent(fontSize)
 
-        // Convert text per reading mode
         val displayText = convertForReadingMode(text)
         val lines = displayText.split("\n")
         val numLines = lines.size
-
-        // Measure each line
         val lineWidths = lines.map { rc.font.measureText(it, fontSize) }
-        val maxLineW = lineWidths.maxOrNull() ?: 0f
-
-        // Total height with row spacing
         val rowGap = lineH * (deltaRow - 1f)
         val totalTextH = lineH * numLines + rowGap * (numLines - 1).coerceAtLeast(0)
         val furiganaExtra = if (readingMode == ReadingMode.ADVANCED && superCues.isNotEmpty()) lineH * deltaFurigana else 0f
         val totalH = totalTextH + furiganaExtra
-
-        // Position: bottom of cue = top of seekbar bbox + padding, ALWAYS
         val seekbarTopY = barY - rc.dp(24f)
-        val cueBottomPad = rc.dp(8f)
-        val baseY = seekbarTopY - cueBottomPad - deltaYShift * rc.density
-        val topY = baseY - totalH
+        val baseY = seekbarTopY - rc.dp(8f) - deltaYShift * rc.density
 
-        val ascent = rc.font.textAscent(fontSize)
-
-        // Pass 1: compute char box positions
         val boxes = mutableListOf<CharBox>()
+        val chars = mutableListOf<CueCharDraw>()
+        val lineInfoList = mutableListOf<Triple<String, Float, Int>>()
         var globalCharIdx = 0
-        data class LineInfo(val text: String, val x: Float, val y: Float, val globalStart: Int)
-        val lineInfos = mutableListOf<LineInfo>()
 
         for (lineIdx in lines.indices) {
             val lineText = lines[lineIdx]
@@ -552,115 +587,125 @@ class PlayerState(
             val linesFromBottom = numLines - 1 - lineIdx
             val lineY = baseY - linesFromBottom * (lineH + rowGap)
             val lineX = (rc.w - lineW) / 2f
-            lineInfos.add(LineInfo(lineText, lineX, lineY, globalCharIdx))
+            lineInfoList.add(Triple(lineText, lineY, globalCharIdx))
 
             var cx = lineX
-            val cps = lineText.toCodePoints()
-            for (cpIdx in cps.indices) {
-                val ch = String(intArrayOf(cps[cpIdx]), 0, 1)
+            for (cp in lineText.toCodePoints()) {
+                val ch = String(intArrayOf(cp), 0, 1)
                 val chW = rc.font.measureText(ch, fontSize) + deltaSpacing * rc.density
+                chars.add(CueCharDraw(ch, cx, lineY))
                 boxes.add(CharBox(cx, lineY - ascent, chW, lineH, globalCharIdx))
                 cx += chW
                 globalCharIdx++
             }
             if (lineIdx < numLines - 1) globalCharIdx++
         }
-        charBoxes = boxes
 
-        // Compute furigana positions (for shade + drawing)
-        data class FuriDraw(val text: String, val x: Float, val y: Float, val size: Int,
-                            val scaleX: Float = 1f, val displayW: Float)
-        val furiDraws = mutableListOf<FuriDraw>()
+        val furiDraws = mutableListOf<CueFuriDraw>()
         val furiH = rc.font.textHeight(furiganaSize)
-        val furiAscent = rc.font.textAscent(furiganaSize)
+        val furiAsc = rc.font.textAscent(furiganaSize)
 
         if (readingMode == ReadingMode.ADVANCED && superCues.isNotEmpty() && wordSpans.isNotEmpty()) {
             val origLines = currentCueText.split("\n")
-            for ((lineIdx, li) in lineInfos.withIndex()) {
+            for ((lineIdx, triple) in lineInfoList.withIndex()) {
+                val (_, lineY, _) = triple
                 val lineStart = origLines.take(lineIdx).sumOf { it.length + 1 }
                 val lineText = origLines[lineIdx]
+                val lineW = lineWidths[lineIdx]
+                val lineX = (rc.w - lineW) / 2f
                 for (span in wordSpans) {
                     if (span.furigana.isEmpty()) continue
                     if (span.start >= lineStart + lineText.length || span.end <= lineStart) continue
                     for (furi in span.furigana) {
-                        val absCharIdx = span.start + furi.charIdx
-                        val localIdx = absCharIdx - lineStart
+                        val localIdx = span.start + furi.charIdx - lineStart
                         if (localIdx < 0 || localIdx >= lineText.length) continue
                         val prefix = lineText.substring(0, localIdx)
                         val prefixW = rc.font.measureText(prefix, fontSize) + localIdx * deltaSpacing * rc.density
                         val charStr = lineText.substring(localIdx, (localIdx + 1).coerceAtMost(lineText.length))
                         val charW = rc.font.measureText(charStr, fontSize) + deltaSpacing * rc.density
                         val furiW = rc.font.measureText(furi.reading, furiganaSize)
-                        val scaleX = if (furiW > charW) charW / furiW else 1f
-                        val displayW = furiW * scaleX
-                        val furiX = li.x + prefixW + (charW - displayW) / 2f
-                        val furiY = li.y - lineH * deltaFurigana
-                        furiDraws.add(FuriDraw(furi.reading, furiX, furiY, furiganaSize, scaleX, displayW))
+                        val sx = if (furiW > charW) charW / furiW else 1f
+                        val dw = furiW * sx
+                        val fx = lineX + prefixW + (charW - dw) / 2f
+                        val fy = lineY - lineH * deltaFurigana
+                        furiDraws.add(CueFuriDraw(furi.reading, fx, fy, furiganaSize, sx, dw))
                     }
                 }
             }
         }
 
-        // Pass 2: draw shade from char boxes + furigana extents
-        if (boxes.isNotEmpty()) {
-            var minX = Float.MAX_VALUE; var minY = Float.MAX_VALUE
-            var maxX = Float.MIN_VALUE; var maxY = Float.MIN_VALUE
-            for (b in boxes) {
-                if (b.x < minX) minX = b.x
-                if (b.y < minY) minY = b.y
-                if (b.x + b.w > maxX) maxX = b.x + b.w
-                if (b.y + b.h > maxY) maxY = b.y + b.h
-            }
-            for (f in furiDraws) {
-                val fy = f.y - furiAscent
-                if (f.x < minX) minX = f.x
-                if (fy < minY) minY = fy
-                if (f.x + f.displayW > maxX) maxX = f.x + f.displayW
-                if (f.y + (furiH - furiAscent) > maxY) maxY = f.y + (furiH - furiAscent)
-            }
-            val sx = minX; val sy = minY
-            val sw = maxX - minX; val sh = maxY - minY
-            rc.solid(sx, sy, sw, sh, 0f, 0f, 0f, 0.7f)
-            subtitleRect = floatArrayOf(sx, sy, sw, sh)
+        // Shade rect from extents
+        var minX = Float.MAX_VALUE; var minY = Float.MAX_VALUE
+        var maxX = Float.MIN_VALUE; var maxY = Float.MIN_VALUE
+        for (b in boxes) {
+            if (b.x < minX) minX = b.x; if (b.y < minY) minY = b.y
+            if (b.x + b.w > maxX) maxX = b.x + b.w; if (b.y + b.h > maxY) maxY = b.y + b.h
         }
-
-        // Pass 3: draw highlight, text, furigana, debug boxes
-        for (li in lineInfos) {
-            if (hlStart >= 0 && hlEnd > hlStart) {
-                drawLineHighlight(rc, li.text, li.x, li.y, lineH, fontSize, li.globalStart)
-            }
-
-            var cx = li.x
-            val cps = li.text.toCodePoints()
-            for (cpIdx in cps.indices) {
-                val ch = String(intArrayOf(cps[cpIdx]), 0, 1)
-                val chW = rc.font.measureText(ch, fontSize) + deltaSpacing * rc.density
-                rc.text(ch, cx, li.y, fontSize, 1f, 1f, 1f)
-
-                // Debug: draw character bounding box outlines
-                val boxY = li.y - ascent
-                rc.solid(cx, boxY, chW, 1f, 1f, 0f, 0f, 0.6f)
-                rc.solid(cx, boxY + lineH, chW, 1f, 1f, 0f, 0f, 0.6f)
-                rc.solid(cx, boxY, 1f, lineH, 1f, 0f, 0f, 0.6f)
-                rc.solid(cx + chW, boxY, 1f, lineH, 1f, 0f, 0f, 0.6f)
-
-                cx += chW
-            }
-        }
-
-        // Furigana (from precomputed positions, scaled to fit kanji width)
         for (f in furiDraws) {
+            val fy = f.y - furiAsc
+            if (f.x < minX) minX = f.x; if (fy < minY) minY = fy
+            if (f.x + f.displayW > maxX) maxX = f.x + f.displayW
+        }
+        val shade = if (boxes.isNotEmpty()) floatArrayOf(minX, minY, maxX - minX, maxY - minY)
+                    else floatArrayOf(0f, 0f, 0f, 0f)
+
+        return CueLayout(chars, furiDraws, boxes, shade, lineInfoList, fontSize, lineH, furiH, furiAsc, ascent)
+    }
+
+    private fun drawCueLayer(rc: RC) {
+        val text = currentCueText
+        val layout = buildCueLayout(rc)
+
+        charBoxes = layout.boxes
+        subtitleRect = layout.shadeRect
+
+        // Shade
+        val s = layout.shadeRect
+        if (s[2] > 0f) rc.solid(s[0], s[1], s[2], s[3], 0f, 0f, 0f, 0.7f)
+
+        // Highlight
+        if (hlStart >= 0 && hlEnd > hlStart) {
+            for ((lineText, lineY, globalStart) in layout.lineInfos) {
+                drawLineHighlight(rc, lineText, (rc.w - rc.font.measureText(lineText, layout.fontSize)) / 2f,
+                    lineY, layout.lineH, layout.fontSize, globalStart)
+            }
+        }
+
+        // Characters — full lines when possible
+        for ((lineText, lineY, _) in layout.lineInfos) {
+            val lineW = rc.font.measureText(lineText, layout.fontSize)
+            val lineX = (rc.w - lineW) / 2f
+            rc.text(lineText, lineX, lineY, layout.fontSize, 1f, 1f, 1f)
+        }
+
+        // Debug: char bounding boxes (red)
+        if (debugBoxes) {
+            for (b in layout.boxes) {
+                rc.solid(b.x, b.y, b.w, 1f, 1f, 0f, 0f, 0.6f)
+                rc.solid(b.x, b.y + b.h, b.w, 1f, 1f, 0f, 0f, 0.6f)
+                rc.solid(b.x, b.y, 1f, b.h, 1f, 0f, 0f, 0.6f)
+                rc.solid(b.x + b.w, b.y, 1f, b.h, 1f, 0f, 0f, 0.6f)
+            }
+        }
+
+        // Furigana
+        for (f in layout.furis) {
             if (f.scaleX < 1f) {
                 rc.font.addTextScaled(rc.batch, f.text, f.x, f.y, f.size, f.scaleX, 0.7f, 0.7f, 0.85f)
             } else {
                 rc.text(f.text, f.x, f.y, f.size, 0.7f, 0.7f, 0.85f)
             }
-            // Debug: blue bounding boxes
-            val fy = f.y - furiAscent
-            rc.solid(f.x, fy, f.displayW, 1f, 0f, 0.4f, 1f, 0.6f)
-            rc.solid(f.x, fy + furiH, f.displayW, 1f, 0f, 0.4f, 1f, 0.6f)
-            rc.solid(f.x, fy, 1f, furiH, 0f, 0.4f, 1f, 0.6f)
-            rc.solid(f.x + f.displayW, fy, 1f, furiH, 0f, 0.4f, 1f, 0.6f)
+        }
+
+        // Debug: furigana bounding boxes (blue)
+        if (debugBoxes) {
+            for (f in layout.furis) {
+                val fy = f.y - layout.furiAscent
+                rc.solid(f.x, fy, f.displayW, 1f, 0f, 0.4f, 1f, 0.6f)
+                rc.solid(f.x, fy + layout.furiH, f.displayW, 1f, 0f, 0.4f, 1f, 0.6f)
+                rc.solid(f.x, fy, 1f, layout.furiH, 0f, 0.4f, 1f, 0.6f)
+                rc.solid(f.x + f.displayW, fy, 1f, layout.furiH, 0f, 0.4f, 1f, 0.6f)
+            }
         }
     }
 
@@ -1144,50 +1189,72 @@ class PlayerState(
         appRef?.onMainThread?.invoke(Runnable { appRef?.exoPlayer?.seekTo(ms) })
     }
 
-    private fun drawVideoQuad(app: App, rc: RC) {
-        // Flush any pending UI quads
+    private var videoBlitDone = false
+
+    private fun blitVideoIfNeeded(app: App, rc: RC) {
+        if (!app.videoSurface.frameReady) return
+        val sw = rc.w.toInt(); val sh = rc.h.toInt()
+
         rc.batch.flush()
 
-        // Black background behind video
-        rc.solid(0f, 0f, rc.w, rc.h, 0f, 0f, 0f)
-        rc.batch.flush()
+        // Blit OES → FBO (only on new video frames)
+        GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0) // ensure we read current state
+        app.videoSurface.let { vs ->
+            vs.ensureFbo(sw, sh)
+            GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, vs.fbo)
+            GLES30.glViewport(0, 0, sw, sh)
+            GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT)
 
-        // Switch to external OES shader
-        app.shader.useExternal()
-        GLES30.glUniformMatrix4fv(app.shader.uProjExt, 1, false, app.projMatrix, 0)
-        GLES30.glUniformMatrix4fv(app.shader.uTexMatExt, 1, false, app.videoSurface.transformMatrix, 0)
-        GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
-        GLES30.glUniform1i(app.shader.uTexExt, 0)
-        app.videoSurface.bind()
+            app.shader.useExternal()
+            GLES30.glUniformMatrix4fv(app.shader.uProjExt, 1, false, app.projMatrix, 0)
+            GLES30.glUniformMatrix4fv(app.shader.uTexMatExt, 1, false, vs.transformMatrix, 0)
+            GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
+            GLES30.glUniform1i(app.shader.uTexExt, 0)
+            vs.bindOes()
 
-        // Letterbox to correct aspect ratio
-        val vw = if (videoWidth > 0) videoWidth.toFloat() else 4f
-        val vh = if (videoHeight > 0) videoHeight.toFloat() else 3f
-        val videoAspect = vw / vh
-        val screenAspect = rc.w / rc.h
-        val qx: Float; val qy: Float; val qw: Float; val qh: Float
-        if (screenAspect > videoAspect) {
-            qh = rc.h; qw = qh * videoAspect
-            qx = (rc.w - qw) / 2f; qy = 0f
-        } else {
-            qw = rc.w; qh = qw / videoAspect
-            qx = 0f; qy = (rc.h - qh) / 2f
+            // Letterbox
+            val vw = if (videoWidth > 0) videoWidth.toFloat() else 4f
+            val vh = if (videoHeight > 0) videoHeight.toFloat() else 3f
+            val videoAspect = vw / vh
+            val screenAspect = rc.w / rc.h
+            val qx: Float; val qy: Float; val qw: Float; val qh: Float
+            if (screenAspect > videoAspect) {
+                qh = rc.h; qw = qh * videoAspect
+                qx = (rc.w - qw) / 2f; qy = 0f
+            } else {
+                qw = rc.w; qh = qw / videoAspect
+                qx = 0f; qy = (rc.h - qh) / 2f
+            }
+            rc.batch.begin()
+            rc.batch.addQuad(qx, qy, qw, qh, 0f, 1f, 1f, 0f, layer = 0f)
+            rc.batch.flush()
+
+            GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
+            GLES30.glViewport(0, 0, sw, sh)
         }
 
-        // Video quad with OES UVs
-        rc.batch.begin()
-        rc.batch.addQuad(qx, qy, qw, qh, 0f, 1f, 1f, 0f, layer = 0f)
-        rc.batch.flush()
-
-        // Switch back to main shader for UI overlay
+        // Restore main shader + rebind video FBO texture on unit 2
         app.shader.use()
         GLES30.glUniformMatrix4fv(app.shader.uProj, 1, false, app.projMatrix, 0)
         GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
         GLES30.glUniform1i(app.shader.uTex, 0)
         app.texArray.bind()
+        GLES30.glActiveTexture(GLES30.GL_TEXTURE1)
         app.etc2Array.bind(GLES30.GL_TEXTURE1)
         GLES30.glUniform1i(app.shader.uTexEtc2, 1)
+        GLES30.glActiveTexture(GLES30.GL_TEXTURE2)
+        app.videoSurface.bindRgb()
+        GLES30.glUniform1i(app.shader.uTexVideo, 2)
+        GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
         rc.batch.begin()
+
+        videoBlitDone = true
+    }
+
+    private fun drawVideoQuad(app: App, rc: RC) {
+        if (!videoBlitDone) return
+        // Fullscreen quad sampling from uTexVideo (layer = -1 triggers sampler2D path in shader)
+        rc.batch.addQuad(0f, 0f, rc.w, rc.h, 0f, 0f, 1f, 1f, layer = -1f)
     }
 
     @Volatile private var alive = true

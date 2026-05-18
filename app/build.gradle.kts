@@ -85,6 +85,7 @@ dependencies {
     // Networking + image loading
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("io.coil-kt:coil-compose:2.6.0")
+    implementation("com.github.luben:zstd-jni:1.5.6-4@aar")
 
     // Compose
     implementation(platform("androidx.compose:compose-bom:2024.02.00"))

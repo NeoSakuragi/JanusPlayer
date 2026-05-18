@@ -24,6 +24,7 @@ class QuadBatch(private val maxQuads: Int = 4096) {
     private var vbo = 0
     private var ebo = 0
     var quadCount = 0; private set
+    var lastQuadCount = 0; private set
 
     init {
         val indices = ShortArray(maxQuads * indicesPerQuad)
@@ -138,6 +139,7 @@ class QuadBatch(private val maxQuads: Int = 4096) {
     }
 
     fun flush() {
+        lastQuadCount = quadCount
         if (quadCount == 0) return
         GLES30.glBindVertexArray(vao)
         vertexBuffer.clear()

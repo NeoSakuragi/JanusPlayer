@@ -80,6 +80,8 @@ class TextureArray(val size: Int = 2048, val layerCount: Int = LAYER_THUMB_FIRST
         }
     }
 
+    fun uploadCount(): Int = uploadQueue.size
+
     fun bind() {
         GLES30.glBindTexture(GLES30.GL_TEXTURE_2D_ARRAY, textureId)
     }

@@ -123,7 +123,7 @@ class GLRenderer(
             GLES30.glUniformMatrix4fv(shader.uTexMatExt, 1, false, videoSurface.transformMatrix, 0)
             GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
             GLES30.glUniform1i(shader.uTexExt, 0)
-            videoSurface.bind()
+            videoSurface.bindOes()
             batch.begin()
             val vw = Engine.videoWidth.toFloat()
             val vh = Engine.videoHeight.toFloat()

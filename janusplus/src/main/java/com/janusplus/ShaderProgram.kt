@@ -9,6 +9,7 @@ class ShaderProgram {
     var uProj = -1; private set
     var uTex = -1; private set
     var uTexEtc2 = -1; private set
+    var uTexVideo = -1; private set
 
     fun compile() {
         val vert = loadShader(GLES30.GL_VERTEX_SHADER, VERT_SRC)
@@ -29,6 +30,7 @@ class ShaderProgram {
         uProj = GLES30.glGetUniformLocation(programId, "uProj")
         uTex = GLES30.glGetUniformLocation(programId, "uTex")
         uTexEtc2 = GLES30.glGetUniformLocation(programId, "uTexEtc2")
+        uTexVideo = GLES30.glGetUniformLocation(programId, "uTexVideo")
     }
 
     fun use() = GLES30.glUseProgram(programId)
@@ -97,9 +99,12 @@ in vec3 vUVL;
 in vec4 vColor;
 uniform mediump sampler2DArray uTex;
 uniform mediump sampler2DArray uTexEtc2;
+uniform mediump sampler2D uTexVideo;
 out vec4 fragColor;
 void main() {
-    if (vUVL.z >= 10.0) {
+    if (vUVL.z < 0.0) {
+        fragColor = texture(uTexVideo, vUVL.xy) * vColor;
+    } else if (vUVL.z >= 10.0) {
         fragColor = texture(uTexEtc2, vec3(vUVL.xy, vUVL.z - 10.0)) * vColor;
     } else {
         fragColor = texture(uTex, vUVL) * vColor;

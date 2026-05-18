@@ -40,6 +40,19 @@ class MainActivity : AppCompatActivity() {
         glView.renderMode = GLSurfaceView.RENDERMODE_CONTINUOUSLY
         setContentView(glView)
 
+        // Force 60Hz refresh on Huawei (drops to 30Hz during video decode)
+        if (android.os.Build.VERSION.SDK_INT >= 30) {
+            window.attributes = window.attributes.apply {
+                preferredDisplayModeId = display?.supportedModes
+                    ?.maxByOrNull { it.refreshRate }?.modeId ?: 0
+            }
+        } else {
+            window.attributes = window.attributes.apply {
+                @Suppress("DEPRECATION")
+                preferredRefreshRate = 60f
+            }
+        }
+
         // Load library on background thread with retry
         thread {
             val api = JanusApi("https://canneji.duckdns.org/janus")

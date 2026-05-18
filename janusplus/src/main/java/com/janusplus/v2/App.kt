@@ -189,6 +189,10 @@ class App(private val context: Context, private val assets: android.content.res.
     }
 
     override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
+        // Force 60fps vsync (Huawei defaults to swap interval 2 = 30fps)
+        val display = android.opengl.EGL14.eglGetCurrentDisplay()
+        android.opengl.EGL14.eglSwapInterval(display, 1)
+
         GLES30.glClearColor(0.039f, 0.039f, 0.102f, 1f)
         GLES30.glEnable(GLES30.GL_BLEND)
         GLES30.glBlendFunc(GLES30.GL_SRC_ALPHA, GLES30.GL_ONE_MINUS_SRC_ALPHA)
@@ -257,8 +261,13 @@ class App(private val context: Context, private val assets: android.content.res.
         Matrix.orthoM(projMatrix, 0, 0f, width, height, 0f, -1f, 1f)
     }
 
+    private var lastFrameNano = 0L
+    private var frameIntervalMs = 0f
+
     override fun onDrawFrame(gl: GL10?) {
         val now = System.nanoTime()
+        if (lastFrameNano > 0) frameIntervalMs = frameIntervalMs * 0.9f + (now - lastFrameNano) / 1_000_000f * 0.1f
+        lastFrameNano = now
         frameCount++
         if (now - fpsTimer > 1_000_000_000L) { fps = frameCount; frameCount = 0; fpsTimer = now }
 
@@ -305,13 +314,24 @@ class App(private val context: Context, private val assets: android.content.res.
         texArray.bind()
         etc2Array.bind(GLES30.GL_TEXTURE1)
         GLES30.glUniform1i(shader.uTexEtc2, 1)
+        GLES30.glActiveTexture(GLES30.GL_TEXTURE2)
+        videoSurface.bindRgb()
+        GLES30.glUniform1i(shader.uTexVideo, 2)
+        GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
         batch.begin()
 
         val rc = RC(batch, font, texArray, coverAtlas, thumbAtlas, width, height, density)
         currentState.draw(this, rc)
 
+        val flushT0 = System.nanoTime()
         batch.flush()
+        val flushMs = (System.nanoTime() - flushT0) / 1_000_000f
         hitRects = rc.hitRects.toList()
+
+        val totalMs = (System.nanoTime() - now) / 1_000_000f
+        if (frameCount % 60 == 0) {
+            android.util.Log.d("PERF", "[$currentScreen] interval:${"%.1f".format(frameIntervalMs)}ms work:${"%.1f".format(totalMs)}ms flush:${"%.1f".format(flushMs)}ms vidTex:${"%.1f".format(videoSurface.lastUpdateMs)}ms quads:${batch.lastQuadCount}")
+        }
     }
 
     fun onTouchEvent(event: MotionEvent) {
