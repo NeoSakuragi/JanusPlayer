@@ -14,6 +14,7 @@ import com.janusplus.TextureArray
 import com.janusplus.CompressedTextureArray
 import com.janusplus.ThumbnailAtlas
 import com.janusplus.VideoBlitThread
+import com.janusplus.TextBitmapCache
 import com.janusplus.VideoSurface
 import com.janusplus.JanusApi
 import javax.microedition.khronos.egl.EGLConfig
@@ -48,6 +49,8 @@ class RC(
     val h: Float,
     val density: Float,
     val eink: Boolean = false,
+    val cpuText: TextBitmapCache? = null,
+    val shader: ShaderProgram? = null,
 ) {
     // Theme colors
     val textR get() = if (eink) 0.1f else 1f
@@ -155,6 +158,8 @@ class App(val context: Context, private val assets: android.content.res.AssetMan
     val videoSurface = VideoSurface()
     var blitThread: VideoBlitThread? = null
     var einkMode = false
+    var cpuTextCache: TextBitmapCache? = null
+    var isTV = false
 
     val projMatrix = FloatArray(16)
     var width = 0f; private set
@@ -223,11 +228,13 @@ class App(val context: Context, private val assets: android.content.res.AssetMan
 
         val maxTexSize = IntArray(1); GLES30.glGetIntegerv(GLES30.GL_MAX_TEXTURE_SIZE, maxTexSize, 0)
         val maxLayers = IntArray(1); GLES30.glGetIntegerv(GLES30.GL_MAX_ARRAY_TEXTURE_LAYERS, maxLayers, 0)
-        val isTV = context.packageManager.hasSystemFeature("android.software.leanback")
-        val texSize = if (isTV) 2048 else 4096
-        android.util.Log.i("App", "GL max: ${maxTexSize[0]}, isTV: $isTV, texSize: $texSize")
+        isTV = context.packageManager.hasSystemFeature("android.software.leanback")
+        // TV: 4096 but fewer layers (no thumbs) to fit in memory
+        val texSize = 4096
+        val layerCount = if (isTV) TextureArray.LAYER_THUMB_FIRST else TextureArray.LAYER_THUMB_FIRST + TextureArray.LAYER_THUMB_COUNT
+        android.util.Log.i("App", "GL max: ${maxTexSize[0]}, isTV: $isTV, layers: $layerCount")
         android.util.Log.i("App", "GL max texture: ${maxTexSize[0]}, max layers: ${maxLayers[0]}, using: $texSize")
-        texArray = TextureArray(texSize, TextureArray.LAYER_THUMB_FIRST + TextureArray.LAYER_THUMB_COUNT)
+        texArray = TextureArray(texSize, layerCount)
         texArray.initGL()
 
         font = FontAtlas(assets)
@@ -364,7 +371,7 @@ class App(val context: Context, private val assets: android.content.res.AssetMan
         GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
         batch.begin()
 
-        val rc = RC(batch, font, texArray, coverAtlas, thumbAtlas, width, height, density, einkMode)
+        val rc = RC(batch, font, texArray, coverAtlas, thumbAtlas, width, height, density, einkMode, cpuTextCache, shader)
         currentState.draw(this, rc)
 
         val flushT0 = System.nanoTime()
