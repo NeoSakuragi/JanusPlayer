@@ -567,17 +567,8 @@ class PlayerState(
         }
         t1 = System.nanoTime(); dbgControls = dbgControls * 0.9f + (t1 - t0) / 1_000_000f * 0.1f; t0 = t1
 
-        // ── Subtitle — set SDF uniforms for theme ──
+        // ── Subtitle ──
         if (currentCueText.isNotEmpty()) {
-            if (einkMode) {
-                GLES30.glUniform1f(app.shader.uOutlineWidth, 0f)
-                GLES30.glUniform4f(app.shader.uShadowColor, 0f, 0f, 0f, 0f)
-            } else {
-                GLES30.glUniform1f(app.shader.uOutlineWidth, 0.15f)
-                GLES30.glUniform4f(app.shader.uOutlineColor, 0f, 0f, 0f, 0.8f)
-                GLES30.glUniform2f(app.shader.uShadowOffset, 0.001f, 0.001f)
-                GLES30.glUniform4f(app.shader.uShadowColor, 0f, 0f, 0f, 0.5f)
-            }
             drawCueLayer(rc)
         }
         t1 = System.nanoTime(); dbgCue = dbgCue * 0.9f + (t1 - t0) / 1_000_000f * 0.1f; t0 = t1

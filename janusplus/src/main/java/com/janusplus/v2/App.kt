@@ -66,13 +66,13 @@ class RC(
 
     fun solid(x: Float, y: Float, w: Float, h: Float, r: Float, g: Float, b: Float, a: Float = 1f) {
         batch.addQuad(x, y, w, h, font.whiteU, font.whiteV, font.whiteU, font.whiteV, r, g, b, a,
-            layer = TextureArray.LAYER_COVERS.toFloat())
+            layer = TextureArray.LAYER_FONT.toFloat())
     }
 
     fun gradient(x: Float, y: Float, w: Float, h: Float,
                  tl: FloatArray, tr: FloatArray, br: FloatArray, bl: FloatArray) {
         batch.addGradientQuad(x, y, w, h, tl, tr, br, bl, font.whiteU, font.whiteV,
-            TextureArray.LAYER_COVERS.toFloat())
+            TextureArray.LAYER_FONT.toFloat())
     }
 
     fun text(s: String, x: Float, y: Float, size: Int, r: Float, g: Float, b: Float, a: Float = 1f) {
@@ -361,14 +361,6 @@ class App(val context: Context, private val assets: android.content.res.AssetMan
         videoSurface.bindRgb()
         GLES30.glUniform1i(shader.uTexVideo, 2)
         GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
-        // SDF defaults: font layers 0..2 get SDF, rest is regular RGBA
-        GLES30.glUniform1f(shader.uFontLayerMax, TextureArray.FONT_PAGE_COUNT.toFloat())
-        GLES30.glUniform1f(shader.uSdfThreshold, 0.5f)
-        GLES30.glUniform1f(shader.uSdfSmoothing, 0.05f)
-        GLES30.glUniform1f(shader.uOutlineWidth, 0.15f)
-        GLES30.glUniform4f(shader.uOutlineColor, 0f, 0f, 0f, 0.8f)
-        GLES30.glUniform2f(shader.uShadowOffset, 0.001f, 0.001f)
-        GLES30.glUniform4f(shader.uShadowColor, 0f, 0f, 0f, 0.5f)
         batch.begin()
 
         val rc = RC(batch, font, texArray, coverAtlas, thumbAtlas, width, height, density, einkMode)

@@ -21,7 +21,7 @@ class FontAtlas(private val assets: AssetManager) {
     var texArray: TextureArray? = null
     var baseLayer = TextureArray.LAYER_FONT
     var pageCount = 0
-    private var bakedSize = 32  // SDF cell size
+    private var bakedSize = 48
     private var bakedAscent = 0f
     private var bakedDescent = 0f
 
@@ -34,7 +34,7 @@ class FontAtlas(private val assets: AssetManager) {
         texArray = texArr
         atlasSize = texArr.size
 
-        val name = "noto_sans_sdf"
+        val name = "noto_sans_$bakedSize"
         try {
             val binStream = assets.open("baked_fonts/$name.bin")
             val bytes = binStream.readBytes()
@@ -94,16 +94,14 @@ class FontAtlas(private val assets: AssetManager) {
         return total
     }
 
-    private val sdfSpread = 4f
-
     fun textHeight(sizePx: Int): Float {
         val scale = sizePx.toFloat() / bakedSize
-        return (bakedAscent + bakedDescent - sdfSpread * 2) * scale
+        return (bakedAscent + bakedDescent) * scale
     }
 
     fun textAscent(sizePx: Int): Float {
         val scale = sizePx.toFloat() / bakedSize
-        return (bakedAscent - sdfSpread) * scale
+        return bakedAscent * scale
     }
 
     fun addTextScaled(batch: QuadBatch, text: String, x: Float, y: Float, sizePx: Int,
