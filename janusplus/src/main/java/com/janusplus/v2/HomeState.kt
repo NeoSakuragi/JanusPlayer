@@ -33,6 +33,31 @@ class HomeState : GameState {
             setLibrary(app.library)
             loading = false
         }
+        for (key in keys) {
+            when (key) {
+                android.view.KeyEvent.KEYCODE_DPAD_LEFT -> {
+                    if (focusRow == 0 && seriesFocus > 0) seriesFocus--
+                    else if (focusRow == 1 && movieFocus > 0) movieFocus--
+                }
+                android.view.KeyEvent.KEYCODE_DPAD_RIGHT -> {
+                    if (focusRow == 0 && seriesFocus < seriesList.size - 1) seriesFocus++
+                    else if (focusRow == 1 && movieFocus < movieList.size - 1) movieFocus++
+                }
+                android.view.KeyEvent.KEYCODE_DPAD_UP -> {
+                    if (focusRow > 0) focusRow--
+                }
+                android.view.KeyEvent.KEYCODE_DPAD_DOWN -> {
+                    if (focusRow == 0 && movieList.isNotEmpty()) focusRow = 1
+                }
+                android.view.KeyEvent.KEYCODE_DPAD_CENTER, android.view.KeyEvent.KEYCODE_ENTER -> {
+                    val item = if (focusRow == 0) seriesList.getOrNull(seriesFocus)
+                              else movieList.getOrNull(movieFocus)
+                    if (item != null) {
+                        app.transition(Screen.SERIES, SeriesState(item))
+                    }
+                }
+            }
+        }
     }
 
     override fun draw(app: App, rc: RC) {

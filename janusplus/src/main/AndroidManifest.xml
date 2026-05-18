@@ -9,7 +9,8 @@
         android:allowBackup="false"
         android:label="Janus+"
         android:theme="@style/Theme.JanusPlus"
-        android:supportsRtl="true">
+        android:supportsRtl="true"
+        android:largeHeap="true">
 
         <activity
             android:name=".v2.MainActivity"

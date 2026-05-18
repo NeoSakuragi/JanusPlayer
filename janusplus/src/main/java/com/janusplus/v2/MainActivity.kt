@@ -39,7 +39,10 @@ class MainActivity : AppCompatActivity() {
         glView.setEGLContextClientVersion(3)
         glView.setRenderer(app)
         glView.renderMode = GLSurfaceView.RENDERMODE_CONTINUOUSLY
+        glView.isFocusable = true
+        glView.isFocusableInTouchMode = true
         setContentView(glView)
+        glView.requestFocus()
 
         // Force 60Hz refresh on Huawei (drops to 30Hz during video decode)
         if (android.os.Build.VERSION.SDK_INT >= 30) {
@@ -163,6 +166,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun dispatchKeyEvent(event: android.view.KeyEvent): Boolean {
         val code = event.keyCode
+        android.util.Log.d("KEY", "dispatchKeyEvent: code=$code action=${event.action}")
         // Let system handle volume and back
         if (code == android.view.KeyEvent.KEYCODE_VOLUME_UP ||
             code == android.view.KeyEvent.KEYCODE_VOLUME_DOWN ||

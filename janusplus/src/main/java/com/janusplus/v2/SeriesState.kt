@@ -28,6 +28,7 @@ class SeriesState(private val item: JanusApi.LibraryItem) : GameState {
     // Banner uploaded to LAYER_BANNER (uncompressed texture array)
     @Volatile var bannerW = 0
     @Volatile var bannerH = 0
+    private var episodeFocus = 0
 
     // Atlas uploaded to thumb ring buffer (uncompressed texture array)
     @Volatile var atlasW = 0
@@ -173,6 +174,39 @@ class SeriesState(private val item: JanusApi.LibraryItem) : GameState {
             app.texArray.uploadLayerNow(atlasLayer, aBmp)
             atlasReady = true
         }
+
+        val data = pageData
+        val epCount = data?.episodes?.size ?: 0
+        for (key in keys) {
+            when (key) {
+                android.view.KeyEvent.KEYCODE_DPAD_LEFT -> {
+                    if (episodeFocus > 0) episodeFocus--
+                }
+                android.view.KeyEvent.KEYCODE_DPAD_RIGHT -> {
+                    if (episodeFocus < epCount - 1) episodeFocus++
+                }
+                android.view.KeyEvent.KEYCODE_DPAD_UP -> {
+                    if (episodeFocus >= gridCols) episodeFocus -= gridCols
+                }
+                android.view.KeyEvent.KEYCODE_DPAD_DOWN -> {
+                    if (episodeFocus + gridCols < epCount) episodeFocus += gridCols
+                    else if (episodeFocus < epCount - 1) episodeFocus = epCount - 1
+                }
+                android.view.KeyEvent.KEYCODE_BACK -> {
+                    app.goBack()
+                }
+                android.view.KeyEvent.KEYCODE_DPAD_CENTER, android.view.KeyEvent.KEYCODE_ENTER -> {
+                    if (data != null && episodeFocus < epCount) {
+                        val epCard = data.episodes[episodeFocus]
+                        val full = fullEpisodes?.firstOrNull { it.episode == epCard.episode }
+                        if (full != null) {
+                            val baseUrl = "https://canneji.duckdns.org/janus"
+                            app.transition(Screen.PLAYER, PlayerState(item, full, baseUrl))
+                        }
+                    }
+                }
+            }
+        }
     }
 
     override fun draw(app: App, rc: RC) {
@@ -286,6 +320,10 @@ class SeriesState(private val item: JanusApi.LibraryItem) : GameState {
             } else {
                 rc.solid(x, y, cardW, thumbH, pulse, pulse, pulse + 0.02f)
                 rc.solid(x, y + thumbH, cardW, cardH - thumbH, pulse * 0.7f, pulse * 0.7f, pulse * 0.7f)
+            }
+
+            if (i == episodeFocus) {
+                rc.border(x, y, cardW, cardH, rc.dp(3f), 0.733f, 0.525f, 0.988f)
             }
         }
 

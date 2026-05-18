@@ -15,7 +15,7 @@ from scipy.ndimage import distance_transform_edt
 
 FONTS_DIR = Path("app/src/main/assets/fonts")
 OUTPUT_DIR = Path("janusplus/src/main/assets/baked_fonts")
-ATLAS_SIZE = 4096
+ATLAS_SIZE = 2048
 
 RENDER_SIZE = 96        # render glyph at this size for SDF computation
 CELL_SIZE = 32          # output cell size in atlas (includes SDF spread)
