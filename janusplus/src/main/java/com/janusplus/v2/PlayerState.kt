@@ -434,14 +434,23 @@ class PlayerState(
             }
 
             Mode.PLAYING -> {
-                // Double-tap seek
+                // 1. Subtitle tap — pause + select that word directly
+                if (aabbHit(x, y, subtitleRect)) {
+                    val spanIdx = nearestWordSpan(x, y)
+                    if (spanIdx >= 0) {
+                        pause(); mode = Mode.PAUSED
+                        cursorIdx = spanIdx; updateHighlight()
+                        lastTapTime = 0; return
+                    }
+                }
+                // 2. Double-tap seek
                 val now = System.currentTimeMillis()
                 if (now - lastTapTime < 300) {
                     if (x < screenW / 2) seekRelative(-10000) else seekRelative(10000)
                     lastTapTime = 0; return
                 }
                 lastTapTime = now
-                // Single tap — pause + highlight first word
+                // 3. Single tap — pause + highlight first word
                 pause(); enterPaused()
             }
         }
@@ -457,13 +466,21 @@ class PlayerState(
             rc.solid(0f, 0f, rc.w, rc.h, 0f, 0f, 0f)
         }
 
-        // Buffering indicator
+        // Buffering spinner
         if (isBuffering || !firstFrameReceived) {
             val elapsed = (System.nanoTime() - startTime) / 1_000_000_000f
-            val pulse = 0.5f + 0.3f * kotlin.math.sin(elapsed * 4f).toFloat()
-            val loadText = Lang.s("loading")
-            val tw = rc.font.measureText(loadText, rc.sp(16))
-            rc.text(loadText, (rc.w - tw) / 2f, rc.h / 2f, rc.sp(16), pulse, pulse, pulse)
+            val cx = rc.w / 2f
+            val cy = rc.h / 2f
+            val radius = rc.dp(24f)
+            val segments = 12
+            for (i in 0 until segments) {
+                val angle = (i.toFloat() / segments) * 2f * Math.PI.toFloat() + elapsed * 6f
+                val dotX = cx + kotlin.math.cos(angle) * radius
+                val dotY = cy + kotlin.math.sin(angle) * radius
+                val alpha = (i.toFloat() / segments)
+                val dotR = rc.dp(3f + alpha * 2f)
+                rc.solid(dotX - dotR, dotY - dotR, dotR * 2, dotR * 2, 0.733f, 0.525f, 0.988f, alpha)
+            }
         }
 
         // ── Controls overlay (BEHIND subtitles) ──
@@ -551,7 +568,8 @@ class PlayerState(
         charBoxes = boxes
 
         // Compute furigana positions (for shade + drawing)
-        data class FuriDraw(val text: String, val x: Float, val y: Float, val size: Int)
+        data class FuriDraw(val text: String, val x: Float, val y: Float, val size: Int,
+                            val scaleX: Float = 1f, val displayW: Float)
         val furiDraws = mutableListOf<FuriDraw>()
         val furiH = rc.font.textHeight(furiganaSize)
         val furiAscent = rc.font.textAscent(furiganaSize)
@@ -573,9 +591,11 @@ class PlayerState(
                         val charStr = lineText.substring(localIdx, (localIdx + 1).coerceAtMost(lineText.length))
                         val charW = rc.font.measureText(charStr, fontSize) + deltaSpacing * rc.density
                         val furiW = rc.font.measureText(furi.reading, furiganaSize)
-                        val furiX = li.x + prefixW + (charW - furiW) / 2f
+                        val scaleX = if (furiW > charW) charW / furiW else 1f
+                        val displayW = furiW * scaleX
+                        val furiX = li.x + prefixW + (charW - displayW) / 2f
                         val furiY = li.y - lineH * deltaFurigana
-                        furiDraws.add(FuriDraw(furi.reading, furiX, furiY, furiganaSize))
+                        furiDraws.add(FuriDraw(furi.reading, furiX, furiY, furiganaSize, scaleX, displayW))
                     }
                 }
             }
@@ -592,17 +612,14 @@ class PlayerState(
                 if (b.y + b.h > maxY) maxY = b.y + b.h
             }
             for (f in furiDraws) {
-                val fw = rc.font.measureText(f.text, f.size)
                 val fy = f.y - furiAscent
                 if (f.x < minX) minX = f.x
                 if (fy < minY) minY = fy
-                if (f.x + fw > maxX) maxX = f.x + fw
+                if (f.x + f.displayW > maxX) maxX = f.x + f.displayW
                 if (f.y + (furiH - furiAscent) > maxY) maxY = f.y + (furiH - furiAscent)
             }
-            val padH = rc.dp(10f)
-            val padV = rc.dp(6f)
-            val sx = minX - padH; val sy = minY - padV
-            val sw = maxX - minX + padH * 2; val sh = maxY - minY + padV * 2
+            val sx = minX; val sy = minY
+            val sw = maxX - minX; val sh = maxY - minY
             rc.solid(sx, sy, sw, sh, 0f, 0f, 0f, 0.7f)
             subtitleRect = floatArrayOf(sx, sy, sw, sh)
         }
@@ -631,15 +648,19 @@ class PlayerState(
             }
         }
 
-        // Furigana (from precomputed positions)
+        // Furigana (from precomputed positions, scaled to fit kanji width)
         for (f in furiDraws) {
-            rc.text(f.text, f.x, f.y, f.size, 0.7f, 0.7f, 0.85f)
-            val fw = rc.font.measureText(f.text, f.size)
+            if (f.scaleX < 1f) {
+                rc.font.addTextScaled(rc.batch, f.text, f.x, f.y, f.size, f.scaleX, 0.7f, 0.7f, 0.85f)
+            } else {
+                rc.text(f.text, f.x, f.y, f.size, 0.7f, 0.7f, 0.85f)
+            }
+            // Debug: blue bounding boxes
             val fy = f.y - furiAscent
-            rc.solid(f.x, fy, fw, 1f, 0f, 0.4f, 1f, 0.6f)
-            rc.solid(f.x, fy + furiH, fw, 1f, 0f, 0.4f, 1f, 0.6f)
+            rc.solid(f.x, fy, f.displayW, 1f, 0f, 0.4f, 1f, 0.6f)
+            rc.solid(f.x, fy + furiH, f.displayW, 1f, 0f, 0.4f, 1f, 0.6f)
             rc.solid(f.x, fy, 1f, furiH, 0f, 0.4f, 1f, 0.6f)
-            rc.solid(f.x + fw, fy, 1f, furiH, 0f, 0.4f, 1f, 0.6f)
+            rc.solid(f.x + f.displayW, fy, 1f, furiH, 0f, 0.4f, 1f, 0.6f)
         }
     }
 

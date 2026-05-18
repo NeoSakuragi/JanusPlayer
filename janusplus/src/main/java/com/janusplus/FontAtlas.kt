@@ -100,6 +100,30 @@ class FontAtlas(private val assets: AssetManager) {
         return bakedAscent * scale
     }
 
+    fun addTextScaled(batch: QuadBatch, text: String, x: Float, y: Float, sizePx: Int,
+                      scaleX: Float, r: Float, g: Float, b: Float, a: Float = 1f) {
+        val scale = sizePx.toFloat() / bakedSize
+        val cps = text.toCodePoints()
+        val fpv = 9; val fpq = fpv * 4
+        val floats = FloatArray(cps.size * fpq)
+        var cx = 0f; var count = 0
+        for (cp in cps) {
+            val m = getGlyph(cp) ?: continue
+            val sw = m.w * scale * scaleX; val sh = m.h * scale; val sa = m.ascent * scale
+            val L = m.layer.toFloat()
+            val off = count * fpq
+            fun v(b: Int, vx: Float, vy: Float, vu: Float, vv: Float) {
+                floats[b]=vx; floats[b+1]=vy; floats[b+2]=vu; floats[b+3]=vv; floats[b+4]=L
+                floats[b+5]=1f; floats[b+6]=1f; floats[b+7]=1f; floats[b+8]=1f
+            }
+            v(off, cx, -sa, m.u0, m.v0); v(off+fpv, cx+sw, -sa, m.u1, m.v0)
+            v(off+fpv*2, cx+sw, -sa+sh, m.u1, m.v1); v(off+fpv*3, cx, -sa+sh, m.u0, m.v1)
+            cx += m.advance * scale * scaleX; count++
+        }
+        val trimmed = floats.copyOf(count * fpq)
+        batch.addBaked(trimmed, count, x, y, r, g, b, a)
+    }
+
     fun addText(batch: QuadBatch, text: String, x: Float, y: Float, sizePx: Int,
                 r: Float, g: Float, b: Float, a: Float = 1f) {
         val scale = sizePx.toFloat() / bakedSize
