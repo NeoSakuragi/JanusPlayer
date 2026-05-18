@@ -15,6 +15,7 @@ class HomeState : GameState {
     private val seriesScroll = ScrollPhysics()
     private val movieScroll = ScrollPhysics()
     private var loading = true
+    private var animTime = 0f
 
     override fun init(app: App) {
         if (app.library.isNotEmpty()) {
@@ -82,34 +83,43 @@ class HomeState : GameState {
             app.transition(Screen.SETTINGS, SettingsState())
         }
 
+        animTime += 0.016f
+        val pulse = 1f + 0.04f * kotlin.math.sin(animTime * 4f).toFloat()
+
         var sectionY = pad + rc.dp(56f)
 
         // Series row
         if (seriesList.isNotEmpty()) {
-            val focused = focusRow == 0
+            val rowFocused = focusRow == 0
             rc.text(Lang.s("series"), pad, sectionY + rc.dp(16f), rc.sp(16),
-                if (focused) 0.733f else 0.8f, if (focused) 0.525f else 0.8f, if (focused) 0.988f else 0.8f)
+                if (rowFocused) 0.733f else 0.8f, if (rowFocused) 0.525f else 0.8f, if (rowFocused) 0.988f else 0.8f)
             val cardsY = sectionY + rc.dp(30f)
 
             for ((i, item) in seriesList.withIndex()) {
-                val x = pad + i * (cardW + spacing) - seriesScroll.offset
-                if (x + cardW < 0 || x > rc.w) continue
+                val baseX = pad + i * (cardW + spacing) - seriesScroll.offset
+                if (baseX + cardW < 0 || baseX > rc.w) continue
 
-                rc.solid(x, cardsY, cardW, cardH, 0.102f, 0.102f, 0.180f)
-                rc.cover("cover_${item.id}", x, cardsY, cardW, cardH)
+                val isFocused = rowFocused && i == seriesFocus
+                val s = if (isFocused) pulse else 1f
+                val sw = cardW * s; val sh = cardH * s
+                val x = baseX - (sw - cardW) / 2f
+                val y = cardsY - (sh - cardH) / 2f
 
-                val gradH = cardH * 0.35f
+                rc.solid(x, y, sw, sh, 0.102f, 0.102f, 0.180f)
+                rc.cover("cover_${item.id}", x, y, sw, sh)
+
+                val gradH = sh * 0.35f
                 val clear = floatArrayOf(0f, 0f, 0f, 0f); val dark = floatArrayOf(0f, 0f, 0f, 0.8f)
-                rc.gradient(x, cardsY + cardH - gradH, cardW, gradH, clear, clear, dark, dark)
-                rc.textClipped(item.title(), x + rc.dp(8f), cardsY + cardH - rc.dp(10f),
-                    rc.sp(14), cardW - rc.dp(16f), 1f, 1f, 1f)
+                rc.gradient(x, y + sh - gradH, sw, gradH, clear, clear, dark, dark)
+                rc.textClipped(item.title(), x + rc.dp(8f), y + sh - rc.dp(10f),
+                    rc.sp(14), sw - rc.dp(16f), 1f, 1f, 1f)
 
-                if (focused && i == seriesFocus) {
-                    rc.border(x, cardsY, cardW, cardH, rc.dp(3f), 0.733f, 0.525f, 0.988f)
+                if (isFocused) {
+                    rc.border(x, y, sw, sh, rc.dp(4f), 0.733f, 0.525f, 0.988f)
                 }
 
                 val tappedItem = item
-                rc.tappable(x, cardsY, cardW, cardH) {
+                rc.tappable(baseX, cardsY, cardW, cardH) {
                     app.transition(Screen.SERIES, SeriesState(tappedItem))
                 }
             }
@@ -118,30 +128,36 @@ class HomeState : GameState {
 
         // Movies row
         if (movieList.isNotEmpty()) {
-            val focused = focusRow == 1
+            val rowFocused = focusRow == 1
             rc.text(Lang.s("movies"), pad, sectionY + rc.dp(16f), rc.sp(16),
-                if (focused) 0.733f else 0.8f, if (focused) 0.525f else 0.8f, if (focused) 0.988f else 0.8f)
+                if (rowFocused) 0.733f else 0.8f, if (rowFocused) 0.525f else 0.8f, if (rowFocused) 0.988f else 0.8f)
             val cardsY = sectionY + rc.dp(30f)
 
             for ((i, item) in movieList.withIndex()) {
-                val x = pad + i * (cardW + spacing) - movieScroll.offset
-                if (x + cardW < 0 || x > rc.w) continue
+                val baseX = pad + i * (cardW + spacing) - movieScroll.offset
+                if (baseX + cardW < 0 || baseX > rc.w) continue
 
-                rc.solid(x, cardsY, cardW, cardH, 0.102f, 0.102f, 0.180f)
-                rc.cover("cover_${item.id}", x, cardsY, cardW, cardH)
+                val isFocused = rowFocused && i == movieFocus
+                val s = if (isFocused) pulse else 1f
+                val sw = cardW * s; val sh = cardH * s
+                val x = baseX - (sw - cardW) / 2f
+                val y = cardsY - (sh - cardH) / 2f
 
-                val gradH = cardH * 0.35f
+                rc.solid(x, y, sw, sh, 0.102f, 0.102f, 0.180f)
+                rc.cover("cover_${item.id}", x, y, sw, sh)
+
+                val gradH = sh * 0.35f
                 val clear = floatArrayOf(0f, 0f, 0f, 0f); val dark = floatArrayOf(0f, 0f, 0f, 0.8f)
-                rc.gradient(x, cardsY + cardH - gradH, cardW, gradH, clear, clear, dark, dark)
-                rc.textClipped(item.title(), x + rc.dp(8f), cardsY + cardH - rc.dp(10f),
-                    rc.sp(14), cardW - rc.dp(16f), 1f, 1f, 1f)
+                rc.gradient(x, y + sh - gradH, sw, gradH, clear, clear, dark, dark)
+                rc.textClipped(item.title(), x + rc.dp(8f), y + sh - rc.dp(10f),
+                    rc.sp(14), sw - rc.dp(16f), 1f, 1f, 1f)
 
-                if (focused && i == movieFocus) {
-                    rc.border(x, cardsY, cardW, cardH, rc.dp(3f), 0.733f, 0.525f, 0.988f)
+                if (isFocused) {
+                    rc.border(x, y, sw, sh, rc.dp(4f), 0.733f, 0.525f, 0.988f)
                 }
 
                 val tappedItem = item
-                rc.tappable(x, cardsY, cardW, cardH) {
+                rc.tappable(baseX, cardsY, cardW, cardH) {
                     app.transition(Screen.MOVIE, SeriesState(tappedItem))
                 }
             }
