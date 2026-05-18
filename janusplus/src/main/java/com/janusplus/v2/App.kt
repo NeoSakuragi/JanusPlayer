@@ -228,9 +228,8 @@ class App(val context: Context, private val assets: android.content.res.AssetMan
     }
 
     override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
-        // Force 60fps vsync (Huawei defaults to swap interval 2 = 30fps)
-        val display = android.opengl.EGL14.eglGetCurrentDisplay()
-        android.opengl.EGL14.eglSwapInterval(display, 1)
+        swapIntervalSet = false
+        android.opengl.EGL14.eglSwapInterval(android.opengl.EGL14.eglGetCurrentDisplay(), 1)
 
         GLES30.glClearColor(0.039f, 0.039f, 0.102f, 1f)
         GLES30.glEnable(GLES30.GL_BLEND)
@@ -332,7 +331,13 @@ class App(val context: Context, private val assets: android.content.res.AssetMan
     private var lastFrameNano = 0L
     private var frameIntervalMs = 0f
 
+    private var swapIntervalSet = false
+
     override fun onDrawFrame(gl: GL10?) {
+        if (!swapIntervalSet) {
+            android.opengl.EGL14.eglSwapInterval(android.opengl.EGL14.eglGetCurrentDisplay(), 1)
+            swapIntervalSet = true
+        }
         val now = System.nanoTime()
         if (lastFrameNano > 0) frameIntervalMs = frameIntervalMs * 0.9f + (now - lastFrameNano) / 1_000_000f * 0.1f
         lastFrameNano = now

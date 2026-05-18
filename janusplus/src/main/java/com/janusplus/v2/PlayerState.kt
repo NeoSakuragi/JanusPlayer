@@ -1004,23 +1004,25 @@ class PlayerState(
 
         // Audio tracks from ExoPlayer
         rows.add(SettingsRow("Audio", "", "audio"))
-        val player = appRef?.exoPlayer
-        if (player != null) {
-            var trackIdx = 0
-            for (group in player.currentTracks.groups) {
-                if (group.type != androidx.media3.common.C.TRACK_TYPE_AUDIO) continue
-                for (i in 0 until group.length) {
-                    val format = group.getTrackFormat(i)
-                    val label = format.label ?: format.language?.uppercase() ?: "Track ${trackIdx + 1}"
-                    val selected = group.isTrackSelected(i)
-                    val idx = trackIdx
-                    rows.add(SettingsRow(label, format.language ?: "", "", indent = true, selected = selected) {
-                        selectAudioTrack(idx)
-                    })
-                    trackIdx++
+        try {
+            val player = appRef?.exoPlayer
+            if (player != null) {
+                var trackIdx = 0
+                for (group in player.currentTracks.groups) {
+                    if (group.type != androidx.media3.common.C.TRACK_TYPE_AUDIO) continue
+                    for (i in 0 until group.length) {
+                        val format = group.getTrackFormat(i)
+                        val label = format.label ?: format.language?.uppercase() ?: "Track ${trackIdx + 1}"
+                        val selected = group.isTrackSelected(i)
+                        val idx = trackIdx
+                        rows.add(SettingsRow(label, format.language ?: "", "", indent = true, selected = selected) {
+                            selectAudioTrack(idx)
+                        })
+                        trackIdx++
+                    }
                 }
             }
-        }
+        } catch (_: Exception) {}
 
         // Subtitle tracks
         rows.add(SettingsRow("Subtitle", "", "subs"))

@@ -44,12 +44,14 @@ class MainActivity : AppCompatActivity() {
         setContentView(glView)
         glView.requestFocus()
 
-        // Force highest resolution at 60Hz
+        // Force 720p at 60Hz (1080p causes 23fps on MediaTek Google TV)
         if (android.os.Build.VERSION.SDK_INT >= 30) {
             window.attributes = window.attributes.apply {
                 preferredDisplayModeId = display?.supportedModes
-                    ?.filter { it.refreshRate >= 59f }
-                    ?.maxByOrNull { it.physicalWidth * it.physicalHeight }?.modeId ?: 0
+                    ?.filter { it.refreshRate >= 59f && it.physicalWidth <= 1280 }
+                    ?.maxByOrNull { it.physicalWidth * it.physicalHeight }?.modeId
+                    ?: display?.supportedModes?.filter { it.refreshRate >= 59f }
+                        ?.maxByOrNull { it.physicalWidth * it.physicalHeight }?.modeId ?: 0
             }
         } else {
             window.attributes = window.attributes.apply {
