@@ -15,6 +15,7 @@ import com.janusplus.CompressedTextureArray
 import com.janusplus.ThumbnailAtlas
 import com.janusplus.VideoBlitThread
 import com.janusplus.ScreenTextRenderer
+import com.janusplus.UIAtlas
 import com.janusplus.VideoSurface
 import com.janusplus.JanusApi
 import javax.microedition.khronos.egl.EGLConfig
@@ -51,6 +52,7 @@ class RC(
     val eink: Boolean = false,
     val screenText: ScreenTextRenderer? = null,
     val typeface: android.graphics.Typeface = android.graphics.Typeface.DEFAULT,
+    val ui: UIAtlas? = null,
 ) {
     // Theme colors
     val textR get() = if (eink) 0.1f else 1f
@@ -68,13 +70,17 @@ class RC(
     val hitRects = mutableListOf<HitRect>()
 
     fun solid(x: Float, y: Float, w: Float, h: Float, r: Float, g: Float, b: Float, a: Float = 1f) {
-        batch.addQuad(x, y, w, h, font.whiteU, font.whiteV, font.whiteU, font.whiteV, r, g, b, a,
+        val wU = ui?.whiteU ?: font.whiteU
+        val wV = ui?.whiteV ?: font.whiteV
+        batch.addQuad(x, y, w, h, wU, wV, wU, wV, r, g, b, a,
             layer = TextureArray.LAYER_UI.toFloat())
     }
 
     fun gradient(x: Float, y: Float, w: Float, h: Float,
                  tl: FloatArray, tr: FloatArray, br: FloatArray, bl: FloatArray) {
-        batch.addGradientQuad(x, y, w, h, tl, tr, br, bl, font.whiteU, font.whiteV,
+        val wU = ui?.whiteU ?: font.whiteU
+        val wV = ui?.whiteV ?: font.whiteV
+        batch.addGradientQuad(x, y, w, h, tl, tr, br, bl, wU, wV,
             TextureArray.LAYER_UI.toFloat())
     }
 
@@ -151,6 +157,11 @@ class RC(
         solid(x + w - t, y, t, h, r, g, b, a)
     }
 
+    fun drawRegion(region: UIAtlas.Region, x: Float, y: Float, w: Float, h: Float) {
+        batch.addQuad(x, y, w, h, region.u0, region.v0, region.u1, region.v1,
+            layer = TextureArray.LAYER_UI.toFloat())
+    }
+
     fun sp(v: Int): Int = (v * density).toInt()
     fun dp(v: Float): Float = v * density
 }
@@ -172,6 +183,7 @@ class App(val context: Context, private val assets: android.content.res.AssetMan
     var isTV = false
     var screenTextRenderer: ScreenTextRenderer? = null
     var defaultTypeface: android.graphics.Typeface = android.graphics.Typeface.DEFAULT
+    var uiAtlas: UIAtlas? = null
 
     val projMatrix = FloatArray(16)
     var width = 0f; private set
@@ -250,6 +262,12 @@ class App(val context: Context, private val assets: android.content.res.AssetMan
         screenTextRenderer = ScreenTextRenderer()
         defaultTypeface = try { android.graphics.Typeface.createFromAsset(assets, "fonts/NotoSansJP-Regular.ttf") }
                           catch (_: Exception) { android.graphics.Typeface.DEFAULT }
+
+        // UI Atlas — CPU-rendered text regions in the texture array
+        uiAtlas = UIAtlas(texArray, TextureArray.LAYER_UI).also {
+            it.typeface = defaultTypeface
+            it.uploadWhitePixel()
+        }
         android.util.Log.i("App", "GL max: ${maxTexSize[0]}, layers: ${maxLayers[0]}")
         val uiTexSize = if (isTV) 2048 else 4096
         texArray = TextureArray(uiTexSize, TextureArray.LAYER_THUMB_FIRST + TextureArray.LAYER_THUMB_COUNT)
@@ -406,7 +424,7 @@ class App(val context: Context, private val assets: android.content.res.AssetMan
         // CPU text overlay only for non-player screens (player uses SubtitleBitmap for subs)
         val str = if (currentScreen != Screen.PLAYER) screenTextRenderer else null
         str?.beginFrame(width.toInt(), height.toInt())
-        val rc = RC(batch, font, texArray, coverAtlas, thumbAtlas, width, height, density, einkMode, str, defaultTypeface)
+        val rc = RC(batch, font, texArray, coverAtlas, thumbAtlas, width, height, density, einkMode, str, defaultTypeface, uiAtlas)
         currentState.draw(this, rc)
 
         val flushT0 = System.nanoTime()

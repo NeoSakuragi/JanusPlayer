@@ -604,9 +604,9 @@ class PlayerState(
         }
         t1 = System.nanoTime(); dbgControls = dbgControls * 0.9f + (t1 - t0) / 1_000_000f * 0.1f; t0 = t1
 
-        // ── Subtitle (CPU-rendered bitmap) ──
+        // ── Subtitle ──
         if (currentCueText.isNotEmpty()) {
-            drawSubtitleBitmap(app, rc)
+            drawSubtitleViaAtlas(app, rc)
         }
         t1 = System.nanoTime(); dbgCue = dbgCue * 0.9f + (t1 - t0) / 1_000_000f * 0.1f; t0 = t1
 
@@ -1293,7 +1293,52 @@ class PlayerState(
         else "%d:%02d".format(m, s % 60)
     }
 
-    // ── Subtitle Bitmap Rendering ──
+    // ── Subtitle via UIAtlas ──
+
+    private fun drawSubtitleViaAtlas(app: App, rc: RC) {
+        val atlas = rc.ui ?: return
+        val text = currentCueText
+        val displayText = convertForReadingMode(text)
+
+        val words = if (readingMode == ReadingMode.ADVANCED) {
+            wordSpans.map { span ->
+                com.janusplus.UIAtlas.SubtitleWord(span.start, span.end,
+                    span.furigana.map { com.janusplus.UIAtlas.FuriSpan(it.charIdx, it.reading) })
+            }
+        } else emptyList()
+
+        if (cachedTypefaceIdx != currentFontIdx) {
+            cachedTypeface = try {
+                android.graphics.Typeface.createFromAsset(app.context.assets, fontAssets[currentFontIdx])
+            } catch (_: Exception) { android.graphics.Typeface.DEFAULT }
+            cachedTypefaceIdx = currentFontIdx
+        }
+        atlas.typeface = cachedTypeface ?: android.graphics.Typeface.DEFAULT
+
+        atlas.renderSubtitle(
+            displayText, words,
+            textSize = rc.sp(subFontSize).toFloat(),
+            furiganaScale = 0.45f,
+            furiganaGap = deltaFurigana,
+            rowSpacing = deltaRow,
+            letterSpacing = deltaSpacing * rc.density,
+            bgColor = if (einkMode) android.graphics.Color.argb(242, 255, 255, 255) else android.graphics.Color.argb(178, 0, 0, 0),
+            textColor = if (einkMode) android.graphics.Color.BLACK else android.graphics.Color.WHITE,
+            outlineWidth = if (einkMode) 0f else rc.dp(2f),
+            eink = einkMode,
+        )
+
+        // Draw the subtitle region as a quad
+        val region = atlas.subtitle
+        val subW = region.w.toFloat()
+        val subH = region.h.toFloat()
+        val subX = (rc.w - subW) / 2f
+        val subY = barY - rc.dp(24f) - subH - deltaYShift * rc.density
+        subtitleRect = floatArrayOf(subX, subY, subW, subH)
+        rc.drawRegion(region, subX, subY, subW, subH)
+    }
+
+    // ── Subtitle Bitmap Rendering (legacy) ──
 
     private fun drawSubtitleBitmap(app: App, rc: RC) {
         val text = currentCueText
