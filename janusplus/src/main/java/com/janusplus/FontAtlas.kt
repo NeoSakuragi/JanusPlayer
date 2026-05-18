@@ -62,19 +62,17 @@ class FontAtlas(private val assets: AssetManager) {
             }
             bakedAscent = maxAsc; bakedDescent = maxDesc
 
-            // Font texture — only needed when ScreenTextRenderer is NOT active
-            if (!skipTextureUpload) {
-                fontTexArray = TextureArray(4096, pageCount)
-                fontTexArray!!.initGL()
-                for (p in 0 until pageCount) {
-                    val pngStream = assets.open("baked_fonts/${name}_p$p.png")
-                    val bmp = BitmapFactory.decodeStream(pngStream)!!
-                    pngStream.close()
-                    Log.i("FontAtlas", "Page $p: ${bmp.width}x${bmp.height} (${bmp.byteCount / 1024}KB)")
-                    fontTexArray!!.uploadLayerNow(p, bmp)
-                }
-            } else {
-                Log.i("FontAtlas", "Skipping texture upload (CPU text rendering active)")
+            val fontTexSize = if (skipTextureUpload) 2048 else 4096
+            fontTexArray = TextureArray(fontTexSize, pageCount)
+            fontTexArray!!.initGL()
+            val opts = BitmapFactory.Options()
+            if (fontTexSize < 4096) opts.inSampleSize = 4096 / fontTexSize
+            for (p in 0 until pageCount) {
+                val pngStream = assets.open("baked_fonts/${name}_p$p.png")
+                val bmp = BitmapFactory.decodeStream(pngStream, null, opts)!!
+                pngStream.close()
+                Log.i("FontAtlas", "Page $p: ${bmp.width}x${bmp.height} (${bmp.byteCount / 1024}KB)")
+                fontTexArray!!.uploadLayerNow(p, bmp)
             }
             atlasSize = 4096
 
