@@ -19,11 +19,37 @@ class HomeState : GameState {
     private var cachedCardW = 0f; private var cachedSpacing = 0f; private var cachedPad = 0f
     private var cachedScreenW = 0f
 
+    private var textsPrepared = false
+
     override fun init(app: App) {
         if (app.library.isNotEmpty()) {
             setLibrary(app.library)
             loading = false
         }
+        prepareStaticTexts(app)
+    }
+
+    private fun prepareStaticTexts(app: App) {
+        val atlas = app.uiAtlas ?: return
+        fun sp(v: Int) = (v * app.density).toInt().toFloat()
+        fun col(r: Float, g: Float, b: Float, a: Float = 1f) = android.graphics.Color.argb((a*255).toInt(), (r*255).toInt(), (g*255).toInt(), (b*255).toInt())
+        atlas.prepareText("Janus+|${sp(28).toInt()}|${col(0.733f, 0.525f, 0.988f)}", "Janus+", sp(28), col(0.733f, 0.525f, 0.988f))
+        atlas.prepareText("${Lang.s("series")}|${sp(16).toInt()}|${col(0.733f, 0.525f, 0.988f)}", Lang.s("series"), sp(16), col(0.733f, 0.525f, 0.988f))
+        atlas.prepareText("${Lang.s("movies")}|${sp(16).toInt()}|${col(0.8f, 0.8f, 0.8f)}", Lang.s("movies"), sp(16), col(0.8f, 0.8f, 0.8f))
+        atlas.prepareText("${Lang.s("settings")}|${sp(12).toInt()}|${col(0.733f, 0.525f, 0.988f)}", Lang.s("settings"), sp(12), col(0.733f, 0.525f, 0.988f))
+        atlas.prepareText("${Lang.s("loading_library")}|${sp(18).toInt()}|${col(0.8f, 0.8f, 0.8f)}", Lang.s("loading_library"), sp(18), col(0.8f, 0.8f, 0.8f))
+    }
+
+    private fun prepareLibraryTexts(app: App) {
+        val atlas = app.uiAtlas ?: return
+        val d = app.density
+        for (item in seriesList) {
+            atlas.prepareText("cover_${item.id}", item.title(), (14 * d).toInt().toFloat(), android.graphics.Color.WHITE, maxWidth = 200 * d)
+        }
+        for (item in movieList) {
+            atlas.prepareText("cover_${item.id}", item.title(), (14 * d).toInt().toFloat(), android.graphics.Color.WHITE, maxWidth = 200 * d)
+        }
+        atlas.prepareText("home_fps", "60fps", (10 * d).toInt().toFloat(), android.graphics.Color.argb(255, 102, 204, 102))
     }
 
     private fun setLibrary(lib: List<JanusApi.LibraryItem>) {
@@ -35,6 +61,8 @@ class HomeState : GameState {
         if (app.library.isNotEmpty() && loading) {
             setLibrary(app.library)
             loading = false
+            prepareLibraryTexts(app)
+            textsPrepared = true
         }
         seriesScroll.update(0.016f)
         movieScroll.update(0.016f)
@@ -64,8 +92,8 @@ class HomeState : GameState {
                 android.view.KeyEvent.KEYCODE_DPAD_CENTER, android.view.KeyEvent.KEYCODE_ENTER -> {
                     when (focusRow) {
                         0 -> app.transition(Screen.SETTINGS, SettingsState())
-                        1 -> seriesList.getOrNull(seriesFocus)?.let { app.transition(Screen.SERIES, SeriesState(it)) }
-                        2 -> movieList.getOrNull(movieFocus)?.let { app.transition(Screen.SERIES, SeriesState(it)) }
+                        1 -> seriesList.getOrNull(seriesFocus)?.let { app.transition(Screen.SERIES, SeriesLoadingState(it)) }
+                        2 -> movieList.getOrNull(movieFocus)?.let { app.transition(Screen.SERIES, SeriesLoadingState(it)) }
                     }
                 }
                 android.view.KeyEvent.KEYCODE_BACK -> { /* home screen, no-op */ }
@@ -134,7 +162,7 @@ class HomeState : GameState {
                 if (isFocused) rc.border(x, y, cardW, cardH, 6f, 0.733f, 0.525f, 0.988f)
 
                 val tappedItem = item
-                rc.tappable(baseX, cardsY, cardW, cardH) { app.transition(Screen.SERIES, SeriesState(tappedItem)) }
+                rc.tappable(baseX, cardsY, cardW, cardH) { app.transition(Screen.SERIES, SeriesLoadingState(tappedItem)) }
             }
             sectionY = cardsY + cardH + rc.dp(24f)
         }
@@ -162,7 +190,7 @@ class HomeState : GameState {
                 if (isFocused) rc.border(x, y, cardW, cardH, 6f, 0.733f, 0.525f, 0.988f)
 
                 val tappedItem = item
-                rc.tappable(baseX, cardsY, cardW, cardH) { app.transition(Screen.MOVIE, SeriesState(tappedItem)) }
+                rc.tappable(baseX, cardsY, cardW, cardH) { app.transition(Screen.MOVIE, SeriesLoadingState(tappedItem)) }
             }
         }
 

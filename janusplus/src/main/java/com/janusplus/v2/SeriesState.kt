@@ -31,6 +31,43 @@ class SeriesState(private val item: JanusApi.LibraryItem) : GameState {
 
     enum class FocusArea { PLAY_BUTTON, EPISODE_GRID }
     private var focusArea = FocusArea.PLAY_BUTTON
+    private var seriesTextsPrepared = false
+
+    private fun prepareSeriesTexts(app: App) {
+        val atlas = app.uiAtlas ?: return
+        val d = app.density
+        val data = pageData ?: return
+
+        // Title
+        val title = when (com.janusplus.Lang.current) {
+            "ja" -> data.titleJa.ifEmpty { data.titleEn }
+            else -> data.titleEn
+        }
+        atlas.prepareText("series_title", title, (28 * d).toInt().toFloat(), android.graphics.Color.WHITE)
+        atlas.prepareText("series_back", "←", (22 * d).toInt().toFloat(), android.graphics.Color.argb(200, 136, 136, 136))
+        atlas.prepareText("series_play", com.janusplus.Lang.s("play"), (16 * d).toInt().toFloat(), android.graphics.Color.WHITE)
+        atlas.prepareText("series_epcount", com.janusplus.Lang.s("episodes", data.episodeCount), (13 * d).toInt().toFloat(), android.graphics.Color.argb(255, 136, 136, 136))
+
+        // Synopsis
+        val synText = when (com.janusplus.Lang.current) {
+            "ja" -> data.synopsisJa.ifEmpty { data.synopsisEn }
+            "fr" -> data.synopsisFr.ifEmpty { data.synopsisEn }
+            else -> data.synopsisEn
+        }
+        if (synText.isNotEmpty()) {
+            atlas.prepareText("series_synopsis", synText, (13 * d).toInt().toFloat(), android.graphics.Color.argb(255, 187, 187, 187), maxWidth = 700 * d)
+        }
+
+        // Episode titles
+        for (ep in data.episodes) {
+            atlas.prepareText("ep_title_${ep.episode}", "${ep.episode}. ${ep.titleEn}",
+                (13 * d).toInt().toFloat(), android.graphics.Color.WHITE, maxWidth = 250 * d)
+            atlas.prepareText("ep_dur_${ep.episode}", "${ep.durationSec / 60} min",
+                (10 * d).toInt().toFloat(), android.graphics.Color.argb(255, 136, 136, 136))
+        }
+
+        atlas.prepareText("series_settings", com.janusplus.Lang.s("settings"), (12 * d).toInt().toFloat(), android.graphics.Color.argb(255, 187, 134, 252))
+    }
     private var episodeFocus = 0
     private var cachedScreenH = 0f
     private var animTime = 0f
@@ -178,6 +215,12 @@ class SeriesState(private val item: JanusApi.LibraryItem) : GameState {
             pendingAtlasBmp = null
             app.texArray.uploadLayerNow(atlasLayer, aBmp)
             atlasReady = true
+        }
+
+        // Prepare episode text when data arrives
+        if (pageData != null && !seriesTextsPrepared) {
+            prepareSeriesTexts(app)
+            seriesTextsPrepared = true
         }
 
         val data = pageData

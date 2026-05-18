@@ -90,11 +90,13 @@ class RC(
              volatile: Boolean = false) {
         val atlas = ui
         if (atlas != null) {
-            val key = s.hashCode().toLong() * 31 + size + (x * 7).toLong() + (y * 13).toLong()
             val color = android.graphics.Color.argb((a * 255).toInt(), (r * 255).toInt(), (g * 255).toInt(), (b * 255).toInt())
-            val slot = atlas.text(key, s, size.toFloat(), color) ?: return
+            val id = "$s|$size|$color"
+            val slot = atlas.getSlot(id) ?: atlas.prepareText(id, s, size.toFloat(), color) ?: return
+            if (!slot.uploaded) return
+            val ts = atlas.texSize
             batch.addQuad(x, y - atlas.textAscent(size.toFloat()), slot.w.toFloat(), slot.h.toFloat(),
-                slot.u0 / atlas.texSize, slot.v0 / atlas.texSize, slot.u1 / atlas.texSize, slot.v1 / atlas.texSize,
+                slot.x / ts, slot.y / ts, (slot.x + slot.w) / ts, (slot.y + slot.h) / ts,
                 layer = TextureArray.LAYER_UI.toFloat())
         } else {
             font.addText(batch, s, x, y, size, r, g, b, a)
@@ -104,11 +106,13 @@ class RC(
     fun textClipped(s: String, x: Float, y: Float, size: Int, maxW: Float, r: Float, g: Float, b: Float, a: Float = 1f) {
         val atlas = ui
         if (atlas != null) {
-            val key = s.hashCode().toLong() * 31 + size + (x * 7).toLong() + (y * 13).toLong() + (maxW * 3).toLong()
             val color = android.graphics.Color.argb(255, (r * 255).toInt(), (g * 255).toInt(), (b * 255).toInt())
-            val slot = atlas.text(key, s, size.toFloat(), color, maxW) ?: return
+            val id = "$s|$size|$color|$maxW"
+            val slot = atlas.getSlot(id) ?: return
+            if (!slot.uploaded) return
+            val ts = atlas.texSize
             batch.addQuad(x, y - atlas.textAscent(size.toFloat()), slot.w.toFloat(), slot.h.toFloat(),
-                slot.u0 / atlas.texSize, slot.v0 / atlas.texSize, slot.u1 / atlas.texSize, slot.v1 / atlas.texSize,
+                slot.x / ts, slot.y / ts, (slot.x + slot.w) / ts, (slot.y + slot.h) / ts,
                 layer = TextureArray.LAYER_UI.toFloat())
         } else {
             font.addTextClipped(batch, s, x, y, size, maxW, r, g, b, a)
@@ -169,10 +173,19 @@ class RC(
         solid(x + w - t, y, t, h, r, g, b, a)
     }
 
-    fun drawRegion(slot: UIAtlas.Slot, x: Float, y: Float) {
+    fun prepareText(s: String, size: Int, r: Float, g: Float, b: Float, a: Float = 1f, maxW: Float = 0f) {
+        val atlas = ui ?: return
+        val color = android.graphics.Color.argb((a * 255).toInt(), (r * 255).toInt(), (g * 255).toInt(), (b * 255).toInt())
+        val id = if (maxW > 0f) "$s|$size|$color|$maxW" else "$s|$size|$color"
+        if (atlas.getSlot(id) != null) return // already prepared
+        atlas.prepareText(id, s, size.toFloat(), color, maxW)
+    }
+
+    fun drawSlot(slot: UIAtlas.Slot, x: Float, y: Float) {
+        if (!slot.uploaded) return
         val ts = ui?.texSize ?: return
         batch.addQuad(x, y, slot.w.toFloat(), slot.h.toFloat(),
-            slot.u0 / ts, slot.v0 / ts, slot.u1 / ts, slot.v1 / ts,
+            slot.x / ts, slot.y / ts, (slot.x + slot.w) / ts, (slot.y + slot.h) / ts,
             layer = TextureArray.LAYER_UI.toFloat())
     }
 
@@ -388,7 +401,7 @@ class App(val context: Context, private val assets: android.content.res.AssetMan
             }
             isBackNavigation = false
             currentState.cleanup(this)
-            uiAtlas?.resetSlots()
+            uiAtlas?.reset()
             currentScreen = trans.first
             currentState = trans.second
             currentState.init(this)
@@ -436,6 +449,7 @@ class App(val context: Context, private val assets: android.content.res.AssetMan
         GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
         batch.begin()
 
+        uiAtlas?.processQueue(1)
         val rc = RC(batch, font, texArray, coverAtlas, thumbAtlas, width, height, density, einkMode, null, defaultTypeface, uiAtlas)
         currentState.draw(this, rc)
 

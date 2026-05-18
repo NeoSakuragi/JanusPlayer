@@ -167,6 +167,18 @@ class PlayerState(
 
     private fun invalidateSubtitle() { subtitleBmp.lastText = "" }
 
+    private fun preparePlayerTexts(app: App) {
+        val atlas = app.uiAtlas ?: return
+        val d = app.density
+        val title = "${episode.episode}. ${episode.title()}"
+        atlas.prepareText("player_title", title, (16 * d).toInt().toFloat(), android.graphics.Color.WHITE)
+        atlas.prepareText("player_back", "←", (22 * d).toInt().toFloat(), android.graphics.Color.argb(200, 200, 200, 200))
+        atlas.prepareText("player_settings", com.janusplus.Lang.s("settings"), (12 * d).toInt().toFloat(), android.graphics.Color.argb(255, 187, 134, 252))
+        atlas.prepareText("player_play", "▶", (36 * d).toInt().toFloat(), android.graphics.Color.argb(200, 255, 255, 255))
+        atlas.prepareText("player_prev", "⏮", (22 * d).toInt().toFloat(), android.graphics.Color.argb(200, 200, 200, 200))
+        atlas.prepareText("player_next", "⏭", (22 * d).toInt().toFloat(), android.graphics.Color.argb(200, 200, 200, 200))
+    }
+
     private fun savePrefs() {
         val app = appRef ?: return
         app.context.getSharedPreferences("player_prefs", android.content.Context.MODE_PRIVATE).edit()
@@ -201,6 +213,9 @@ class PlayerState(
         debugBoxes = prefs.getBoolean("debug_boxes", false)
         einkMode = prefs.getBoolean("eink_mode", false)
         app.einkMode = einkMode
+
+        // Prepare player text
+        preparePlayerTexts(app)
 
         val api = app.api ?: return
         val videoUrl = "$baseUrl/api/video/${item.id}/${episode.filename}"
@@ -1335,9 +1350,9 @@ class PlayerState(
         val subX = (rc.w - subW) / 2f
         val subY = barY - rc.dp(24f) - subH - deltaYShift * rc.density
         subtitleRect = floatArrayOf(subX, subY, subW, subH)
+        val ts = atlas.texSize
         rc.batch.addQuad(subX, subY, subW, subH,
-            slot.u0 / atlas.texSize, slot.v0 / atlas.texSize,
-            slot.u1 / atlas.texSize, slot.v1 / atlas.texSize,
+            slot.x / ts, slot.y / ts, (slot.x + slot.w) / ts, (slot.y + slot.h) / ts,
             layer = com.janusplus.TextureArray.LAYER_UI.toFloat())
     }
 
