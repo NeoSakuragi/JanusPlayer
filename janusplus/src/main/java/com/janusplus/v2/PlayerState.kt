@@ -162,6 +162,8 @@ class PlayerState(
 
     // CPU-rendered subtitle texture
     private val subtitleBmp = SubtitleBitmap()
+    private var cachedTypeface: android.graphics.Typeface? = null
+    private var cachedTypefaceIdx = -1
 
     private fun invalidateSubtitle() { subtitleBmp.lastText = "" }
 
@@ -1305,9 +1307,13 @@ class PlayerState(
             }
         } else emptyList()
 
-        val typeface = try {
-            android.graphics.Typeface.createFromAsset(app.context.assets, fontAssets[currentFontIdx])
-        } catch (_: Exception) { android.graphics.Typeface.DEFAULT }
+        if (cachedTypefaceIdx != currentFontIdx) {
+            cachedTypeface = try {
+                android.graphics.Typeface.createFromAsset(app.context.assets, fontAssets[currentFontIdx])
+            } catch (_: Exception) { android.graphics.Typeface.DEFAULT }
+            cachedTypefaceIdx = currentFontIdx
+        }
+        val typeface = cachedTypeface ?: android.graphics.Typeface.DEFAULT
 
         val params = SubtitleBitmap.RenderParams(
             fontFamily = typeface,
