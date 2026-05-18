@@ -32,7 +32,10 @@ class PlayerState(
     @Volatile var isPlaying = true
 
     // Debug
-    var debugBoxes = true
+    var debugBoxes = false
+
+    // Theme: false = dark (white text, dark shade), true = e-ink (black text, white shade)
+    var einkMode = false
 
     // Reading mode
     var readingMode = ReadingMode.PRO
@@ -157,6 +160,8 @@ class PlayerState(
             .putInt("reading_mode", readingMode.ordinal)
             .putBoolean("condensed", condensedMode)
             .putInt("font_idx", currentFontIdx)
+            .putBoolean("debug_boxes", debugBoxes)
+            .putBoolean("eink_mode", einkMode)
             .apply()
     }
 
@@ -175,6 +180,9 @@ class PlayerState(
         readingMode = ReadingMode.entries.getOrNull(prefs.getInt("reading_mode", 3)) ?: ReadingMode.PRO
         condensedMode = prefs.getBoolean("condensed", false)
         currentFontIdx = prefs.getInt("font_idx", 0)
+        debugBoxes = prefs.getBoolean("debug_boxes", false)
+        einkMode = prefs.getBoolean("eink_mode", false)
+        app.einkMode = einkMode
 
         val api = app.api ?: return
         val videoUrl = "$baseUrl/api/video/${item.id}/${episode.filename}"
@@ -555,8 +563,17 @@ class PlayerState(
         }
         t1 = System.nanoTime(); dbgControls = dbgControls * 0.9f + (t1 - t0) / 1_000_000f * 0.1f; t0 = t1
 
-        // ── Subtitle ──
+        // ── Subtitle — set SDF uniforms for theme ──
         if (currentCueText.isNotEmpty()) {
+            if (einkMode) {
+                GLES30.glUniform1f(app.shader.uOutlineWidth, 0f)
+                GLES30.glUniform4f(app.shader.uShadowColor, 0f, 0f, 0f, 0f)
+            } else {
+                GLES30.glUniform1f(app.shader.uOutlineWidth, 0.15f)
+                GLES30.glUniform4f(app.shader.uOutlineColor, 0f, 0f, 0f, 0.8f)
+                GLES30.glUniform2f(app.shader.uShadowOffset, 0.001f, 0.001f)
+                GLES30.glUniform4f(app.shader.uShadowColor, 0f, 0f, 0f, 0.5f)
+            }
             drawCueLayer(rc)
         }
         t1 = System.nanoTime(); dbgCue = dbgCue * 0.9f + (t1 - t0) / 1_000_000f * 0.1f; t0 = t1
@@ -693,7 +710,10 @@ class PlayerState(
 
         // Shade
         val s = layout.shadeRect
-        if (s[2] > 0f) rc.solid(s[0], s[1], s[2], s[3], 0f, 0f, 0f, 0.7f)
+        if (s[2] > 0f) {
+            if (einkMode) rc.solid(s[0], s[1], s[2], s[3], 1f, 1f, 1f, 0.95f)
+            else rc.solid(s[0], s[1], s[2], s[3], 0f, 0f, 0f, 0.7f)
+        }
 
         // Highlight
         if (hlStart >= 0 && hlEnd > hlStart) {
@@ -703,11 +723,14 @@ class PlayerState(
             }
         }
 
-        // Characters — full lines when possible
+        // Characters — full lines
+        val textR = if (einkMode) 0f else 1f
+        val textG = if (einkMode) 0f else 1f
+        val textB = if (einkMode) 0f else 1f
         for ((lineText, lineY, _) in layout.lineInfos) {
             val lineW = rc.font.measureText(lineText, layout.fontSize)
             val lineX = (rc.w - lineW) / 2f
-            rc.text(lineText, lineX, lineY, layout.fontSize, 1f, 1f, 1f)
+            rc.text(lineText, lineX, lineY, layout.fontSize, textR, textG, textB)
         }
 
         // Debug: char bounding boxes (red)
@@ -722,11 +745,14 @@ class PlayerState(
         }
 
         // Furigana
+        val furiR = if (einkMode) 0.2f else 0.7f
+        val furiG = if (einkMode) 0.2f else 0.7f
+        val furiB = if (einkMode) 0.3f else 0.85f
         for (f in layout.furis) {
             if (f.scaleX < 1f) {
-                rc.font.addTextScaled(rc.batch, f.text, f.x, f.y, f.size, f.scaleX, 0.7f, 0.7f, 0.85f)
+                rc.font.addTextScaled(rc.batch, f.text, f.x, f.y, f.size, f.scaleX, furiR, furiG, furiB)
             } else {
-                rc.text(f.text, f.x, f.y, f.size, 0.7f, 0.7f, 0.85f)
+                rc.text(f.text, f.x, f.y, f.size, furiR, furiG, furiB)
             }
         }
 
@@ -989,6 +1015,16 @@ class PlayerState(
         rows.add(SettingsRow("DY (Y Offset)", "%.0f".format(deltaYShift), "DY",
             isSlider = true, sliderRange = -50f to 50f, sliderValue = deltaYShift,
             onSlide = { deltaYShift = it; savePrefs() }))
+
+        // Theme
+        rows.add(SettingsRow("Theme", if (einkMode) "E-Ink" else "Dark", "theme") {
+            einkMode = !einkMode; appRef?.einkMode = einkMode; savePrefs()
+        })
+
+        // Debug
+        rows.add(SettingsRow("Debug Boxes", if (debugBoxes) "ON" else "OFF", "debug") {
+            debugBoxes = !debugBoxes; savePrefs()
+        })
 
         settingsRows = rows
     }

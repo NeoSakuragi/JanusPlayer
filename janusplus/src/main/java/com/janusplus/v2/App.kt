@@ -47,7 +47,21 @@ class RC(
     val w: Float,
     val h: Float,
     val density: Float,
+    val eink: Boolean = false,
 ) {
+    // Theme colors
+    val textR get() = if (eink) 0.1f else 1f
+    val textG get() = if (eink) 0.1f else 1f
+    val textB get() = if (eink) 0.1f else 1f
+    val dimR get() = if (eink) 0.4f else 0.7f
+    val dimG get() = if (eink) 0.4f else 0.7f
+    val dimB get() = if (eink) 0.4f else 0.7f
+    val accentR get() = if (eink) 0.3f else 0.733f
+    val accentG get() = if (eink) 0.2f else 0.525f
+    val accentB get() = if (eink) 0.6f else 0.988f
+    val panelR get() = if (eink) 0.9f else 0.102f
+    val panelG get() = if (eink) 0.9f else 0.102f
+    val panelB get() = if (eink) 0.88f else 0.180f
     val hitRects = mutableListOf<HitRect>()
 
     fun solid(x: Float, y: Float, w: Float, h: Float, r: Float, g: Float, b: Float, a: Float = 1f) {
@@ -140,6 +154,7 @@ class App(val context: Context, private val assets: android.content.res.AssetMan
     val thumbAtlas = ThumbnailAtlas()
     val videoSurface = VideoSurface()
     var blitThread: VideoBlitThread? = null
+    var einkMode = false
 
     val projMatrix = FloatArray(16)
     var width = 0f; private set
@@ -325,7 +340,9 @@ class App(val context: Context, private val assets: android.content.res.AssetMan
         thumbAtlas.processPending()
         texArray.processUploads()
 
-        // Draw
+        // Draw — set background color based on theme
+        if (einkMode) GLES30.glClearColor(0.95f, 0.95f, 0.93f, 1f)
+        else GLES30.glClearColor(0.039f, 0.039f, 0.102f, 1f)
         GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT)
         etc2Array.processUploads()
         shader.use()
@@ -349,7 +366,7 @@ class App(val context: Context, private val assets: android.content.res.AssetMan
         GLES30.glUniform4f(shader.uShadowColor, 0f, 0f, 0f, 0.5f)
         batch.begin()
 
-        val rc = RC(batch, font, texArray, coverAtlas, thumbAtlas, width, height, density)
+        val rc = RC(batch, font, texArray, coverAtlas, thumbAtlas, width, height, density, einkMode)
         currentState.draw(this, rc)
 
         val flushT0 = System.nanoTime()

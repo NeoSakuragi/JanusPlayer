@@ -90,14 +90,16 @@ class FontAtlas(private val assets: AssetManager) {
         return total
     }
 
+    private val sdfSpread = 4f
+
     fun textHeight(sizePx: Int): Float {
         val scale = sizePx.toFloat() / bakedSize
-        return (bakedAscent + bakedDescent) * scale
+        return (bakedAscent + bakedDescent - sdfSpread * 2) * scale
     }
 
     fun textAscent(sizePx: Int): Float {
         val scale = sizePx.toFloat() / bakedSize
-        return bakedAscent * scale
+        return (bakedAscent - sdfSpread) * scale
     }
 
     fun addTextScaled(batch: QuadBatch, text: String, x: Float, y: Float, sizePx: Int,
