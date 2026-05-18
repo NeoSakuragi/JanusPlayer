@@ -7,6 +7,7 @@ import androidx.media3.exoplayer.source.ProgressiveMediaSource
 import com.janusplus.JanusApi
 import com.janusplus.Lang
 import com.janusplus.SrtParser
+import com.janusplus.VideoBlitThread
 import com.janusplus.toCodePoints
 import kotlin.concurrent.thread
 
@@ -516,9 +517,10 @@ class PlayerState(
     override fun draw(app: App, rc: RC) {
         if (!layoutDone) computeLayout(rc)
 
-        // Blit OES → FBO on new video frames (decoupled from render loop)
-        // videoSurface.skipUpdate only for debugging
-        blitVideoIfNeeded(app, rc)
+        // Signal blit thread on new video frames (runs on separate GL context)
+        if (app.videoSurface.frameReady) {
+            kickBlitThread(app, rc)
+        }
 
         var t0 = System.nanoTime()
 
@@ -575,7 +577,8 @@ class PlayerState(
         // ── Timing overlay ──
         val y0 = rc.dp(16f)
         val sz = rc.sp(10)
-        val timingStr = "${app.fps}fps  upd:${"%.1f".format(dbgUpdate)}  vid:${"%.1f".format(dbgVideo)}  cue:${"%.1f".format(dbgCue)}  ctrl:${"%.1f".format(dbgControls)}  dict:${"%.1f".format(dbgDict)}"
+        val blitMs = app.blitThread?.lastBlitMs ?: 0f
+        val timingStr = "${app.fps}fps  upd:${"%.1f".format(dbgUpdate)}  vid:${"%.1f".format(dbgVideo)}  blit:${"%.1f".format(blitMs)}  cue:${"%.1f".format(dbgCue)}  ctrl:${"%.1f".format(dbgControls)}"
         rc.text(timingStr, rc.dp(8f), y0, sz, 0.4f, 0.8f, 0.4f)
 
         // Log every 60 frames
@@ -1224,71 +1227,23 @@ class PlayerState(
         appRef?.onMainThread?.invoke(Runnable { appRef?.exoPlayer?.seekTo(ms) })
     }
 
-    private var videoBlitDone = false
-
-    private fun blitVideoIfNeeded(app: App, rc: RC) {
-        if (!app.videoSurface.frameReady) return
-        val sw = rc.w.toInt(); val sh = rc.h.toInt()
-
-        rc.batch.flush()
-
-        // Blit OES → FBO (only on new video frames)
-        GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0) // ensure we read current state
-        app.videoSurface.let { vs ->
-            vs.ensureFbo(sw, sh)
-            GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, vs.fbo)
-            GLES30.glViewport(0, 0, sw, sh)
-            GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT)
-
-            app.shader.useExternal()
-            GLES30.glUniformMatrix4fv(app.shader.uProjExt, 1, false, app.projMatrix, 0)
-            GLES30.glUniformMatrix4fv(app.shader.uTexMatExt, 1, false, vs.transformMatrix, 0)
-            GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
-            GLES30.glUniform1i(app.shader.uTexExt, 0)
-            vs.bindOes()
-
-            // Letterbox
-            val vw = if (videoWidth > 0) videoWidth.toFloat() else 4f
-            val vh = if (videoHeight > 0) videoHeight.toFloat() else 3f
-            val videoAspect = vw / vh
-            val screenAspect = rc.w / rc.h
-            val qx: Float; val qy: Float; val qw: Float; val qh: Float
-            if (screenAspect > videoAspect) {
-                qh = rc.h; qw = qh * videoAspect
-                qx = (rc.w - qw) / 2f; qy = 0f
-            } else {
-                qw = rc.w; qh = qw / videoAspect
-                qx = 0f; qy = (rc.h - qh) / 2f
-            }
-            rc.batch.begin()
-            rc.batch.addQuad(qx, qy, qw, qh, 0f, 1f, 1f, 0f, layer = 0f)
-            rc.batch.flush()
-
-            GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
-            GLES30.glViewport(0, 0, sw, sh)
-        }
-
-        // Restore main shader + rebind video FBO texture on unit 2
-        app.shader.use()
-        GLES30.glUniformMatrix4fv(app.shader.uProj, 1, false, app.projMatrix, 0)
-        GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
-        GLES30.glUniform1i(app.shader.uTex, 0)
-        app.texArray.bind()
-        GLES30.glActiveTexture(GLES30.GL_TEXTURE1)
-        app.etc2Array.bind(GLES30.GL_TEXTURE1)
-        GLES30.glUniform1i(app.shader.uTexEtc2, 1)
-        GLES30.glActiveTexture(GLES30.GL_TEXTURE2)
-        app.videoSurface.bindRgb()
-        GLES30.glUniform1i(app.shader.uTexVideo, 2)
-        GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
-        rc.batch.begin()
-
-        videoBlitDone = true
+    private fun kickBlitThread(app: App, rc: RC) {
+        val bt = app.blitThread ?: return
+        bt.videoWidth = videoWidth
+        bt.videoHeight = videoHeight
+        bt.screenWidth = rc.w.toInt()
+        bt.screenHeight = rc.h.toInt()
+        bt.requestBlit()
     }
 
     private fun drawVideoQuad(app: App, rc: RC) {
-        if (!videoBlitDone) return
-        // Fullscreen quad sampling from uTexVideo (layer = -1 triggers sampler2D path in shader)
+        val bt = app.blitThread
+        if (bt == null || !bt.frameReady) return
+        // Rebind FBO texture (blit thread may have recreated it)
+        GLES30.glActiveTexture(GLES30.GL_TEXTURE2)
+        app.videoSurface.bindRgb()
+        GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
+        // Fullscreen quad sampling from uTexVideo (layer = -1)
         // FBO has OpenGL origin (Y=0 at bottom), flip V: top=1, bottom=0
         rc.batch.addQuad(0f, 0f, rc.w, rc.h, 0f, 1f, 1f, 0f, layer = -1f)
     }

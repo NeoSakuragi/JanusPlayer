@@ -13,6 +13,7 @@ import com.janusplus.ShaderProgram
 import com.janusplus.TextureArray
 import com.janusplus.CompressedTextureArray
 import com.janusplus.ThumbnailAtlas
+import com.janusplus.VideoBlitThread
 import com.janusplus.VideoSurface
 import com.janusplus.JanusApi
 import javax.microedition.khronos.egl.EGLConfig
@@ -138,6 +139,7 @@ class App(val context: Context, private val assets: android.content.res.AssetMan
     val coverAtlas = ThumbnailAtlas().apply { layerIndex = TextureArray.LAYER_COVERS }
     val thumbAtlas = ThumbnailAtlas()
     val videoSurface = VideoSurface()
+    var blitThread: VideoBlitThread? = null
 
     val projMatrix = FloatArray(16)
     var width = 0f; private set
@@ -222,6 +224,25 @@ class App(val context: Context, private val assets: android.content.res.AssetMan
         thumbAtlas.invalidate()
 
         videoSurface.initGL()
+
+        // Start video blit thread with shared EGL context
+        blitThread?.stop()
+        val eglDisplay = android.opengl.EGL14.eglGetCurrentDisplay()
+        val eglContext = android.opengl.EGL14.eglGetCurrentContext()
+        val eglConfigs = arrayOfNulls<android.opengl.EGLConfig>(1)
+        val numConfigs = IntArray(1)
+        android.opengl.EGL14.eglChooseConfig(eglDisplay, intArrayOf(
+            android.opengl.EGL14.EGL_RENDERABLE_TYPE, 0x40,  // EGL_OPENGL_ES3_BIT_KHR
+            android.opengl.EGL14.EGL_RED_SIZE, 8, android.opengl.EGL14.EGL_GREEN_SIZE, 8,
+            android.opengl.EGL14.EGL_BLUE_SIZE, 8, android.opengl.EGL14.EGL_ALPHA_SIZE, 8,
+            android.opengl.EGL14.EGL_NONE
+        ), 0, eglConfigs, 0, 1, numConfigs, 0)
+        val eglConfig = eglConfigs[0]
+        if (eglConfig != null) {
+            blitThread = VideoBlitThread(videoSurface).also {
+                it.start(eglDisplay, eglConfig, eglContext)
+            }
+        }
 
         // Re-fetch covers since GPU textures are gone
         val api = api
