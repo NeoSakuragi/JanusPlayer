@@ -395,7 +395,7 @@ class SeriesState(private val item: JanusApi.LibraryItem) : GameState {
             }
         }
 
-        rc.text("${app.fps}fps", rc.dp(8f), rc.dp(16f), rc.sp(10), 0.4f, 0.8f, 0.4f)
+        rc.text("${app.fps}fps", rc.dp(8f), rc.dp(16f), rc.sp(10), 0.4f, 0.8f, 0.4f, volatile = true)
     }
 
     override fun cleanup(app: App) {

@@ -78,9 +78,10 @@ class RC(
             TextureArray.LAYER_UI.toFloat())
     }
 
-    fun text(s: String, x: Float, y: Float, size: Int, r: Float, g: Float, b: Float, a: Float = 1f) {
+    fun text(s: String, x: Float, y: Float, size: Int, r: Float, g: Float, b: Float, a: Float = 1f,
+             volatile: Boolean = false) {
         val st = screenText
-        if (st != null) {
+        if (st != null && !volatile) {
             st.drawText(s, x, y, size.toFloat(), typeface, r, g, b, a)
         } else {
             font.addText(batch, s, x, y, size, r, g, b, a)
@@ -353,6 +354,7 @@ class App(val context: Context, private val assets: android.content.res.AssetMan
             }
             isBackNavigation = false
             currentState.cleanup(this)
+            screenTextRenderer?.release()
             currentScreen = trans.first
             currentState = trans.second
             currentState.init(this)
@@ -400,8 +402,10 @@ class App(val context: Context, private val assets: android.content.res.AssetMan
         GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
         batch.begin()
 
-        screenTextRenderer?.beginFrame(width.toInt(), height.toInt())
-        val rc = RC(batch, font, texArray, coverAtlas, thumbAtlas, width, height, density, einkMode, screenTextRenderer, defaultTypeface)
+        // CPU text overlay only for non-player screens (player uses SubtitleBitmap for subs)
+        val str = if (currentScreen != Screen.PLAYER) screenTextRenderer else null
+        str?.beginFrame(width.toInt(), height.toInt())
+        val rc = RC(batch, font, texArray, coverAtlas, thumbAtlas, width, height, density, einkMode, str, defaultTypeface)
         currentState.draw(this, rc)
 
         val flushT0 = System.nanoTime()

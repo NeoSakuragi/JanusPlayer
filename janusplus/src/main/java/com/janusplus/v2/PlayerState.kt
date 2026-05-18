@@ -626,7 +626,7 @@ class PlayerState(
         val sz = rc.sp(10)
         val blitMs = app.blitThread?.lastBlitMs ?: 0f
         val timingStr = "${app.fps}fps  upd:${"%.1f".format(dbgUpdate)}  vid:${"%.1f".format(dbgVideo)}  blit:${"%.1f".format(blitMs)}  cue:${"%.1f".format(dbgCue)}  ctrl:${"%.1f".format(dbgControls)}"
-        rc.text(timingStr, rc.dp(8f), y0, sz, 0.4f, 0.8f, 0.4f)
+        rc.text(timingStr, rc.dp(8f), y0, sz, 0.4f, 0.8f, 0.4f, volatile = true)
 
         // Log every 60 frames
         dbgFrameCount++

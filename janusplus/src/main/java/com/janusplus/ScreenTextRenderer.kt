@@ -87,6 +87,7 @@ class ScreenTextRenderer {
     fun endFrame() {
         if (!dirty || bitmap == null) return
         if (frameHash != lastFrameHash) {
+            android.util.Log.d("STR", "Upload: hash=$frameHash w=${bitmap!!.width} h=${bitmap!!.height}")
             uploadTexture()
             lastFrameHash = frameHash
         }

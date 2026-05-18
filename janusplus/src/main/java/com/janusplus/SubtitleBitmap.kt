@@ -58,6 +58,7 @@ class SubtitleBitmap {
         if (text == lastText && textureId != 0) return
         lastText = text
         val t0 = System.nanoTime()
+        android.util.Log.d("SUB", "Render: ${text.take(20)}... w=$maxWidth")
 
         val textSize = params.textSizePx
         val furiSize = textSize * params.furiganaScale

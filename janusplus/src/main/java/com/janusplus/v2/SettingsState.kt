@@ -132,7 +132,7 @@ class SettingsState : GameState {
 
         rowCount = rowIdx
 
-        rc.text("${app.fps}fps", rc.dp(8f), rc.dp(16f), rc.sp(10), 0.4f, 0.8f, 0.4f)
+        rc.text("${app.fps}fps", rc.dp(8f), rc.dp(16f), rc.sp(10), 0.4f, 0.8f, 0.4f, volatile = true)
     }
 
     private fun drawSection(rc: RC, y: Float, title: String): Float {
