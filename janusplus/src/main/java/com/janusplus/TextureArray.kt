@@ -47,8 +47,13 @@ class TextureArray(val size: Int = 2048, val layerCount: Int = LAYER_THUMB_FIRST
 
     // Immediate GL upload — must be called on GL thread
     fun uploadLayerNow(layer: Int, bitmap: Bitmap) {
-        val src = if (bitmap.config != Bitmap.Config.ARGB_8888)
+        var src = if (bitmap.config != Bitmap.Config.ARGB_8888)
             bitmap.copy(Bitmap.Config.ARGB_8888, false).also { bitmap.recycle() } else bitmap
+        if (src.width > size || src.height > size) {
+            val scaled = Bitmap.createScaledBitmap(src, src.width.coerceAtMost(size), src.height.coerceAtMost(size), true)
+            src.recycle()
+            src = scaled
+        }
         val w = src.width; val h = src.height
         val buf = ByteBuffer.allocateDirect(w * h * 4).order(ByteOrder.nativeOrder())
         src.copyPixelsToBuffer(buf)
