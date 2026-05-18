@@ -18,9 +18,7 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
-        val isTV = packageManager.hasSystemFeature("android.software.leanback")
-        val density = if (isTV) 1.0f else resources.displayMetrics.density
-        app = App(this, assets, density)
+        app = App(this, assets, resources.displayMetrics.density)
 
         // ExoPlayer with aggressive buffering — start playback ASAP
         val loadControl = androidx.media3.exoplayer.DefaultLoadControl.Builder()
@@ -46,11 +44,12 @@ class MainActivity : AppCompatActivity() {
         setContentView(glView)
         glView.requestFocus()
 
-        // Force 60Hz refresh on Huawei (drops to 30Hz during video decode)
+        // Force highest resolution at 60Hz
         if (android.os.Build.VERSION.SDK_INT >= 30) {
             window.attributes = window.attributes.apply {
                 preferredDisplayModeId = display?.supportedModes
-                    ?.maxByOrNull { it.refreshRate }?.modeId ?: 0
+                    ?.filter { it.refreshRate >= 59f }
+                    ?.maxByOrNull { it.physicalWidth * it.physicalHeight }?.modeId ?: 0
             }
         } else {
             window.attributes = window.attributes.apply {
