@@ -10,11 +10,10 @@ import java.util.concurrent.ConcurrentLinkedQueue
 class TextureArray(val size: Int = 2048, val layerCount: Int = LAYER_THUMB_FIRST + LAYER_THUMB_COUNT) {
 
     companion object {
-        const val LAYER_FONT = 0
-        const val FONT_PAGE_COUNT = 4
-        const val LAYER_COVERS = LAYER_FONT + FONT_PAGE_COUNT   // 4
-        const val LAYER_BANNER = LAYER_COVERS + 1               // 5
-        const val LAYER_THUMB_FIRST = LAYER_BANNER + 1           // 6
+        const val LAYER_FONT = 0   // font is on its own texture array now
+        const val LAYER_COVERS = 0
+        const val LAYER_BANNER = 1
+        const val LAYER_THUMB_FIRST = 2
         const val LAYER_THUMB_COUNT = 3
     }
 

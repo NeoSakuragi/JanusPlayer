@@ -229,12 +229,10 @@ class App(val context: Context, private val assets: android.content.res.AssetMan
         val maxTexSize = IntArray(1); GLES30.glGetIntegerv(GLES30.GL_MAX_TEXTURE_SIZE, maxTexSize, 0)
         val maxLayers = IntArray(1); GLES30.glGetIntegerv(GLES30.GL_MAX_ARRAY_TEXTURE_LAYERS, maxLayers, 0)
         isTV = context.packageManager.hasSystemFeature("android.software.leanback")
-        // TV: 4096 but fewer layers (no thumbs) to fit in memory
-        val texSize = 4096
-        val layerCount = if (isTV) TextureArray.LAYER_THUMB_FIRST else TextureArray.LAYER_THUMB_FIRST + TextureArray.LAYER_THUMB_COUNT
-        android.util.Log.i("App", "GL max: ${maxTexSize[0]}, isTV: $isTV, layers: $layerCount")
-        android.util.Log.i("App", "GL max texture: ${maxTexSize[0]}, max layers: ${maxLayers[0]}, using: $texSize")
-        texArray = TextureArray(texSize, layerCount)
+        android.util.Log.i("App", "GL max: ${maxTexSize[0]}, isTV: $isTV")
+        android.util.Log.i("App", "GL max: ${maxTexSize[0]}, layers: ${maxLayers[0]}")
+        // UI array: covers + banner + thumbs at 2048 (5 layers × 16MB = 80MB)
+        texArray = TextureArray(2048, 5)
         texArray.initGL()
 
         font = FontAtlas(assets)
@@ -368,6 +366,9 @@ class App(val context: Context, private val assets: android.content.res.AssetMan
         GLES30.glActiveTexture(GLES30.GL_TEXTURE2)
         videoSurface.bindRgb()
         GLES30.glUniform1i(shader.uTexVideo, 2)
+        GLES30.glActiveTexture(GLES30.GL_TEXTURE3)
+        font.fontTexArray?.bind()
+        GLES30.glUniform1i(shader.uTexFont, 3)
         GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
         batch.begin()
 

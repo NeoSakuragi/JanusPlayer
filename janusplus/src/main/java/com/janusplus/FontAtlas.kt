@@ -30,9 +30,12 @@ class FontAtlas(private val assets: AssetManager) {
 
     private val EMPTY = GlyphMetrics(0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f, 0)
 
-    fun initGL(texArr: TextureArray) {
-        texArray = texArr
-        atlasSize = texArr.size
+    var fontTexArray: TextureArray? = null
+
+    fun initGL(uiTexArr: TextureArray) {
+        texArray = uiTexArr
+        atlasSize = 4096
+        baseLayer = 0
 
         val name = "noto_sans_$bakedSize"
         try {
@@ -47,7 +50,7 @@ class FontAtlas(private val assets: AssetManager) {
                 val page = buf.int
                 val u0 = buf.float; val v0 = buf.float; val u1 = buf.float; val v1 = buf.float
                 val w = buf.float; val h = buf.float; val advance = buf.float; val ascent = buf.float
-                cache[GlyphKey(cp, bakedSize)] = GlyphMetrics(u0, v0, u1, v1, w, h, advance, ascent, baseLayer + page)
+                cache[GlyphKey(cp, bakedSize)] = GlyphMetrics(u0, v0, u1, v1, w, h, advance, ascent, 100 + page)
             }
 
             var maxAsc = 0f; var maxDesc = 0f
@@ -58,19 +61,25 @@ class FontAtlas(private val assets: AssetManager) {
             }
             bakedAscent = maxAsc; bakedDescent = maxDesc
 
-            val opts = BitmapFactory.Options()
-            if (texArr.size < 4096) opts.inSampleSize = 4096 / texArr.size
+            // Font gets its own 4096 texture array (separate from UI array)
+            fontTexArray = TextureArray(4096, pageCount)
+            fontTexArray!!.initGL()
+
             for (p in 0 until pageCount) {
                 val pngStream = assets.open("baked_fonts/${name}_p$p.png")
-                val bmp = BitmapFactory.decodeStream(pngStream, null, opts)!!
+                val bmp = BitmapFactory.decodeStream(pngStream)!!
                 pngStream.close()
                 Log.i("FontAtlas", "Page $p: ${bmp.width}x${bmp.height} (${bmp.byteCount / 1024}KB)")
-                texArr.uploadLayerNow(baseLayer + p, bmp)
+                fontTexArray!!.uploadLayerNow(p, bmp)
             }
-            atlasSize = texArr.size
+            atlasSize = 4096
 
-            whiteU = 1f / atlasSize
-            whiteV = 1f / atlasSize
+            whiteU = 1f / 4096f
+            whiteV = 1f / 4096f
+            // Also put white pixel on the UI texture for solid quads
+            val whiteBmp = android.graphics.Bitmap.createBitmap(4, 4, android.graphics.Bitmap.Config.ARGB_8888)
+            whiteBmp.eraseColor(android.graphics.Color.WHITE)
+            uiTexArr.uploadLayerNow(0, whiteBmp)
 
             Log.i("FontAtlas", "Loaded $glyphCount glyphs at ${bakedSize}px across $pageCount pages")
         } catch (e: Exception) {
