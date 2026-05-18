@@ -94,6 +94,28 @@
                 <TextView android:id="@+id/tvDownloadsStatus" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Manage offline episodes" android:textColor="#888888" android:textSize="13sp" android:layout_marginTop="2dp" />
             </LinearLayout>
 
+            <!-- AnkiWeb section -->
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:id="@+id/sectionAnkiWeb"
+                android:text="ANKIWEB"
+                android:textColor="#7986CB"
+                android:textSize="12sp"
+                android:textStyle="bold"
+                android:layout_marginBottom="8dp"
+                android:layout_marginTop="24dp" />
+
+            <LinearLayout android:id="@+id/settingAnkiLogin" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:padding="12dp" android:background="@drawable/focus_highlight" android:focusable="true" android:clickable="true">
+                <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="AnkiWeb Account" android:textColor="#EEEEEE" android:textSize="15sp" />
+                <TextView android:id="@+id/tvAnkiLoginStatus" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Not connected" android:textColor="#888888" android:textSize="13sp" android:layout_marginTop="2dp" />
+            </LinearLayout>
+
+            <LinearLayout android:id="@+id/settingAnkiSync" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:padding="12dp" android:background="@drawable/focus_highlight" android:focusable="true" android:clickable="true">
+                <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Sync to AnkiWeb" android:textColor="#EEEEEE" android:textSize="15sp" />
+                <TextView android:id="@+id/tvAnkiSyncStatus" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="No pending cards" android:textColor="#888888" android:textSize="13sp" android:layout_marginTop="2dp" />
+            </LinearLayout>
+
             <!-- Playback section -->
             <TextView
                 android:layout_width="match_parent"

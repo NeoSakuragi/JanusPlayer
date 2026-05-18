@@ -2,7 +2,6 @@ package com.janusplus
 
 import android.content.res.AssetManager
 import android.graphics.BitmapFactory
-import android.opengl.GLES30
 import android.util.Log
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -11,23 +10,25 @@ class FontAtlas(private val assets: AssetManager) {
 
     data class GlyphKey(val codePoint: Int, val sizePx: Int)
     data class GlyphMetrics(val u0: Float, val v0: Float, val u1: Float, val v1: Float,
-                            val w: Float, val h: Float, val advance: Float, val ascent: Float)
+                            val w: Float, val h: Float, val advance: Float, val ascent: Float,
+                            val layer: Int)
 
-    private val cache = HashMap<GlyphKey, GlyphMetrics>(16384)
+    private val cache = HashMap<GlyphKey, GlyphMetrics>(24000)
     private val bakedCache = HashMap<Long, BakedText>(256)
     data class BakedText(val floats: FloatArray, val quadCount: Int, val width: Float)
 
     var atlasSize = 4096
     var texArray: TextureArray? = null
-    val layer = TextureArray.LAYER_FONT
-    private var bakedSize = 24
+    var baseLayer = TextureArray.LAYER_FONT
+    var pageCount = 0
+    private var bakedSize = 48
     private var bakedAscent = 0f
     private var bakedDescent = 0f
 
     var whiteU = 0f; private set
     var whiteV = 0f; private set
 
-    private val EMPTY = GlyphMetrics(0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f)
+    private val EMPTY = GlyphMetrics(0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f, 0)
 
     fun initGL(texArr: TextureArray) {
         texArray = texArr
@@ -35,20 +36,20 @@ class FontAtlas(private val assets: AssetManager) {
 
         val name = "noto_sans_$bakedSize"
         try {
-            // Load metrics
             val binStream = assets.open("baked_fonts/$name.bin")
             val bytes = binStream.readBytes()
             binStream.close()
             val buf = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
-            val count = buf.int
-            for (i in 0 until count) {
+            pageCount = buf.int
+            val glyphCount = buf.int
+            for (i in 0 until glyphCount) {
                 val cp = buf.int
+                val page = buf.int
                 val u0 = buf.float; val v0 = buf.float; val u1 = buf.float; val v1 = buf.float
                 val w = buf.float; val h = buf.float; val advance = buf.float; val ascent = buf.float
-                cache[GlyphKey(cp, bakedSize)] = GlyphMetrics(u0, v0, u1, v1, w, h, advance, ascent)
+                cache[GlyphKey(cp, bakedSize)] = GlyphMetrics(u0, v0, u1, v1, w, h, advance, ascent, baseLayer + page)
             }
 
-            // Line metrics: use max ascent and max descent across all glyphs
             var maxAsc = 0f; var maxDesc = 0f
             for ((_, m) in cache) {
                 if (m.ascent > maxAsc) maxAsc = m.ascent
@@ -57,23 +58,23 @@ class FontAtlas(private val assets: AssetManager) {
             }
             bakedAscent = maxAsc; bakedDescent = maxDesc
 
-            // Load atlas PNG
-            val pngStream = assets.open("baked_fonts/$name.png")
-            val bmp = BitmapFactory.decodeStream(pngStream)
-            pngStream.close()
-            texArr.uploadLayer(layer, bmp)
+            for (p in 0 until pageCount) {
+                val pngStream = assets.open("baked_fonts/${name}_p$p.png")
+                val bmp = BitmapFactory.decodeStream(pngStream)
+                pngStream.close()
+                texArr.uploadLayer(baseLayer + p, bmp)
+            }
 
             whiteU = 1f / atlasSize
             whiteV = 1f / atlasSize
 
-            Log.i("FontAtlas", "Loaded $count baked glyphs at ${bakedSize}px")
+            Log.i("FontAtlas", "Loaded $glyphCount glyphs at ${bakedSize}px across $pageCount pages")
         } catch (e: Exception) {
             Log.e("FontAtlas", "Failed: ${e.message}")
             whiteU = 0f; whiteV = 0f
         }
     }
 
-    // No-ops — everything is baked
     fun ensureGlyphs(text: String, sizePx: Int) {}
     fun uploadDirtyGlyphs() {}
 
@@ -94,6 +95,11 @@ class FontAtlas(private val assets: AssetManager) {
         return (bakedAscent + bakedDescent) * scale
     }
 
+    fun textAscent(sizePx: Int): Float {
+        val scale = sizePx.toFloat() / bakedSize
+        return bakedAscent * scale
+    }
+
     fun addText(batch: QuadBatch, text: String, x: Float, y: Float, sizePx: Int,
                 r: Float, g: Float, b: Float, a: Float = 1f) {
         val scale = sizePx.toFloat() / bakedSize
@@ -105,12 +111,12 @@ class FontAtlas(private val assets: AssetManager) {
         }
         val cps = text.toCodePoints()
         val fpv = 9; val fpq = fpv * 4
-        val L = layer.toFloat()
         val floats = FloatArray(cps.size * fpq)
         var cx = 0f; var count = 0
         for (cp in cps) {
             val m = getGlyph(cp) ?: continue
             val sw = m.w * scale; val sh = m.h * scale; val sa = m.ascent * scale
+            val L = m.layer.toFloat()
             val off = count * fpq
             fun v(b: Int, vx: Float, vy: Float, vu: Float, vv: Float) {
                 floats[b]=vx; floats[b+1]=vy; floats[b+2]=vu; floats[b+3]=vv; floats[b+4]=L
@@ -136,18 +142,20 @@ class FontAtlas(private val assets: AssetManager) {
         }
         val ellipsisAdv = (getGlyph('…'.code)?.advance ?: 0f) * scale
         val cps = text.toCodePoints()
-        val fpv = 9; val fpq = fpv * 4; val L = layer.toFloat()
+        val fpv = 9; val fpq = fpv * 4
         val floats = FloatArray((cps.size + 1) * fpq)
         var cx = 0f; var count = 0
         for ((i, cp) in cps.withIndex()) {
             val m = getGlyph(cp) ?: continue
             val adv = m.advance * scale
+            val L = m.layer.toFloat()
             if (cps.size - i > 1 && cx + adv + ellipsisAdv > maxWidth) {
                 val em = getGlyph('…'.code)
                 if (em != null) {
                     val off = count * fpq; val sw = em.w*scale; val sh = em.h*scale; val sa = em.ascent*scale
+                    val eL = em.layer.toFloat()
                     fun v(b: Int, vx: Float, vy: Float, vu: Float, vv: Float) {
-                        floats[b]=vx; floats[b+1]=vy; floats[b+2]=vu; floats[b+3]=vv; floats[b+4]=L
+                        floats[b]=vx; floats[b+1]=vy; floats[b+2]=vu; floats[b+3]=vv; floats[b+4]=eL
                         floats[b+5]=1f; floats[b+6]=1f; floats[b+7]=1f; floats[b+8]=1f
                     }
                     v(off, cx, -sa, em.u0, em.v0); v(off+fpv, cx+sw, -sa, em.u1, em.v0)
@@ -184,7 +192,7 @@ class FontAtlas(private val assets: AssetManager) {
             for (e in cached.first) {
                 val sw = e.m.w * scale; val sh = e.m.h * scale; val sa = e.m.ascent * scale
                 batch.addQuad(x + e.dx, y + e.dy - sa, sw, sh,
-                    e.m.u0, e.m.v0, e.m.u1, e.m.v1, r, g, b, a, layer = layer.toFloat())
+                    e.m.u0, e.m.v0, e.m.u1, e.m.v1, r, g, b, a, layer = e.m.layer.toFloat())
             }
             return y + cached.second
         }
@@ -210,7 +218,7 @@ class FontAtlas(private val assets: AssetManager) {
         for (e in entries) {
             val sw = e.m.w * scale; val sh = e.m.h * scale; val sa = e.m.ascent * scale
             batch.addQuad(x + e.dx, y + e.dy - sa, sw, sh,
-                e.m.u0, e.m.v0, e.m.u1, e.m.v1, r, g, b, a, layer = layer.toFloat())
+                e.m.u0, e.m.v0, e.m.u1, e.m.v1, r, g, b, a, layer = e.m.layer.toFloat())
         }
         return y + totalH
     }

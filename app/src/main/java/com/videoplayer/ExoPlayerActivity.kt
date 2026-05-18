@@ -239,6 +239,10 @@ class ExoPlayerActivity : ComponentActivity() {
     private var superSRT: JanusApi.SuperSRT? = null
     private var superCues = listOf<JanusApi.SuperCue>()
 
+    // Anki mining
+    private lateinit var ankiSync: AnkiSyncManager
+    private val minedToast = mutableStateOf<String?>(null)
+
     // Dictionary
     private val dictTerm = mutableStateOf("")
     private val dictReading = mutableStateOf("")
@@ -277,6 +281,7 @@ class ExoPlayerActivity : ComponentActivity() {
         enterFullscreen()
 
         loadReadingMode()
+        ankiSync = AnkiSyncManager(this)
         val appSettings = AppSettings(this)
         val savedSizeIdx = FONT_SIZES.indexOf(appSettings.fontSize)
         if (savedSizeIdx >= 0) fontSizeIdx.intValue = savedSizeIdx
@@ -573,6 +578,7 @@ class ExoPlayerActivity : ComponentActivity() {
         }
 
         var subTopY by remember { mutableStateOf(0f) }
+        var dictPopupRect by remember { mutableStateOf<androidx.compose.ui.geometry.Rect?>(null) }
 
         Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
             // ExoPlayer surface
@@ -626,7 +632,10 @@ class ExoPlayerActivity : ComponentActivity() {
                                             }
                                         }
                                         Screen.WORD_NAV -> {
-                                            if (tapOnSub) {
+                                            val inPopup = dictPopupRect?.contains(offset) == true
+                                            if (inPopup) {
+                                                // tap inside dictionary popup — ignore
+                                            } else if (tapOnSub) {
                                                 onSubtitleTapAt(offset)
                                             } else {
                                                 clearDict(); player.play(); goto(Screen.PLAYING)
@@ -667,6 +676,25 @@ class ExoPlayerActivity : ComponentActivity() {
                         fontSize = 22.sp,
                         fontWeight = FontWeight.Bold
                     )
+                }
+                val mined by minedToast
+                AnimatedVisibility(
+                    visible = mined != null,
+                    enter = fadeIn(tween(100)),
+                    exit = fadeOut(tween(400))
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .background(Color(0xCC1B5E20), RoundedCornerShape(12.dp))
+                            .padding(horizontal = 24.dp, vertical = 12.dp)
+                    ) {
+                        androidx.compose.material3.Text(
+                            mined ?: "",
+                            color = Color(0xFF81C784),
+                            fontSize = 20.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
                 }
             }
 
@@ -831,6 +859,13 @@ class ExoPlayerActivity : ComponentActivity() {
                     modifier = Modifier
                         .background(Color(0xEE1E1E2E), RoundedCornerShape(10.dp))
                         .padding(16.dp)
+                        .onGloballyPositioned { coords ->
+                            val pos = coords.positionInRoot()
+                            val size = coords.size
+                            dictPopupRect = androidx.compose.ui.geometry.Rect(
+                                pos.x, pos.y, pos.x + size.width, pos.y + size.height
+                            )
+                        }
                 ) {
                     // Reading
                     if (dReadV.isNotEmpty()) {
@@ -864,6 +899,18 @@ class ExoPlayerActivity : ComponentActivity() {
                     // Meanings
                     dMeanV.forEachIndexed { i, m ->
                         androidx.compose.material3.Text("${i + 1}. $m", color = Color(0xFFCCCCCC), fontSize = 14.sp, lineHeight = 18.sp)
+                    }
+                    // Mine button (touch)
+                    if (hasTouchScreen) {
+                        Spacer(Modifier.height(10.dp))
+                        Box(
+                            modifier = Modifier
+                                .background(Color(0xFF1B5E20), RoundedCornerShape(6.dp))
+                                .clickable { mineCurrentWord() }
+                                .padding(horizontal = 16.dp, vertical = 6.dp)
+                        ) {
+                            androidx.compose.material3.Text("Mine", color = Color(0xFF81C784), fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                        }
                     }
                 }
             }
@@ -1137,7 +1184,9 @@ class ExoPlayerActivity : ComponentActivity() {
                 Box(Modifier.fillMaxSize().background(Color(0x44000000)).clickable { goto(Screen.CONTROLS, CTRL_SETTINGS) }) {
                     Column(
                         Modifier.align(Alignment.CenterEnd).widthIn(min = 200.dp, max = dimens.listPanelWidth).fillMaxHeight()
-                            .background(Color(0xFF1A1A2E)).padding(vertical = 12.dp)
+                            .background(Color(0xFF1A1A2E))
+                            .clickable { /* consume taps on panel — don't dismiss */ }
+                            .padding(vertical = 12.dp)
                     ) {
                         androidx.compose.material3.Text(
                             Lang.s("settings"), color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold,
@@ -1433,7 +1482,7 @@ class ExoPlayerActivity : ComponentActivity() {
                     KeyEvent.KEYCODE_DPAD_RIGHT -> {
                         if (ci < wordSpans.size - 1) { cursorIdx.intValue = ci + 1; updateWordAtCursor() }
                     }
-                    KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> {}
+                    KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> { mineCurrentWord() }
                     else -> return false
                 }
             }
@@ -1662,6 +1711,81 @@ class ExoPlayerActivity : ComponentActivity() {
         dictVisible.value = false
     }
 
+    // ── Anki Mining ──────────────────────────────────────────────────
+
+    private fun mineCurrentWord() {
+        val term = dictTerm.value
+        if (term.isEmpty() || !dictVisible.value) return
+
+        val sentence = currentSubText.value ?: ""
+        val cue = currentSuperCue
+        val source = buildString {
+            append(intent.getStringExtra(EXTRA_TITLE) ?: "")
+            val ep = intent.getIntExtra(EXTRA_EPISODE_NUM, 0)
+            if (ep > 0) append(" EP$ep")
+            if (cue != null) {
+                val min = (cue.startMs / 60000).toInt()
+                val sec = ((cue.startMs % 60000) / 1000).toInt()
+                append(" ${min}:${"%02d".format(sec)}")
+            }
+        }
+
+        // Build furigana sentence from SuperSRT data
+        val sentenceFurigana = cue?.words?.joinToString("") { w ->
+            if (w.reading.isNotEmpty() && w.reading != w.surface && w.surface.any { it.code > 0x3000 })
+                "<ruby>${w.surface}<rt>${w.reading}</rt></ruby>"
+            else w.surface
+        } ?: sentence
+
+        // Screenshot capture (from current video frame)
+        var screenshotFile: java.io.File? = null
+        try {
+            val view = window.decorView.rootView
+            view.isDrawingCacheEnabled = true
+            val bitmap = android.graphics.Bitmap.createBitmap(view.drawingCache)
+            view.isDrawingCacheEnabled = false
+            val f = java.io.File(cacheDir, "anki_mine_${System.currentTimeMillis()}.jpg")
+            java.io.FileOutputStream(f).use { out ->
+                bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 85, out)
+            }
+            bitmap.recycle()
+            screenshotFile = f
+        } catch (e: Exception) {
+            Log.w(TAG, "Screenshot failed: ${e.message}")
+        }
+
+        // Audio extract (subtitle timing window)
+        var audioFile: java.io.File? = null
+        if (cue != null) {
+            try {
+                val videoUrl = intent.getStringExtra(EXTRA_VIDEO_URL) ?: ""
+                val capture = MediaCapture(this)
+                val padBefore = 0.3
+                val padAfter = 0.3
+                val startSec = maxOf(0.0, cue.startMs / 1000.0 - padBefore)
+                val endSec = cue.endMs / 1000.0 + padAfter
+                audioFile = capture.extractAudio(videoUrl, startSec, endSec)
+            } catch (e: Exception) {
+                Log.w(TAG, "Audio extract failed: ${e.message}")
+            }
+        }
+
+        val card = AnkiSyncManager.PendingCard(
+            word = term,
+            reading = dictReading.value,
+            meaning = dictMeanings.value.joinToString("; "),
+            sentence = sentence,
+            sentenceFurigana = sentenceFurigana,
+            source = source,
+            screenshotFile = screenshotFile,
+            audioFile = audioFile
+        )
+        ankiSync.queueCard(card)
+
+        val count = ankiSync.pendingCount()
+        minedToast.value = "⛏ $term ($count)"
+        handler.postDelayed({ minedToast.value = null }, 1500)
+    }
 
     // ── Track Selection ──────────────────────────────────────────────
 

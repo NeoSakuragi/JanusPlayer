@@ -22,7 +22,7 @@ class PlayerState(
 ) : GameState {
 
     // ── Player sub-states ──
-    enum class Mode { PLAYING, CONTROLS, WORD_NAV, SETTINGS }
+    enum class Mode { PLAYING, PAUSED, SETTINGS }
     enum class ReadingMode { PRO, ADVANCED, INTERMEDIATE, NOVICE }
 
     @Volatile var mode = Mode.PLAYING
@@ -65,7 +65,6 @@ class PlayerState(
 
     // Controls
     private var controlsTimer = 0f
-    private val CONTROLS_TIMEOUT = 5f
 
     // Double-tap detection
     private var lastTapTime = 0L
@@ -80,6 +79,9 @@ class PlayerState(
     private var seekbarRect = floatArrayOf(0f, 0f, 0f, 0f)
     private var prevCueRect = floatArrayOf(0f, 0f, 0f, 0f)
     private var nextCueRect = floatArrayOf(0f, 0f, 0f, 0f)
+    private var dictPopupRect = floatArrayOf(0f, 0f, 0f, 0f)
+    private var dictPopupVisible = false
+    private var subtitleRect = floatArrayOf(0f, 0f, 0f, 0f)
     private var prevCueVisible = false
     private var nextCueVisible = false
 
@@ -102,7 +104,15 @@ class PlayerState(
 
     data class SettingsRow(val label: String, val value: String, val icon: String,
                            val indent: Boolean = false, val selected: Boolean = false,
+                           val isSlider: Boolean = false,
+                           val sliderRange: Pair<Float, Float> = 0f to 1f,
+                           val sliderValue: Float = 0f,
+                           val onSlide: ((Float) -> Unit)? = null,
                            val action: () -> Unit = {})
+    private var settingsRowRects = listOf<FloatArray>()
+    private var settingsSliderRects = mutableMapOf<Int, FloatArray>()
+    private var settingsPanelX = 0f
+    private var draggingSliderIdx = -1
 
     // Condensed mode
     var condensedMode = false
@@ -195,33 +205,27 @@ class PlayerState(
             firstFrameReceived = true
         }
 
-        // Find current cue (SuperSRT takes priority)
-        val pos = positionMs
-        if (superCues.isNotEmpty()) {
-            val sCue = superCues.firstOrNull { pos >= it.startMs && pos < it.endMs }
-            if (sCue !== currentSuperCue) {
-                currentSuperCue = sCue
-                if (sCue != null) {
-                    buildWordSpans(sCue)
-                } else {
-                    currentCueText = ""
+        // Find current cue — only while playing (don't wipe selection while paused)
+        if (mode == Mode.PLAYING) {
+            val pos = positionMs
+            if (superCues.isNotEmpty()) {
+                val sCue = superCues.firstOrNull { pos >= it.startMs && pos < it.endMs }
+                if (sCue !== currentSuperCue) {
+                    currentSuperCue = sCue
+                    if (sCue != null) {
+                        buildWordSpans(sCue)
+                    } else {
+                        currentCueText = ""
+                        wordSpans = emptyList()
+                    }
+                }
+            } else {
+                val cue = cues.firstOrNull { pos >= it.startMs && pos <= it.endMs }
+                if (cue !== currentCue) {
+                    currentCue = cue
+                    currentCueText = cue?.text ?: ""
                     wordSpans = emptyList()
                 }
-            }
-        } else {
-            val cue = cues.firstOrNull { pos >= it.startMs && pos <= it.endMs }
-            if (cue !== currentCue) {
-                currentCue = cue
-                currentCueText = cue?.text ?: ""
-                wordSpans = emptyList()
-            }
-        }
-
-        // Controls auto-hide
-        if (mode == Mode.CONTROLS) {
-            controlsTimer += 0.016f
-            if (controlsTimer > CONTROLS_TIMEOUT && isPlaying) {
-                mode = Mode.PLAYING
             }
         }
 
@@ -229,19 +233,33 @@ class PlayerState(
         for (t in touches) {
             when (t.action) {
                 0 -> { // ACTION_DOWN
-                    if ((mode == Mode.CONTROLS || mode == Mode.WORD_NAV) && aabbHit(t.x, t.y, seekbarRect)) {
+                    if (mode == Mode.PAUSED && aabbHit(t.x, t.y, seekbarRect)) {
                         isDraggingSeekbar = true
                         val progress = ((t.x - seekbarRect[0]) / seekbarRect[2]).coerceIn(0f, 1f)
                         seekTo((durationMs * progress).toLong().coerceIn(0, durationMs))
                     } else if (mode == Mode.SETTINGS) {
-                        settingsDragY = t.y
-                        settingsDragging = false
+                        // Check slider hit first
+                        draggingSliderIdx = -1
+                        for ((idx, rect) in settingsSliderRects) {
+                            if (aabbHit(t.x, t.y, rect)) {
+                                draggingSliderIdx = idx
+                                applySliderDrag(idx, t.x, rect)
+                                break
+                            }
+                        }
+                        if (draggingSliderIdx < 0) {
+                            settingsDragY = t.y
+                            settingsDragging = false
+                        }
                     }
                 }
                 2 -> { // ACTION_MOVE
                     if (isDraggingSeekbar && screenW > 0) {
                         val progress = ((t.x - pad) / (screenW - pad * 2)).coerceIn(0f, 1f)
                         positionMs = (durationMs * progress).toLong().coerceIn(0, durationMs)
+                    } else if (draggingSliderIdx >= 0) {
+                        val rect = settingsSliderRects[draggingSliderIdx]
+                        if (rect != null) applySliderDrag(draggingSliderIdx, t.x, rect)
                     } else if (mode == Mode.SETTINGS) {
                         val dy = settingsDragY - t.y
                         if (!settingsDragging && Math.abs(dy) > 8f) settingsDragging = true
@@ -256,8 +274,9 @@ class PlayerState(
                         isDraggingSeekbar = false
                         val progress = ((t.x - pad) / (screenW - pad * 2)).coerceIn(0f, 1f)
                         seekTo((durationMs * progress).toLong().coerceIn(0, durationMs))
-                        mode = Mode.PLAYING
-                        play()
+                    } else if (draggingSliderIdx >= 0) {
+                        draggingSliderIdx = -1
+                        buildSettingsRows()
                     } else if (settingsDragging) {
                         settingsDragging = false
                     } else {
@@ -294,74 +313,58 @@ class PlayerState(
         when (keyCode) {
             android.view.KeyEvent.KEYCODE_DPAD_CENTER, android.view.KeyEvent.KEYCODE_ENTER -> {
                 when (mode) {
-                    Mode.PLAYING -> { mode = Mode.CONTROLS; controlsTimer = 0f; pause() }
-                    Mode.CONTROLS -> { mode = Mode.PLAYING; play() }
-                    Mode.WORD_NAV -> { /* mine word — future Anki integration */ }
+                    Mode.PLAYING -> { pause(); enterPaused() }
+                    Mode.PAUSED -> { hlStart = -1; hlEnd = -1; mode = Mode.PLAYING; play() }
                     Mode.SETTINGS -> { handleSettingsSelect() }
                 }
             }
             android.view.KeyEvent.KEYCODE_DPAD_LEFT -> {
                 when (mode) {
                     Mode.PLAYING -> { SrtParser.prevCueBefore(cues, positionMs)?.let { seekTo(it.startMs) } }
-                    Mode.CONTROLS -> seekRelative(-10000)
-                    Mode.WORD_NAV -> { moveCursor(-1) }
+                    Mode.PAUSED -> { moveCursor(-1) }
                     Mode.SETTINGS -> { handleSettingsLeft() }
                 }
             }
             android.view.KeyEvent.KEYCODE_DPAD_RIGHT -> {
                 when (mode) {
                     Mode.PLAYING -> { SrtParser.nextCueAfter(cues, positionMs)?.let { seekTo(it.startMs) } }
-                    Mode.CONTROLS -> seekRelative(10000)
-                    Mode.WORD_NAV -> { moveCursor(1) }
+                    Mode.PAUSED -> { moveCursor(1) }
                     Mode.SETTINGS -> { handleSettingsRight() }
                 }
             }
             android.view.KeyEvent.KEYCODE_DPAD_UP -> {
                 when (mode) {
-                    Mode.PLAYING -> { mode = Mode.CONTROLS; controlsTimer = 0f; pause() }
-                    Mode.CONTROLS -> {
-                        if (currentCueText.isNotEmpty() && wordSpans.isNotEmpty()) {
-                            enterWordNav()
-                        }
-                    }
-                    Mode.WORD_NAV -> { mode = Mode.CONTROLS; controlsTimer = 0f }
+                    Mode.PLAYING -> { pause(); enterPaused() }
+                    Mode.PAUSED -> { /* nothing above words */ }
                     Mode.SETTINGS -> { settingsFocus = (settingsFocus - 1).coerceAtLeast(0) }
                 }
             }
             android.view.KeyEvent.KEYCODE_DPAD_DOWN -> {
                 when (mode) {
-                    Mode.PLAYING -> {
-                        pause()
-                        if (currentCueText.isNotEmpty() && wordSpans.isNotEmpty()) {
-                            enterWordNav()
-                        } else {
-                            mode = Mode.CONTROLS; controlsTimer = 0f
-                        }
-                    }
-                    Mode.CONTROLS -> { mode = Mode.PLAYING; play() }
-                    Mode.WORD_NAV -> { mode = Mode.CONTROLS; controlsTimer = 0f }
+                    Mode.PLAYING -> { pause(); enterPaused() }
+                    Mode.PAUSED -> { hlStart = -1; hlEnd = -1; mode = Mode.PLAYING; play() }
                     Mode.SETTINGS -> { settingsFocus = (settingsFocus + 1).coerceAtMost((settingsRows.size - 1).coerceAtLeast(0)) }
                 }
             }
             android.view.KeyEvent.KEYCODE_BACK -> {
                 when (mode) {
-                    Mode.SETTINGS -> { mode = Mode.CONTROLS; controlsTimer = 0f }
-                    Mode.WORD_NAV -> { mode = Mode.CONTROLS; controlsTimer = 0f; hlStart = -1; hlEnd = -1 }
+                    Mode.SETTINGS -> { mode = Mode.PAUSED }
+                    Mode.PAUSED -> { hlStart = -1; hlEnd = -1; mode = Mode.PLAYING; play() }
                     else -> {}
                 }
             }
-            // 'S' key opens settings from controls
             android.view.KeyEvent.KEYCODE_S -> {
-                if (mode == Mode.CONTROLS) openSettings()
+                if (mode == Mode.PAUSED) openSettings()
             }
         }
     }
 
-    private fun enterWordNav() {
-        if (wordSpans.isEmpty()) return
-        mode = Mode.WORD_NAV
-        cursorIdx = 0
-        updateHighlight()
+    private fun enterPaused() {
+        mode = Mode.PAUSED
+        if (wordSpans.isNotEmpty()) {
+            cursorIdx = 0
+            updateHighlight()
+        }
     }
 
     private fun moveCursor(delta: Int) {
@@ -379,64 +382,68 @@ class PlayerState(
     private fun aabbHit(x: Float, y: Float, r: FloatArray): Boolean =
         x >= r[0] && y >= r[1] && x <= r[0] + r[2] && y <= r[1] + r[3]
 
+    private fun nearestWordSpan(x: Float, y: Float): Int {
+        if (charBoxes.isEmpty() || wordSpans.isEmpty()) return -1
+        var bestDist = Float.MAX_VALUE
+        var bestCharIdx = -1
+        for (box in charBoxes) {
+            val cx = box.x + box.w / 2f
+            val cy = box.y + box.h / 2f
+            val dist = (x - cx) * (x - cx) + (y - cy) * (y - cy)
+            if (dist < bestDist) { bestDist = dist; bestCharIdx = box.charIdx }
+        }
+        if (bestCharIdx < 0) return -1
+        return wordSpans.indexOfFirst { bestCharIdx >= it.start && bestCharIdx < it.end }
+    }
+
     private fun handleTap(app: App, x: Float, y: Float) {
-        // Priority 1: Settings panel — tap outside to close + resume
-        if (mode == Mode.SETTINGS) {
-            val panelX = screenW - screenW * 0.35f
-            if (x < panelX) { mode = Mode.PLAYING; settingsScrollY = 0f; play() }
-            return
-        }
+        when (mode) {
+            Mode.PAUSED -> {
+                // 1. Dict popup — consume
+                if (dictPopupVisible && aabbHit(x, y, dictPopupRect)) return
+                // 2. Back button
+                if (aabbHit(x, y, backBtnRect)) { cleanup(app); app.goBack(); return }
+                // 3. Settings button
+                if (aabbHit(x, y, settingsBtnRect)) { openSettings(); return }
+                // 4. Seekbar
+                if (aabbHit(x, y, seekbarRect)) {
+                    val progress = ((x - seekbarRect[0]) / seekbarRect[2]).coerceIn(0f, 1f)
+                    seekTo((durationMs * progress).toLong().coerceIn(0, durationMs))
+                    return
+                }
+                // 5. Subtitle area — select nearest word
+                if (aabbHit(x, y, subtitleRect)) {
+                    val spanIdx = nearestWordSpan(x, y)
+                    if (spanIdx >= 0) { cursorIdx = spanIdx; updateHighlight() }
+                    return
+                }
+                // 6. Tap outside everything — resume
+                hlStart = -1; hlEnd = -1; mode = Mode.PLAYING; play()
+            }
 
-        // Priority 2: Controls buttons (only when controls visible)
-        if (mode == Mode.CONTROLS || mode == Mode.WORD_NAV) {
-            // Back button
-            if (aabbHit(x, y, backBtnRect)) { cleanup(app); app.goBack(); return }
-            // Settings button
-            if (aabbHit(x, y, settingsBtnRect)) { openSettings(); return }
-            // Seekbar
-            if (aabbHit(x, y, seekbarRect)) {
-                val progress = ((x - seekbarRect[0]) / seekbarRect[2]).coerceIn(0f, 1f)
-                seekTo((durationMs * progress).toLong().coerceIn(0, durationMs))
-                controlsTimer = 0f
-                return
-            }
-            // Prev/next cue buttons
-            if (prevCueVisible && aabbHit(x, y, prevCueRect)) {
-                SrtParser.prevCueBefore(cues, positionMs)?.let { seekTo(it.startMs) }; return
-            }
-            if (nextCueVisible && aabbHit(x, y, nextCueRect)) {
-                SrtParser.nextCueAfter(cues, positionMs)?.let { seekTo(it.startMs) }; return
-            }
-        }
-
-        // Priority 3: Subtitle character tap → word nav
-        if (charBoxes.isNotEmpty()) {
-            for (box in charBoxes) {
-                if (x >= box.x && x <= box.x + box.w && y >= box.y && y <= box.y + box.h) {
-                    val spanIdx = wordSpans.indexOfFirst { box.charIdx >= it.start && box.charIdx < it.end }
-                    if (spanIdx >= 0) {
-                        if (mode != Mode.WORD_NAV) pause()
-                        mode = Mode.WORD_NAV; cursorIdx = spanIdx; updateHighlight()
+            Mode.SETTINGS -> {
+                if (x < settingsPanelX) { mode = Mode.PAUSED; settingsScrollY = 0f; return }
+                for ((idx, rect) in settingsRowRects.withIndex()) {
+                    if (aabbHit(x, y, rect)) {
+                        settingsFocus = idx
+                        settingsRows.getOrNull(idx)?.action?.invoke()
+                        buildSettingsRows()
                         return
                     }
                 }
             }
-        }
 
-        // Priority 4: Double-tap seek
-        val now = System.currentTimeMillis()
-        if (now - lastTapTime < 300) {
-            if (x < screenW / 2) seekRelative(-10000) else seekRelative(10000)
-            lastTapTime = 0; return
-        }
-        lastTapTime = now
-
-        // Priority 5: Single tap — toggle controls
-        when (mode) {
-            Mode.PLAYING -> { mode = Mode.CONTROLS; controlsTimer = 0f; pause() }
-            Mode.CONTROLS -> { mode = Mode.PLAYING; play() }
-            Mode.WORD_NAV -> { mode = Mode.CONTROLS; controlsTimer = 0f; hlStart = -1; hlEnd = -1 }
-            else -> {}
+            Mode.PLAYING -> {
+                // Double-tap seek
+                val now = System.currentTimeMillis()
+                if (now - lastTapTime < 300) {
+                    if (x < screenW / 2) seekRelative(-10000) else seekRelative(10000)
+                    lastTapTime = 0; return
+                }
+                lastTapTime = now
+                // Single tap — pause + highlight first word
+                pause(); enterPaused()
+            }
         }
     }
 
@@ -460,7 +467,7 @@ class PlayerState(
         }
 
         // ── Controls overlay (BEHIND subtitles) ──
-        if (mode == Mode.CONTROLS || mode == Mode.WORD_NAV) {
+        if (mode == Mode.PAUSED) {
             drawControls(app, rc)
         }
 
@@ -469,9 +476,11 @@ class PlayerState(
             drawCueLayer(rc)
         }
 
-        // ── Dictionary popup (above subtitle) ──
-        if (mode == Mode.WORD_NAV) {
+        // ── Dictionary popup (above subtitle, only when word selected) ──
+        if (mode == Mode.PAUSED && hlStart >= 0) {
             drawDictPopup(rc)
+        } else {
+            dictPopupVisible = false
         }
 
         // ── Settings panel ──
@@ -512,58 +521,126 @@ class PlayerState(
         val baseY = seekbarTopY - cueBottomPad - deltaYShift * rc.density
         val topY = baseY - totalH
 
-        // ── Background shade ──
-        val padH = rc.dp(12f)
-        val padV = rc.dp(8f)
-        val shadeX = (rc.w - maxLineW) / 2f - padH
-        val shadeW = maxLineW + padH * 2
-        val shadeY = topY - padV
-        val shadeH = totalH + padV * 2
-        rc.solid(shadeX, shadeY, shadeW, shadeH, 0f, 0f, 0f, 0.7f)
+        val ascent = rc.font.textAscent(fontSize)
 
-        // Build character boxes for tap detection
+        // Pass 1: compute char box positions
         val boxes = mutableListOf<CharBox>()
         var globalCharIdx = 0
+        data class LineInfo(val text: String, val x: Float, val y: Float, val globalStart: Int)
+        val lineInfos = mutableListOf<LineInfo>()
 
-        // Draw lines bottom-up
         for (lineIdx in lines.indices) {
             val lineText = lines[lineIdx]
             val lineW = lineWidths[lineIdx]
             val linesFromBottom = numLines - 1 - lineIdx
             val lineY = baseY - linesFromBottom * (lineH + rowGap)
             val lineX = (rc.w - lineW) / 2f
+            lineInfos.add(LineInfo(lineText, lineX, lineY, globalCharIdx))
 
-            // Word highlight
-            if (hlStart >= 0 && hlEnd > hlStart) {
-                drawLineHighlight(rc, lineText, lineX, lineY, lineH, fontSize, globalCharIdx)
-            }
-
-            // Draw text character by character (to track positions)
             var cx = lineX
             val cps = lineText.toCodePoints()
             for (cpIdx in cps.indices) {
                 val ch = String(intArrayOf(cps[cpIdx]), 0, 1)
                 val chW = rc.font.measureText(ch, fontSize) + deltaSpacing * rc.density
-
-                // Add letter-spacing adjusted text
-                rc.text(ch, cx, lineY, fontSize, 1f, 1f, 1f)
-
-                // Store bounding box for tap detection
-                boxes.add(CharBox(cx, lineY - lineH, chW, lineH, globalCharIdx))
-
+                boxes.add(CharBox(cx, lineY - ascent, chW, lineH, globalCharIdx))
                 cx += chW
                 globalCharIdx++
             }
-            // Account for \n separator in global index
             if (lineIdx < numLines - 1) globalCharIdx++
+        }
+        charBoxes = boxes
 
-            // Draw furigana in ADVANCED mode
-            if (readingMode == ReadingMode.ADVANCED && superCues.isNotEmpty()) {
-                drawFuriganaForLine(rc, lineIdx, lineX, lineY, fontSize, furiganaSize, lineH)
+        // Compute furigana positions (for shade + drawing)
+        data class FuriDraw(val text: String, val x: Float, val y: Float, val size: Int)
+        val furiDraws = mutableListOf<FuriDraw>()
+        val furiH = rc.font.textHeight(furiganaSize)
+        val furiAscent = rc.font.textAscent(furiganaSize)
+
+        if (readingMode == ReadingMode.ADVANCED && superCues.isNotEmpty() && wordSpans.isNotEmpty()) {
+            val origLines = currentCueText.split("\n")
+            for ((lineIdx, li) in lineInfos.withIndex()) {
+                val lineStart = origLines.take(lineIdx).sumOf { it.length + 1 }
+                val lineText = origLines[lineIdx]
+                for (span in wordSpans) {
+                    if (span.furigana.isEmpty()) continue
+                    if (span.start >= lineStart + lineText.length || span.end <= lineStart) continue
+                    for (furi in span.furigana) {
+                        val absCharIdx = span.start + furi.charIdx
+                        val localIdx = absCharIdx - lineStart
+                        if (localIdx < 0 || localIdx >= lineText.length) continue
+                        val prefix = lineText.substring(0, localIdx)
+                        val prefixW = rc.font.measureText(prefix, fontSize) + localIdx * deltaSpacing * rc.density
+                        val charStr = lineText.substring(localIdx, (localIdx + 1).coerceAtMost(lineText.length))
+                        val charW = rc.font.measureText(charStr, fontSize) + deltaSpacing * rc.density
+                        val furiW = rc.font.measureText(furi.reading, furiganaSize)
+                        val furiX = li.x + prefixW + (charW - furiW) / 2f
+                        val furiY = li.y - lineH * deltaFurigana
+                        furiDraws.add(FuriDraw(furi.reading, furiX, furiY, furiganaSize))
+                    }
+                }
             }
         }
 
-        charBoxes = boxes
+        // Pass 2: draw shade from char boxes + furigana extents
+        if (boxes.isNotEmpty()) {
+            var minX = Float.MAX_VALUE; var minY = Float.MAX_VALUE
+            var maxX = Float.MIN_VALUE; var maxY = Float.MIN_VALUE
+            for (b in boxes) {
+                if (b.x < minX) minX = b.x
+                if (b.y < minY) minY = b.y
+                if (b.x + b.w > maxX) maxX = b.x + b.w
+                if (b.y + b.h > maxY) maxY = b.y + b.h
+            }
+            for (f in furiDraws) {
+                val fw = rc.font.measureText(f.text, f.size)
+                val fy = f.y - furiAscent
+                if (f.x < minX) minX = f.x
+                if (fy < minY) minY = fy
+                if (f.x + fw > maxX) maxX = f.x + fw
+                if (f.y + (furiH - furiAscent) > maxY) maxY = f.y + (furiH - furiAscent)
+            }
+            val padH = rc.dp(10f)
+            val padV = rc.dp(6f)
+            val sx = minX - padH; val sy = minY - padV
+            val sw = maxX - minX + padH * 2; val sh = maxY - minY + padV * 2
+            rc.solid(sx, sy, sw, sh, 0f, 0f, 0f, 0.7f)
+            subtitleRect = floatArrayOf(sx, sy, sw, sh)
+        }
+
+        // Pass 3: draw highlight, text, furigana, debug boxes
+        for (li in lineInfos) {
+            if (hlStart >= 0 && hlEnd > hlStart) {
+                drawLineHighlight(rc, li.text, li.x, li.y, lineH, fontSize, li.globalStart)
+            }
+
+            var cx = li.x
+            val cps = li.text.toCodePoints()
+            for (cpIdx in cps.indices) {
+                val ch = String(intArrayOf(cps[cpIdx]), 0, 1)
+                val chW = rc.font.measureText(ch, fontSize) + deltaSpacing * rc.density
+                rc.text(ch, cx, li.y, fontSize, 1f, 1f, 1f)
+
+                // Debug: draw character bounding box outlines
+                val boxY = li.y - ascent
+                rc.solid(cx, boxY, chW, 1f, 1f, 0f, 0f, 0.6f)
+                rc.solid(cx, boxY + lineH, chW, 1f, 1f, 0f, 0f, 0.6f)
+                rc.solid(cx, boxY, 1f, lineH, 1f, 0f, 0f, 0.6f)
+                rc.solid(cx + chW, boxY, 1f, lineH, 1f, 0f, 0f, 0.6f)
+
+                cx += chW
+            }
+        }
+
+        // Furigana (from precomputed positions)
+        for (f in furiDraws) {
+            rc.text(f.text, f.x, f.y, f.size, 0.7f, 0.7f, 0.85f)
+            val fw = rc.font.measureText(f.text, f.size)
+            val fy = f.y - furiAscent
+            rc.solid(f.x, fy, fw, 1f, 0f, 0.4f, 1f, 0.6f)
+            rc.solid(f.x, fy + furiH, fw, 1f, 0f, 0.4f, 1f, 0.6f)
+            rc.solid(f.x, fy, 1f, furiH, 0f, 0.4f, 1f, 0.6f)
+            rc.solid(f.x + fw, fy, 1f, furiH, 0f, 0.4f, 1f, 0.6f)
+        }
     }
 
     private fun drawLineHighlight(rc: RC, lineText: String, lineX: Float, lineY: Float,
@@ -579,8 +656,9 @@ class PlayerState(
         val prefixW = rc.font.measureText(prefix, fontSize) + hlLocalStart * deltaSpacing * rc.density
         val hlW = rc.font.measureText(highlighted, fontSize) + (hlLocalEnd - hlLocalStart) * deltaSpacing * rc.density
 
-        // Draw highlight rect (purple accent)
-        rc.solid(lineX + prefixW, lineY - lineH, hlW, lineH, 0.733f, 0.525f, 0.988f, 0.3f)
+        // Draw highlight rect (purple accent) — baseline-relative
+        val ascent = rc.font.textAscent(fontSize)
+        rc.solid(lineX + prefixW, lineY - ascent, hlW, lineH, 0.733f, 0.525f, 0.988f, 0.3f)
     }
 
     private fun drawFuriganaForLine(rc: RC, lineIdx: Int, lineX: Float, lineY: Float,
@@ -698,6 +776,10 @@ class PlayerState(
             rc.font.textHeight(rc.sp(subFontSize)) * currentCueText.split("\n").size * deltaRow
         val popupY = (subTopY - contentH - rc.dp(12f)).coerceAtLeast(rc.dp(8f))
 
+        // ── Store AABB for tap detection ──
+        dictPopupRect = floatArrayOf(popupX, popupY, popupW, contentH)
+        dictPopupVisible = true
+
         // ── Background ──
         rc.solid(popupX, popupY, popupW, contentH, 0.118f, 0.118f, 0.180f, 0.94f)
 
@@ -790,31 +872,38 @@ class PlayerState(
             condensedMode = !condensedMode
         })
 
-        // Typography deltas
-        rows.add(SettingsRow("DF (Furigana)", "%.1f".format(deltaFurigana), "DF"))
-        rows.add(SettingsRow("DR (Row Space)", "%.1f".format(deltaRow), "DR"))
-        rows.add(SettingsRow("DS (Letter Space)", "%.1f".format(deltaSpacing), "DS"))
-        rows.add(SettingsRow("DY (Y Offset)", "%.0f".format(deltaYShift), "DY"))
+        // Typography sliders
+        rows.add(SettingsRow("DF (Furigana)", "%.1f".format(deltaFurigana), "DF",
+            isSlider = true, sliderRange = 0.3f to 1.5f, sliderValue = deltaFurigana,
+            onSlide = { deltaFurigana = it }))
+        rows.add(SettingsRow("DR (Row Space)", "%.1f".format(deltaRow), "DR",
+            isSlider = true, sliderRange = 1.0f to 3.0f, sliderValue = deltaRow,
+            onSlide = { deltaRow = it }))
+        rows.add(SettingsRow("DS (Letter Space)", "%.1f".format(deltaSpacing), "DS",
+            isSlider = true, sliderRange = -4f to 8f, sliderValue = deltaSpacing,
+            onSlide = { deltaSpacing = it }))
+        rows.add(SettingsRow("DY (Y Offset)", "%.0f".format(deltaYShift), "DY",
+            isSlider = true, sliderRange = -50f to 50f, sliderValue = deltaYShift,
+            onSlide = { deltaYShift = it }))
 
         settingsRows = rows
     }
 
     private fun drawSettingsPanel(rc: RC) {
-        // Panel on right
         val panelW = rc.dp(300f).coerceAtMost(rc.w * 0.4f)
         val panelX = rc.w - panelW
+        settingsPanelX = panelX
         rc.solid(panelX, 0f, panelW, rc.h, 0.102f, 0.102f, 0.180f)
 
-        // Title
         val titleSize = rc.sp(18)
         rc.text(Lang.s("settings"), panelX + rc.dp(16f), rc.dp(32f), titleSize, 1f, 1f, 1f)
 
-        // Rows
         val rowH = rc.dp(44f)
         val labelSize = rc.sp(14)
         val valueSize = rc.sp(13)
         var y = rc.dp(56f) - settingsScrollY
 
+        val rects = mutableListOf<FloatArray>()
         for ((idx, row) in settingsRows.withIndex()) {
             val focused = idx == settingsFocus
             val rowY = y
@@ -843,15 +932,47 @@ class PlayerState(
                 rc.text(row.value, panelX + panelW - rc.dp(14f) - vw, labelY, valueSize, 0.506f, 0.78f, 0.522f)
             }
 
-            // Tappable
-            rc.tappable(panelX, rowY, panelW, rowH) {
-                settingsFocus = idx
-                row.action()
-                buildSettingsRows()
-            }
-
+            rects.add(floatArrayOf(panelX, rowY, panelW, rowH))
             y += rowH
+
+            // Slider below the row
+            if (row.isSlider) {
+                val sliderPad = rc.dp(14f)
+                val sliderX = panelX + sliderPad
+                val sliderW = panelW - sliderPad * 2
+                val sliderY = y + rc.dp(4f)
+                val trackH = rc.dp(4f)
+                val handleR = rc.dp(8f)
+
+                // Track
+                rc.solid(sliderX, sliderY, sliderW, trackH, 0.25f, 0.25f, 0.35f)
+
+                // Fill
+                val (lo, hi) = row.sliderRange
+                val t = ((row.sliderValue - lo) / (hi - lo)).coerceIn(0f, 1f)
+                rc.solid(sliderX, sliderY, sliderW * t, trackH, 0.733f, 0.525f, 0.988f)
+
+                // Handle
+                val handleX = sliderX + sliderW * t
+                rc.solid(handleX - handleR, sliderY - handleR + trackH / 2f, handleR * 2, handleR * 2, 1f, 1f, 1f)
+
+                // Store slider rect for drag detection (wider touch area)
+                settingsSliderRects[idx] = floatArrayOf(sliderX, sliderY - handleR, sliderW, handleR * 2 + trackH)
+
+                y += rc.dp(24f)
+            }
         }
+        settingsRowRects = rects
+    }
+
+    private fun applySliderDrag(idx: Int, touchX: Float, rect: FloatArray) {
+        val row = settingsRows.getOrNull(idx) ?: return
+        if (!row.isSlider) return
+        val (lo, hi) = row.sliderRange
+        val t = ((touchX - rect[0]) / rect[2]).coerceIn(0f, 1f)
+        val value = lo + t * (hi - lo)
+        row.onSlide?.invoke(value)
+        buildSettingsRows()
     }
 
     private fun handleSettingsSelect() {

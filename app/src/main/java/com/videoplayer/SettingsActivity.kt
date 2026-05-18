@@ -31,6 +31,7 @@ class SettingsActivity : AppCompatActivity() {
         setupTheme()
         setupUpdates()
         setupDownloads()
+        setupAnkiWeb()
         setupPlaybackSettings()
     }
 
@@ -206,6 +207,98 @@ class SettingsActivity : AppCompatActivity() {
         findViewById<LinearLayout>(R.id.settingTheme).setOnClickListener {
             settings.darkMode = !settings.darkMode
             tvTheme.text = if (settings.darkMode) "Dark" else "Light"
+        }
+    }
+
+    private fun setupAnkiWeb() {
+        val ankiSync = AnkiSyncManager(this)
+        val tvLogin = findViewById<TextView>(R.id.tvAnkiLoginStatus)
+        val tvSync = findViewById<TextView>(R.id.tvAnkiSyncStatus)
+
+        fun updateStatus() {
+            val prefs = getSharedPreferences("anki_sync", MODE_PRIVATE)
+            val email = prefs.getString("email", null)
+            tvLogin.text = if (ankiSync.isLoggedIn) "Connected: $email" else "Not connected"
+            tvLogin.setTextColor(if (ankiSync.isLoggedIn) 0xFF81C784.toInt() else 0xFF888888.toInt())
+            val pending = ankiSync.pendingCount()
+            tvSync.text = if (pending > 0) "$pending cards pending" else "No pending cards"
+        }
+        updateStatus()
+
+        findViewById<LinearLayout>(R.id.settingAnkiLogin).setOnClickListener {
+            if (ankiSync.isLoggedIn) {
+                AlertDialog.Builder(this)
+                    .setTitle("AnkiWeb")
+                    .setMessage("Disconnect from AnkiWeb?")
+                    .setPositiveButton("Disconnect") { _, _ ->
+                        ankiSync.logout()
+                        updateStatus()
+                    }
+                    .setNegativeButton("Cancel", null)
+                    .show()
+            } else {
+                val layout = LinearLayout(this).apply {
+                    orientation = LinearLayout.VERTICAL
+                    setPadding(48, 32, 48, 0)
+                }
+                val emailInput = EditText(this).apply { hint = "AnkiWeb email"; inputType = android.text.InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS }
+                val passInput = EditText(this).apply { hint = "Password"; inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD }
+                layout.addView(emailInput)
+                layout.addView(passInput)
+
+                AlertDialog.Builder(this)
+                    .setTitle("Connect to AnkiWeb")
+                    .setView(layout)
+                    .setPositiveButton("Login") { _, _ ->
+                        val email = emailInput.text.toString().trim()
+                        val pass = passInput.text.toString()
+                        if (email.isEmpty() || pass.isEmpty()) return@setPositiveButton
+                        tvLogin.text = "Connecting..."
+                        Thread {
+                            val ok = ankiSync.login(email, pass)
+                            runOnUiThread {
+                                if (ok) {
+                                    Toast.makeText(this, "Connected to AnkiWeb", Toast.LENGTH_SHORT).show()
+                                } else {
+                                    Toast.makeText(this, "Login failed", Toast.LENGTH_SHORT).show()
+                                }
+                                updateStatus()
+                            }
+                        }.start()
+                    }
+                    .setNegativeButton("Cancel", null)
+                    .show()
+            }
+        }
+
+        findViewById<LinearLayout>(R.id.settingAnkiSync).setOnClickListener {
+            if (!ankiSync.isLoggedIn) {
+                Toast.makeText(this, "Connect to AnkiWeb first", Toast.LENGTH_SHORT).show()
+                return@setOnClickListener
+            }
+            val pending = ankiSync.pendingCount()
+            if (pending == 0) {
+                Toast.makeText(this, "No cards to sync", Toast.LENGTH_SHORT).show()
+                return@setOnClickListener
+            }
+            tvSync.text = "Syncing $pending cards..."
+            tvSync.setTextColor(0xFFFFD54F.toInt())
+            Thread {
+                val result = ankiSync.sync { progress ->
+                    runOnUiThread { tvSync.text = progress.stage }
+                }
+                runOnUiThread {
+                    if (result.success) {
+                        tvSync.text = "Synced! No pending cards"
+                        tvSync.setTextColor(0xFF81C784.toInt())
+                        Toast.makeText(this, "Cards synced to AnkiWeb", Toast.LENGTH_SHORT).show()
+                    } else {
+                        tvSync.text = "Sync failed: ${result.error}"
+                        tvSync.setTextColor(0xFFFF5252.toInt())
+                    }
+                    mainHandler.postDelayed({ updateStatus() }, 3000)
+                }
+            }.start()
         }
     }
 
