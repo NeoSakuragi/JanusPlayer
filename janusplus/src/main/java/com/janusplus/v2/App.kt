@@ -223,8 +223,9 @@ class App(val context: Context, private val assets: android.content.res.AssetMan
 
         val maxTexSize = IntArray(1); GLES30.glGetIntegerv(GLES30.GL_MAX_TEXTURE_SIZE, maxTexSize, 0)
         val maxLayers = IntArray(1); GLES30.glGetIntegerv(GLES30.GL_MAX_ARRAY_TEXTURE_LAYERS, maxLayers, 0)
-        val texSize = 2048
-        android.util.Log.i("App", "GL max: ${maxTexSize[0]}, using: $texSize")
+        val isTV = context.packageManager.hasSystemFeature("android.software.leanback")
+        val texSize = if (isTV) 2048 else 4096
+        android.util.Log.i("App", "GL max: ${maxTexSize[0]}, isTV: $isTV, texSize: $texSize")
         android.util.Log.i("App", "GL max texture: ${maxTexSize[0]}, max layers: ${maxLayers[0]}, using: $texSize")
         texArray = TextureArray(texSize, TextureArray.LAYER_THUMB_FIRST + TextureArray.LAYER_THUMB_COUNT)
         texArray.initGL()

@@ -7,6 +7,7 @@ import androidx.media3.exoplayer.source.ProgressiveMediaSource
 import com.janusplus.JanusApi
 import com.janusplus.Lang
 import com.janusplus.SrtParser
+import com.janusplus.SubtitleBitmap
 import com.janusplus.VideoBlitThread
 import com.janusplus.toCodePoints
 import kotlin.concurrent.thread
@@ -152,6 +153,12 @@ class PlayerState(
     // Font selection
     var currentFontIdx = 0
     val fontNames = listOf("Noto Sans", "Noto Serif", "Shippori")
+    private val fontAssets = listOf("fonts/NotoSansJP-Regular.ttf", "fonts/NotoSerifJP-Regular.ttf", "fonts/ShipporiMincho-Regular.ttf")
+
+    // CPU-rendered subtitle texture
+    private val subtitleBmp = SubtitleBitmap()
+
+    private fun invalidateSubtitle() { subtitleBmp.lastText = "" }
 
     private fun savePrefs() {
         val app = appRef ?: return
@@ -343,6 +350,7 @@ class PlayerState(
                         seekTo((durationMs * progress).toLong().coerceIn(0, durationMs))
                     } else if (draggingSliderIdx >= 0) {
                         draggingSliderIdx = -1
+                        invalidateSubtitle()
                         buildSettingsRows()
                     } else if (settingsDragging) {
                         settingsDragging = false
@@ -567,9 +575,9 @@ class PlayerState(
         }
         t1 = System.nanoTime(); dbgControls = dbgControls * 0.9f + (t1 - t0) / 1_000_000f * 0.1f; t0 = t1
 
-        // ── Subtitle ──
+        // ── Subtitle (CPU-rendered bitmap) ──
         if (currentCueText.isNotEmpty()) {
-            drawCueLayer(rc)
+            drawSubtitleBitmap(app, rc)
         }
         t1 = System.nanoTime(); dbgCue = dbgCue * 0.9f + (t1 - t0) / 1_000_000f * 0.1f; t0 = t1
 
@@ -999,17 +1007,17 @@ class PlayerState(
 
         // Reading mode
         rows.add(SettingsRow("Reading Mode", readingMode.name, "mode") {
-            cycleReadingMode(); savePrefs()
+            cycleReadingMode(); invalidateSubtitle(); savePrefs()
         })
 
         // Font
         rows.add(SettingsRow("Font", fontNames[currentFontIdx], "font") {
-            currentFontIdx = (currentFontIdx + 1) % fontNames.size; savePrefs()
+            currentFontIdx = (currentFontIdx + 1) % fontNames.size; invalidateSubtitle(); savePrefs()
         })
 
         // Font size
         rows.add(SettingsRow("Font Size", "${subFontSize}sp", "size") {
-            cycleFontSize(); savePrefs()
+            cycleFontSize(); invalidateSubtitle(); savePrefs()
         })
 
         // Condensed mode
@@ -1033,7 +1041,7 @@ class PlayerState(
 
         // Theme
         rows.add(SettingsRow("Theme", if (einkMode) "E-Ink" else "Dark", "theme") {
-            einkMode = !einkMode; appRef?.einkMode = einkMode; savePrefs()
+            einkMode = !einkMode; appRef?.einkMode = einkMode; invalidateSubtitle(); savePrefs()
         })
 
         // Debug
@@ -1248,6 +1256,67 @@ class PlayerState(
         else "%d:%02d".format(m, s % 60)
     }
 
+    // ── Subtitle Bitmap Rendering ──
+
+    private fun drawSubtitleBitmap(app: App, rc: RC) {
+        val text = currentCueText
+        val displayText = convertForReadingMode(text)
+
+        // Build word info for furigana
+        val wordInfos = if (readingMode == ReadingMode.ADVANCED) {
+            wordSpans.map { span ->
+                SubtitleBitmap.WordInfo(span.start, span.end,
+                    span.furigana.map { SubtitleBitmap.FuriSpan(it.charIdx, it.reading) })
+            }
+        } else emptyList()
+
+        val typeface = try {
+            android.graphics.Typeface.createFromAsset(app.context.assets, fontAssets[currentFontIdx])
+        } catch (_: Exception) { android.graphics.Typeface.DEFAULT }
+
+        val params = SubtitleBitmap.RenderParams(
+            fontFamily = typeface,
+            textSizePx = rc.sp(subFontSize).toFloat(),
+            outlineWidth = rc.dp(2f),
+            shadowRadius = rc.dp(4f),
+            shadowDx = rc.dp(1.5f),
+            shadowDy = rc.dp(1.5f),
+            eink = einkMode,
+            deltaSpacing = deltaSpacing * rc.density / rc.sp(subFontSize),
+            deltaFurigana = deltaFurigana,
+            deltaRow = deltaRow,
+        )
+
+        subtitleBmp.render(displayText, wordInfos, params, rc.w)
+
+        if (subtitleBmp.textureId == 0) return
+
+        // Position: center horizontally, bottom above seekbar
+        val subW = subtitleBmp.texW.toFloat()
+        val subH = subtitleBmp.texH.toFloat()
+        val subX = (rc.w - subW) / 2f
+        val subY = barY - rc.dp(24f) - subH - deltaYShift * rc.density
+
+        // Store subtitle rect for tap detection
+        subtitleRect = floatArrayOf(subX, subY, subW, subH)
+
+        // Bind subtitle texture to unit 2 (reuse uTexVideo sampler) and draw quad
+        rc.batch.flush()
+        GLES30.glActiveTexture(GLES30.GL_TEXTURE2)
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, subtitleBmp.textureId)
+        GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
+
+        rc.batch.begin()
+        rc.batch.addQuad(subX, subY, subW, subH, 0f, 0f, 1f, 1f, layer = -1f)
+        rc.batch.flush()
+
+        // Rebind video texture
+        GLES30.glActiveTexture(GLES30.GL_TEXTURE2)
+        app.videoSurface.bindRgb()
+        GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
+        rc.batch.begin()
+    }
+
     // ── Player controls ──
 
     @Volatile var videoWidth = 0
@@ -1342,6 +1411,7 @@ class PlayerState(
 
     override fun cleanup(app: App) {
         alive = false
+        subtitleBmp.release()
         app.onMainThread?.invoke(Runnable {
             app.exoPlayer?.stop()
             app.exoPlayer?.clearMediaItems()
