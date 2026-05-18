@@ -409,15 +409,13 @@ class App(val context: Context, private val assets: android.content.res.AssetMan
         val rc = RC(batch, font, texArray, coverAtlas, thumbAtlas, width, height, density, einkMode, str, defaultTypeface)
         currentState.draw(this, rc)
 
-        // Upload text bitmap + add overlay quad to batch (no extra flush)
-        val strT0 = System.nanoTime()
-        str?.endFrame()
-        str?.bindAndEnqueue(batch, width, height)
-        val strMs = (System.nanoTime() - strT0) / 1_000_000f
-
-        // Single flush — everything in one draw call
         val flushT0 = System.nanoTime()
         batch.flush()
+
+        val strT0 = System.nanoTime()
+        str?.endFrame()
+        str?.draw(batch, width, height)
+        val strMs = (System.nanoTime() - strT0) / 1_000_000f
         val flushMs = (System.nanoTime() - flushT0) / 1_000_000f
         hitRects = rc.hitRects.toList()
 

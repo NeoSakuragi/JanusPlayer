@@ -1341,11 +1341,15 @@ class PlayerState(
         // Store subtitle rect for tap detection
         subtitleRect = floatArrayOf(subX, subY, subW, subH)
 
-        // Bind subtitle texture to unit 2 and add quad to batch (no extra flush)
+        // Bind subtitle texture to unit 2 and draw quad
+        rc.batch.flush()
         GLES30.glActiveTexture(GLES30.GL_TEXTURE2)
         GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, subtitleBmp.textureId)
         GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
+        rc.batch.begin()
         rc.batch.addQuad(subX, subY, subW, subH, 0f, 0f, 1f, 1f, layer = -1f)
+        rc.batch.flush()
+        rc.batch.begin()
         GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
         rc.batch.begin()
     }
