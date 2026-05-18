@@ -58,12 +58,16 @@ class FontAtlas(private val assets: AssetManager) {
             }
             bakedAscent = maxAsc; bakedDescent = maxDesc
 
+            val opts = BitmapFactory.Options()
+            if (texArr.size < 4096) opts.inSampleSize = 4096 / texArr.size
             for (p in 0 until pageCount) {
                 val pngStream = assets.open("baked_fonts/${name}_p$p.png")
-                val bmp = BitmapFactory.decodeStream(pngStream)
+                val bmp = BitmapFactory.decodeStream(pngStream, null, opts)!!
                 pngStream.close()
-                texArr.uploadLayer(baseLayer + p, bmp)
+                Log.i("FontAtlas", "Page $p: ${bmp.width}x${bmp.height} (${bmp.byteCount / 1024}KB)")
+                texArr.uploadLayerNow(baseLayer + p, bmp)
             }
+            atlasSize = texArr.size
 
             whiteU = 1f / atlasSize
             whiteV = 1f / atlasSize
