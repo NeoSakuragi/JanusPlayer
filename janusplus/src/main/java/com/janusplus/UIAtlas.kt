@@ -50,19 +50,16 @@ class UIAtlas(val texArray: TextureArray, val layer: Int) {
         val v1 get() = (y + h).toFloat()
     }
 
-    private val slots = HashMap<Long, Slot>(64)
-    private var nextY = 8
-    private val maxY get() = texArray.size
+    private val slots = HashMap<Long, Slot>(256)
+    private var cursorX = 0
+    private var cursorY = 8
+    private var rowH = 0
+    private val maxSize get() = texArray.size
+    // Reserve bottom 200px for subtitle
+    private val maxTextY get() = maxSize - 200
 
-    fun beginFrame() {
-        // Mark all slots as not-yet-used this frame
-        // Don't deallocate — positions stay stable for cache hits
-    }
+    fun beginFrame() {}
 
-    /**
-     * Render text and return UV coordinates for a quad.
-     * Returns null if the atlas is full.
-     */
     fun text(
         key: Long,
         text: String,
@@ -88,16 +85,21 @@ class UIAtlas(val texArray: TextureArray, val layer: Int) {
         val w = (if (maxWidth > 0f) minOf(measuredW, maxWidth) else measuredW).toInt() + 8
         val h = (-fm.top + fm.bottom).toInt() + 4
 
-        // Reuse existing slot position if same size, or allocate new
         val slot: Slot
         if (existing != null && existing.w >= w && existing.h >= h) {
             slot = existing
         } else {
-            // Allocate new position
-            if (nextY + h > maxY) return null // atlas full
-            slot = Slot(0, nextY, w, h)
+            // Row packing: fill horizontally, then next row
+            if (cursorX + w > maxSize) {
+                cursorX = 0
+                cursorY += rowH + 2
+                rowH = 0
+            }
+            if (cursorY + h > maxTextY) return null
+            slot = Slot(cursorX, cursorY, w, h)
             slots[key] = slot
-            nextY += h + 2 // 2px gap
+            cursorX += w + 2
+            if (h > rowH) rowH = h
         }
 
         slot.hash = hash
@@ -274,7 +276,9 @@ class UIAtlas(val texArray: TextureArray, val layer: Int) {
 
     fun resetSlots() {
         slots.clear()
-        nextY = 8
+        cursorX = 0
+        cursorY = 8
+        rowH = 0
         subtitleHash = 0
         subtitleSlot.valid = false
     }
