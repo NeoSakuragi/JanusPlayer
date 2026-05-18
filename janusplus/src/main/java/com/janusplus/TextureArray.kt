@@ -11,9 +11,10 @@ class TextureArray(val size: Int = 2048, val layerCount: Int = LAYER_THUMB_FIRST
 
     companion object {
         const val LAYER_FONT = 0   // font is on its own texture array now
-        const val LAYER_COVERS = 0
-        const val LAYER_BANNER = 1
-        const val LAYER_THUMB_FIRST = 2
+        const val LAYER_UI = 0     // white pixel + UI sprites — never overwritten
+        const val LAYER_COVERS = 1
+        const val LAYER_BANNER = 2
+        const val LAYER_THUMB_FIRST = 3
         const val LAYER_THUMB_COUNT = 3
     }
 
@@ -50,7 +51,9 @@ class TextureArray(val size: Int = 2048, val layerCount: Int = LAYER_THUMB_FIRST
         var src = if (bitmap.config != Bitmap.Config.ARGB_8888)
             bitmap.copy(Bitmap.Config.ARGB_8888, false).also { bitmap.recycle() } else bitmap
         if (src.width > size || src.height > size) {
-            val scaled = Bitmap.createScaledBitmap(src, src.width.coerceAtMost(size), src.height.coerceAtMost(size), true)
+            val scale = minOf(size.toFloat() / src.width, size.toFloat() / src.height)
+            val newW = (src.width * scale).toInt(); val newH = (src.height * scale).toInt()
+            val scaled = Bitmap.createScaledBitmap(src, newW, newH, true)
             src.recycle()
             src = scaled
         }

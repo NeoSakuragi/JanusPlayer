@@ -27,6 +27,7 @@ class FontAtlas(private val assets: AssetManager) {
 
     var whiteU = 0f; private set
     var whiteV = 0f; private set
+    var skipTextureUpload = false
 
     private val EMPTY = GlyphMetrics(0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f, 0)
 
@@ -61,25 +62,28 @@ class FontAtlas(private val assets: AssetManager) {
             }
             bakedAscent = maxAsc; bakedDescent = maxDesc
 
-            // Font gets its own 4096 texture array (separate from UI array)
-            fontTexArray = TextureArray(4096, pageCount)
-            fontTexArray!!.initGL()
-
-            for (p in 0 until pageCount) {
-                val pngStream = assets.open("baked_fonts/${name}_p$p.png")
-                val bmp = BitmapFactory.decodeStream(pngStream)!!
-                pngStream.close()
-                Log.i("FontAtlas", "Page $p: ${bmp.width}x${bmp.height} (${bmp.byteCount / 1024}KB)")
-                fontTexArray!!.uploadLayerNow(p, bmp)
+            // Font texture — only needed when ScreenTextRenderer is NOT active
+            if (!skipTextureUpload) {
+                fontTexArray = TextureArray(4096, pageCount)
+                fontTexArray!!.initGL()
+                for (p in 0 until pageCount) {
+                    val pngStream = assets.open("baked_fonts/${name}_p$p.png")
+                    val bmp = BitmapFactory.decodeStream(pngStream)!!
+                    pngStream.close()
+                    Log.i("FontAtlas", "Page $p: ${bmp.width}x${bmp.height} (${bmp.byteCount / 1024}KB)")
+                    fontTexArray!!.uploadLayerNow(p, bmp)
+                }
+            } else {
+                Log.i("FontAtlas", "Skipping texture upload (CPU text rendering active)")
             }
             atlasSize = 4096
 
             whiteU = 1f / 4096f
             whiteV = 1f / 4096f
-            // Also put white pixel on the UI texture for solid quads
+            // White pixel on dedicated UI layer — never overwritten by covers/banner/thumbs
             val whiteBmp = android.graphics.Bitmap.createBitmap(4, 4, android.graphics.Bitmap.Config.ARGB_8888)
             whiteBmp.eraseColor(android.graphics.Color.WHITE)
-            uiTexArr.uploadLayerNow(0, whiteBmp)
+            uiTexArr.uploadLayerNow(TextureArray.LAYER_UI, whiteBmp)
 
             Log.i("FontAtlas", "Loaded $glyphCount glyphs at ${bakedSize}px across $pageCount pages")
         } catch (e: Exception) {

@@ -69,13 +69,13 @@ class RC(
 
     fun solid(x: Float, y: Float, w: Float, h: Float, r: Float, g: Float, b: Float, a: Float = 1f) {
         batch.addQuad(x, y, w, h, font.whiteU, font.whiteV, font.whiteU, font.whiteV, r, g, b, a,
-            layer = TextureArray.LAYER_FONT.toFloat())
+            layer = TextureArray.LAYER_UI.toFloat())
     }
 
     fun gradient(x: Float, y: Float, w: Float, h: Float,
                  tl: FloatArray, tr: FloatArray, br: FloatArray, bl: FloatArray) {
         batch.addGradientQuad(x, y, w, h, tl, tr, br, bl, font.whiteU, font.whiteV,
-            TextureArray.LAYER_FONT.toFloat())
+            TextureArray.LAYER_UI.toFloat())
     }
 
     fun text(s: String, x: Float, y: Float, size: Int, r: Float, g: Float, b: Float, a: Float = 1f) {
@@ -184,6 +184,12 @@ class App(val context: Context, private val assets: android.content.res.AssetMan
     // Scroll — VelocityTracker + OverScroller, same physics as native Android
     @Volatile var scrollY = 0f
     private val scroller = OverScroller(context)
+
+    fun smoothScrollTo(targetY: Float) {
+        scroller.forceFinished(true)
+        val dy = (targetY - scrollY).toInt()
+        scroller.startScroll(0, scrollY.toInt(), 0, dy, 300)
+    }
     private var velocityTracker: VelocityTracker? = null
     private var touchDownY = 0f
     private var scrollAtDown = 0f
@@ -250,6 +256,7 @@ class App(val context: Context, private val assets: android.content.res.AssetMan
         texArray.initGL()
 
         font = FontAtlas(assets)
+        font.skipTextureUpload = (screenTextRenderer != null)
         font.initGL(texArray)
 
         etc2Array = CompressedTextureArray(4096, 4)
@@ -380,9 +387,11 @@ class App(val context: Context, private val assets: android.content.res.AssetMan
         GLES30.glActiveTexture(GLES30.GL_TEXTURE2)
         videoSurface.bindRgb()
         GLES30.glUniform1i(shader.uTexVideo, 2)
-        GLES30.glActiveTexture(GLES30.GL_TEXTURE3)
-        font.fontTexArray?.bind()
-        GLES30.glUniform1i(shader.uTexFont, 3)
+        font.fontTexArray?.let {
+            GLES30.glActiveTexture(GLES30.GL_TEXTURE3)
+            it.bind()
+            GLES30.glUniform1i(shader.uTexFont, 3)
+        }
         GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
         batch.begin()
 
@@ -390,12 +399,12 @@ class App(val context: Context, private val assets: android.content.res.AssetMan
         val rc = RC(batch, font, texArray, coverAtlas, thumbAtlas, width, height, density, einkMode, screenTextRenderer, defaultTypeface)
         currentState.draw(this, rc)
 
-        // Upload and draw CPU-rendered text overlay
-        screenTextRenderer?.endFrame()
-        screenTextRenderer?.draw(batch, width, height)
-
         val flushT0 = System.nanoTime()
         batch.flush()
+
+        // Draw CPU-rendered text overlay AFTER all GL quads (borders, covers, etc.)
+        screenTextRenderer?.endFrame()
+        screenTextRenderer?.draw(batch, width, height)
         val flushMs = (System.nanoTime() - flushT0) / 1_000_000f
         hitRects = rc.hitRects.toList()
 

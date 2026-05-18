@@ -28,7 +28,12 @@ class SeriesState(private val item: JanusApi.LibraryItem) : GameState {
     // Banner uploaded to LAYER_BANNER (uncompressed texture array)
     @Volatile var bannerW = 0
     @Volatile var bannerH = 0
+
+    enum class FocusArea { PLAY_BUTTON, EPISODE_GRID }
+    private var focusArea = FocusArea.PLAY_BUTTON
     private var episodeFocus = 0
+    private var cachedScreenH = 0f
+    private var animTime = 0f
 
     // Atlas uploaded to thumb ring buffer (uncompressed texture array)
     @Volatile var atlasW = 0
@@ -179,43 +184,101 @@ class SeriesState(private val item: JanusApi.LibraryItem) : GameState {
         val epCount = data?.episodes?.size ?: 0
         for (key in keys) {
             when (key) {
-                android.view.KeyEvent.KEYCODE_DPAD_LEFT -> {
-                    if (episodeFocus > 0) episodeFocus--
-                }
-                android.view.KeyEvent.KEYCODE_DPAD_RIGHT -> {
-                    if (episodeFocus < epCount - 1) episodeFocus++
-                }
                 android.view.KeyEvent.KEYCODE_DPAD_UP -> {
-                    if (episodeFocus >= gridCols) episodeFocus -= gridCols
+                    when (focusArea) {
+                        FocusArea.PLAY_BUTTON -> { /* top, no-op */ }
+                        FocusArea.EPISODE_GRID -> {
+                            if (episodeFocus >= gridCols) {
+                                episodeFocus -= gridCols
+                                scrollEpisodeIntoView(app)
+                            } else {
+                                focusArea = FocusArea.PLAY_BUTTON
+                                app.smoothScrollTo(0f)
+                            }
+                        }
+                    }
                 }
                 android.view.KeyEvent.KEYCODE_DPAD_DOWN -> {
-                    if (episodeFocus + gridCols < epCount) episodeFocus += gridCols
-                    else if (episodeFocus < epCount - 1) episodeFocus = epCount - 1
+                    when (focusArea) {
+                        FocusArea.PLAY_BUTTON -> {
+                            if (epCount > 0) {
+                                focusArea = FocusArea.EPISODE_GRID
+                                episodeFocus = 0
+                                scrollEpisodeIntoView(app)
+                            }
+                        }
+                        FocusArea.EPISODE_GRID -> {
+                            if (episodeFocus + gridCols < epCount) {
+                                episodeFocus += gridCols
+                            } else if (episodeFocus < epCount - 1) {
+                                episodeFocus = epCount - 1
+                            }
+                            scrollEpisodeIntoView(app)
+                        }
+                    }
+                }
+                android.view.KeyEvent.KEYCODE_DPAD_LEFT -> {
+                    if (focusArea == FocusArea.EPISODE_GRID && episodeFocus > 0) {
+                        episodeFocus--
+                        scrollEpisodeIntoView(app)
+                    }
+                }
+                android.view.KeyEvent.KEYCODE_DPAD_RIGHT -> {
+                    if (focusArea == FocusArea.EPISODE_GRID && episodeFocus < epCount - 1) {
+                        episodeFocus++
+                        scrollEpisodeIntoView(app)
+                    }
+                }
+                android.view.KeyEvent.KEYCODE_DPAD_CENTER, android.view.KeyEvent.KEYCODE_ENTER -> {
+                    when (focusArea) {
+                        FocusArea.PLAY_BUTTON -> {
+                            val first = fullEpisodes?.firstOrNull()
+                            if (first != null) {
+                                val baseUrl = "https://canneji.duckdns.org/janus"
+                                app.transition(Screen.PLAYER, PlayerState(item, first, baseUrl))
+                            }
+                        }
+                        FocusArea.EPISODE_GRID -> {
+                            if (data != null && episodeFocus < epCount) {
+                                val epCard = data.episodes[episodeFocus]
+                                val full = fullEpisodes?.firstOrNull { it.episode == epCard.episode }
+                                if (full != null) {
+                                    val baseUrl = "https://canneji.duckdns.org/janus"
+                                    app.transition(Screen.PLAYER, PlayerState(item, full, baseUrl))
+                                }
+                            }
+                        }
+                    }
                 }
                 android.view.KeyEvent.KEYCODE_BACK -> {
                     app.goBack()
-                }
-                android.view.KeyEvent.KEYCODE_DPAD_CENTER, android.view.KeyEvent.KEYCODE_ENTER -> {
-                    if (data != null && episodeFocus < epCount) {
-                        val epCard = data.episodes[episodeFocus]
-                        val full = fullEpisodes?.firstOrNull { it.episode == epCard.episode }
-                        if (full != null) {
-                            val baseUrl = "https://canneji.duckdns.org/janus"
-                            app.transition(Screen.PLAYER, PlayerState(item, full, baseUrl))
-                        }
-                    }
                 }
             }
         }
     }
 
+    private fun scrollEpisodeIntoView(app: App) {
+        if (cachedScreenH <= 0 || cardH <= 0 || gridCols <= 0) return
+        val row = episodeFocus / gridCols
+        val cardAbsY = gridY + row * (cardH + gridSpacing)
+        val cardBottom = cardAbsY + cardH + 32f
+        val visibleBottom = app.scrollY + cachedScreenH
+        if (cardBottom > visibleBottom) {
+            app.smoothScrollTo(cardBottom - cachedScreenH + 32f)
+        }
+        if (cardAbsY < app.scrollY + 32f) {
+            app.smoothScrollTo((cardAbsY - 32f).coerceAtLeast(0f))
+        }
+    }
+
     override fun draw(app: App, rc: RC) {
         if (!layoutDone) computeLayout(rc)
+        cachedScreenH = rc.h
 
         val scrollY = app.scrollY
         val data = pageData
         val elapsed = (System.nanoTime() - startTime) / 1_000_000_000f
-        val pulse = (0.08f + 0.04f * kotlin.math.sin(elapsed * 3f).toFloat())
+        val skeletonPulse = (0.08f + 0.04f * kotlin.math.sin(elapsed * 3f).toFloat())
 
         rc.solid(0f, 0f, rc.w, rc.h, 0.039f, 0.039f, 0.102f)
 
@@ -223,7 +286,7 @@ class SeriesState(private val item: JanusApi.LibraryItem) : GameState {
         if (bannerReady) {
             rc.banner(0f, ht, rc.w, heroH, bannerW, bannerH)
         } else {
-            rc.solid(0f, ht, rc.w, heroH, pulse, pulse, pulse + 0.02f)
+            rc.solid(0f, ht, rc.w, heroH, skeletonPulse, skeletonPulse, skeletonPulse + 0.02f)
         }
 
         val bg = floatArrayOf(0.039f, 0.039f, 0.102f)
@@ -246,8 +309,10 @@ class SeriesState(private val item: JanusApi.LibraryItem) : GameState {
         rc.textClipped(title, pad + rc.dp(34f), ht + titleY, titleSize, contentMaxW, 1f, 1f, 1f)
 
         // Play button
+        val playFocused = focusArea == FocusArea.PLAY_BUTTON
         rc.solid(pad, ht + btnY, btnW, btnH, 0.733f, 0.525f, 0.988f)
         rc.text(Lang.s("play"), pad + rc.dp(20f), ht + btnY + rc.dp(30f), btnTextSize, 1f, 1f, 1f)
+        if (playFocused) rc.border(pad, ht + btnY, btnW, btnH, 6f, 1f, 1f, 1f)
         rc.tappable(pad, ht + btnY, btnW, btnH) {
             val first = fullEpisodes?.firstOrNull()
             if (first != null) {
@@ -292,13 +357,16 @@ class SeriesState(private val item: JanusApi.LibraryItem) : GameState {
                 val ep = episodes[i]
                 rc.solid(x, y, cardW, thumbH, 0.133f, 0.133f, 0.200f)
 
-                if (atlasReady && atlasCols > 0) {
+                if (atlasReady && atlasCols > 0 && atlasW > 0 && atlasH > 0) {
                     val ac = i % atlasCols
                     val ar = i / atlasCols
-                    val u0 = (ac * thumbWPx) / texSize
-                    val v0 = (ar * thumbHPx) / texSize
-                    val u1 = ((ac + 1) * thumbWPx) / texSize
-                    val v1 = ((ar + 1) * thumbHPx) / texSize
+                    // UV as fraction of original atlas, scaled to texture coords
+                    val scale = minOf(texSize / atlasW.toFloat(), texSize / atlasH.toFloat(), 1f)
+                    val sw = atlasW * scale; val sh = atlasH * scale
+                    val u0 = (ac * thumbWPx) / atlasW * sw / texSize
+                    val v0 = (ar * thumbHPx) / atlasH * sh / texSize
+                    val u1 = ((ac + 1) * thumbWPx) / atlasW * sw / texSize
+                    val v1 = ((ar + 1) * thumbHPx) / atlasH * sh / texSize
                     rc.batch.addQuad(x, y, cardW, thumbH, u0, v0, u1, v1,
                         layer = atlasLayer.toFloat())
                 }
@@ -318,12 +386,12 @@ class SeriesState(private val item: JanusApi.LibraryItem) : GameState {
                     }
                 }
             } else {
-                rc.solid(x, y, cardW, thumbH, pulse, pulse, pulse + 0.02f)
-                rc.solid(x, y + thumbH, cardW, cardH - thumbH, pulse * 0.7f, pulse * 0.7f, pulse * 0.7f)
+                rc.solid(x, y, cardW, thumbH, skeletonPulse, skeletonPulse, skeletonPulse + 0.02f)
+                rc.solid(x, y + thumbH, cardW, cardH - thumbH, skeletonPulse * 0.7f, skeletonPulse * 0.7f, skeletonPulse * 0.7f)
             }
 
-            if (i == episodeFocus) {
-                rc.border(x, y, cardW, cardH, rc.dp(3f), 0.733f, 0.525f, 0.988f)
+            if (focusArea == FocusArea.EPISODE_GRID && i == episodeFocus) {
+                rc.border(x, y, cardW, cardH, 6f, 0.733f, 0.525f, 0.988f)
             }
         }
 

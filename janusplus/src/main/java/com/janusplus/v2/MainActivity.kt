@@ -167,34 +167,21 @@ class MainActivity : AppCompatActivity() {
 
     override fun dispatchKeyEvent(event: android.view.KeyEvent): Boolean {
         val code = event.keyCode
-        android.util.Log.d("KEY", "dispatchKeyEvent: code=$code action=${event.action}")
-        // Let system handle volume and back
         if (code == android.view.KeyEvent.KEYCODE_VOLUME_UP ||
             code == android.view.KeyEvent.KEYCODE_VOLUME_DOWN ||
-            code == android.view.KeyEvent.KEYCODE_VOLUME_MUTE ||
-            code == android.view.KeyEvent.KEYCODE_BACK) {
+            code == android.view.KeyEvent.KEYCODE_VOLUME_MUTE) {
             return super.dispatchKeyEvent(event)
         }
         if (event.action == android.view.KeyEvent.ACTION_DOWN) {
             app.keyQueue.add(code)
             return true
         }
-        return super.dispatchKeyEvent(event)
+        return true
     }
 
     @Suppress("DEPRECATION")
     override fun onBackPressed() {
-        // Player handles back specially (resume before exit)
-        val state = app.currentState
-        if (state is PlayerState) {
-            if (state.mode != PlayerState.Mode.PLAYING) {
-                state.mode = PlayerState.Mode.PLAYING
-                state.play()
-                return
-            }
-            state.cleanup(app)
-        }
-        if (!app.goBack()) super.onBackPressed()
+        app.keyQueue.add(android.view.KeyEvent.KEYCODE_BACK)
     }
 
     override fun onResume() { super.onResume(); if (::glView.isInitialized) glView.onResume() }

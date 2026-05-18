@@ -150,6 +150,11 @@ class PlayerState(
     private var selectedAudioIdx = 0
     private var selectedSubLang = "ja"
 
+    // PAUSED mode focus
+    enum class PausedFocus { TOP_ROW, SUBTITLE, SEEKBAR }
+    private var pausedFocus = PausedFocus.SUBTITLE
+    private var topRowFocus = 0 // 0=back, 1=settings
+
     // Font selection
     var currentFontIdx = 0
     val fontNames = listOf("Noto Sans", "Noto Serif", "Shippori")
@@ -389,35 +394,58 @@ class PlayerState(
             android.view.KeyEvent.KEYCODE_DPAD_CENTER, android.view.KeyEvent.KEYCODE_ENTER -> {
                 when (mode) {
                     Mode.PLAYING -> { pause(); enterPaused() }
-                    Mode.PAUSED -> { hlStart = -1; hlEnd = -1; mode = Mode.PLAYING; play() }
+                    Mode.PAUSED -> when (pausedFocus) {
+                        PausedFocus.TOP_ROW -> {
+                            if (topRowFocus == 0) { cleanup(app); app.goBack() }
+                            else openSettings()
+                        }
+                        PausedFocus.SUBTITLE -> { hlStart = -1; hlEnd = -1; mode = Mode.PLAYING; play() }
+                        PausedFocus.SEEKBAR -> { hlStart = -1; hlEnd = -1; mode = Mode.PLAYING; play() }
+                    }
                     Mode.SETTINGS -> { handleSettingsSelect() }
                 }
             }
             android.view.KeyEvent.KEYCODE_DPAD_LEFT -> {
                 when (mode) {
                     Mode.PLAYING -> { SrtParser.prevCueBefore(cues, positionMs)?.let { seekTo(it.startMs) } }
-                    Mode.PAUSED -> { moveCursor(-1) }
+                    Mode.PAUSED -> when (pausedFocus) {
+                        PausedFocus.TOP_ROW -> topRowFocus = 0
+                        PausedFocus.SUBTITLE -> moveCursor(-1)
+                        PausedFocus.SEEKBAR -> seekRelative(-10000)
+                    }
                     Mode.SETTINGS -> { handleSettingsLeft() }
                 }
             }
             android.view.KeyEvent.KEYCODE_DPAD_RIGHT -> {
                 when (mode) {
                     Mode.PLAYING -> { SrtParser.nextCueAfter(cues, positionMs)?.let { seekTo(it.startMs) } }
-                    Mode.PAUSED -> { moveCursor(1) }
+                    Mode.PAUSED -> when (pausedFocus) {
+                        PausedFocus.TOP_ROW -> topRowFocus = 1
+                        PausedFocus.SUBTITLE -> moveCursor(1)
+                        PausedFocus.SEEKBAR -> seekRelative(10000)
+                    }
                     Mode.SETTINGS -> { handleSettingsRight() }
                 }
             }
             android.view.KeyEvent.KEYCODE_DPAD_UP -> {
                 when (mode) {
                     Mode.PLAYING -> { pause(); enterPaused() }
-                    Mode.PAUSED -> { /* nothing above words */ }
+                    Mode.PAUSED -> when (pausedFocus) {
+                        PausedFocus.TOP_ROW -> { /* already at top */ }
+                        PausedFocus.SUBTITLE -> pausedFocus = PausedFocus.TOP_ROW
+                        PausedFocus.SEEKBAR -> pausedFocus = PausedFocus.SUBTITLE
+                    }
                     Mode.SETTINGS -> { settingsFocus = (settingsFocus - 1).coerceAtLeast(0) }
                 }
             }
             android.view.KeyEvent.KEYCODE_DPAD_DOWN -> {
                 when (mode) {
                     Mode.PLAYING -> { pause(); enterPaused() }
-                    Mode.PAUSED -> { hlStart = -1; hlEnd = -1; mode = Mode.PLAYING; play() }
+                    Mode.PAUSED -> when (pausedFocus) {
+                        PausedFocus.TOP_ROW -> pausedFocus = PausedFocus.SUBTITLE
+                        PausedFocus.SUBTITLE -> pausedFocus = PausedFocus.SEEKBAR
+                        PausedFocus.SEEKBAR -> { hlStart = -1; hlEnd = -1; mode = Mode.PLAYING; play() }
+                    }
                     Mode.SETTINGS -> { settingsFocus = (settingsFocus + 1).coerceAtMost((settingsRows.size - 1).coerceAtLeast(0)) }
                 }
             }
@@ -425,17 +453,16 @@ class PlayerState(
                 when (mode) {
                     Mode.SETTINGS -> { mode = Mode.PAUSED }
                     Mode.PAUSED -> { hlStart = -1; hlEnd = -1; mode = Mode.PLAYING; play() }
-                    else -> {}
+                    Mode.PLAYING -> { cleanup(app); app.goBack() }
                 }
-            }
-            android.view.KeyEvent.KEYCODE_S -> {
-                if (mode == Mode.PAUSED) openSettings()
             }
         }
     }
 
     private fun enterPaused() {
         mode = Mode.PAUSED
+        pausedFocus = PausedFocus.SUBTITLE
+        topRowFocus = 0
         if (wordSpans.isNotEmpty()) {
             cursorIdx = 0
             updateHighlight()
@@ -1199,22 +1226,27 @@ class PlayerState(
         // Episode title
         rc.text("${episode.episode}. ${episode.title()}", pad, rc.dp(32f), rc.sp(16), 1f, 1f, 1f)
 
-        // Back button — store bbox
-        rc.text("←", pad, rc.dp(60f), rc.sp(22), 0.8f, 0.8f, 0.8f)
+        // Back button — store bbox + highlight
+        val backFocused = pausedFocus == PausedFocus.TOP_ROW && topRowFocus == 0
+        rc.text("←", pad, rc.dp(60f), rc.sp(22), if (backFocused) 1f else 0.8f, if (backFocused) 1f else 0.8f, if (backFocused) 1f else 0.8f)
         backBtnRect = floatArrayOf(0f, 0f, rc.dp(80f), rc.dp(80f))
+        if (backFocused) rc.border(0f, 0f, rc.dp(80f), rc.dp(80f), rc.dp(3f), 0.733f, 0.525f, 0.988f)
 
         // Settings button — visible pill, store bbox
         val setBtnW = rc.dp(80f)
         val setBtnH = rc.dp(36f)
         val setBtnX = rc.w - pad - setBtnW
         val setBtnY = rc.dp(12f)
+        val settFocused = pausedFocus == PausedFocus.TOP_ROW && topRowFocus == 1
         rc.solid(setBtnX, setBtnY, setBtnW, setBtnH, 0.102f, 0.102f, 0.180f)
         val setLabel = Lang.s("settings")
         val setLabelW = rc.font.measureText(setLabel, rc.sp(12))
         rc.text(setLabel, setBtnX + (setBtnW - setLabelW) / 2f, setBtnY + rc.dp(24f), rc.sp(12), 0.733f, 0.525f, 0.988f)
         settingsBtnRect = floatArrayOf(setBtnX, setBtnY, setBtnW, setBtnH)
+        if (settFocused) rc.border(setBtnX, setBtnY, setBtnW, setBtnH, rc.dp(3f), 0.733f, 0.525f, 0.988f)
 
         // Seekbar
+        val seekFocused = pausedFocus == PausedFocus.SEEKBAR
         val barW = rc.w - pad * 2
         rc.solid(pad, barY, barW, rc.dp(4f), 0.3f, 0.3f, 0.4f)
         val progress = if (durationMs > 0) positionMs.toFloat() / durationMs else 0f
@@ -1222,6 +1254,7 @@ class PlayerState(
         val handleX = pad + barW * progress
         rc.solid(handleX - rc.dp(6f), barY - rc.dp(6f), rc.dp(12f), rc.dp(16f), 1f, 1f, 1f)
         seekbarRect = floatArrayOf(pad, barY - rc.dp(24f), barW, rc.dp(48f))
+        if (seekFocused) rc.border(pad, barY - rc.dp(8f), barW, rc.dp(20f), rc.dp(2f), 0.733f, 0.525f, 0.988f)
 
         // Time
         val posStr = formatTime(positionMs)
