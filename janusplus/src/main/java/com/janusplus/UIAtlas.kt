@@ -14,22 +14,27 @@ import java.nio.ByteOrder
  */
 class UIAtlas(private val texArray: TextureArray, private val layer: Int) {
 
+    private val texSize get() = texArray.size.toFloat()
+
     data class Region(
         val x: Int, val y: Int, val w: Int, val h: Int,
-        var lastHash: Long = 0
+        var lastHash: Long = 0,
+        var texSize: Float = 4096f
     ) {
-        val u0 get() = x.toFloat() / 4096f  // UVs are fractions — valid at any atlas size
-        val v0 get() = y.toFloat() / 4096f
-        val u1 get() = (x + w).toFloat() / 4096f
-        val v1 get() = (y + h).toFloat() / 4096f
+        val u0 get() = x.toFloat() / texSize
+        val v0 get() = y.toFloat() / texSize
+        val u1 get() = (x + w).toFloat() / texSize
+        val v1 get() = (y + h).toFloat() / texSize
     }
 
+    private fun initRegion(r: Region): Region { r.texSize = texSize; return r }
+
     // Fixed regions — offsets chosen to never overlap
-    val subtitle = Region(0, 100, 2048, 160)
-    val dictPopup = Region(0, 280, 800, 500)
-    val titleBar = Region(0, 800, 2048, 60)
-    val controls = Region(0, 880, 2048, 200)
-    val settingsPanel = Region(0, 1100, 800, 900)
+    val subtitle = initRegion(Region(0, 100, 2048, 160))
+    val dictPopup = initRegion(Region(0, 280, 800, 500))
+    val titleBar = initRegion(Region(0, 800, 2048, 60))
+    val controls = initRegion(Region(0, 880, 2048, 200))
+    val settingsPanel = initRegion(Region(0, 1100, 800, 900))
 
     // Shared paint
     val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
