@@ -6,44 +6,19 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
 /**
- * CPU-rendered text regions within a texture array layer.
- * Each region has a fixed offset in the atlas, rendered via Canvas,
- * uploaded via glTexSubImage3D only when content changes.
+ * All text rendered via Canvas into regions of a texture array layer.
+ * Covers: labels, subtitles, dict popup, buttons — everything.
  *
- * All text quads use the same texture as covers/thumbnails — one flush.
+ * Uses a simple strip allocator: regions packed top-to-bottom.
+ * Each string gets a slot. Re-rendered only when content changes (hash check).
+ * One texture, one batch, one flush.
  */
-class UIAtlas(private val texArray: TextureArray, private val layer: Int) {
+class UIAtlas(val texArray: TextureArray, val layer: Int) {
 
-    private val texSize get() = texArray.size.toFloat()
+    val texSize get() = texArray.size.toFloat()
 
-    data class Region(
-        val x: Int, val y: Int, val w: Int, val h: Int,
-        var lastHash: Long = 0,
-        var texSize: Float = 4096f
-    ) {
-        val u0 get() = x.toFloat() / texSize
-        val v0 get() = y.toFloat() / texSize
-        val u1 get() = (x + w).toFloat() / texSize
-        val v1 get() = (y + h).toFloat() / texSize
-    }
-
-    private fun initRegion(r: Region): Region { r.texSize = texSize; return r }
-
-    // Fixed regions — offsets chosen to never overlap
-    val subtitle = initRegion(Region(0, 100, 2048, 160))
-    val dictPopup = initRegion(Region(0, 280, 800, 500))
-    val titleBar = initRegion(Region(0, 800, 2048, 60))
-    val controls = initRegion(Region(0, 880, 2048, 200))
-    val settingsPanel = initRegion(Region(0, 1100, 800, 900))
-
-    // Shared paint
     val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.WHITE
-        textAlign = Paint.Align.LEFT
-    }
-    val strokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.BLACK
-        style = Paint.Style.STROKE
         textAlign = Paint.Align.LEFT
     }
 
@@ -60,67 +35,106 @@ class UIAtlas(private val texArray: TextureArray, private val layer: Int) {
     val whiteU = 1f / 4096f
     val whiteV = 1f / 4096f
 
+    // ── Strip allocator ──
+    // Packs text slots top-to-bottom starting at y=8 (below white pixel)
+    // Resets each frame — all slots re-evaluated
+
+    data class Slot(
+        var x: Int, var y: Int, var w: Int, var h: Int,
+        var hash: Long = 0,
+        var valid: Boolean = false
+    ) {
+        val u0 get() = x.toFloat()
+        val v0 get() = y.toFloat()
+        val u1 get() = (x + w).toFloat()
+        val v1 get() = (y + h).toFloat()
+    }
+
+    private val slots = HashMap<Long, Slot>(64)
+    private var nextY = 8
+    private val maxY get() = texArray.size
+
+    fun beginFrame() {
+        // Mark all slots as not-yet-used this frame
+        // Don't deallocate — positions stay stable for cache hits
+    }
+
     /**
-     * Render text into a region. Returns true if content changed and was uploaded.
+     * Render text and return UV coordinates for a quad.
+     * Returns null if the atlas is full.
      */
-    fun renderText(
-        region: Region,
+    fun text(
+        key: Long,
         text: String,
         textSize: Float,
         color: Int = Color.WHITE,
-        bgColor: Int = Color.TRANSPARENT,
-        outlineWidth: Float = 0f,
-        outlineColor: Int = Color.BLACK,
-        shadowRadius: Float = 0f,
-        centerH: Boolean = false,
-    ): Boolean {
-        val hash = text.hashCode().toLong() * 31 + textSize.toLong() * 17 + color.toLong()
-        if (hash == region.lastHash) return false
-        region.lastHash = hash
+        maxWidth: Float = 0f,
+    ): Slot? {
+        if (text.isEmpty()) return null
 
-        val bmp = Bitmap.createBitmap(region.w, region.h, Bitmap.Config.ARGB_8888)
-        val canvas = Canvas(bmp)
-        canvas.drawColor(bgColor)
+        val hash = text.hashCode().toLong() * 31 + textSize.toLong() * 17 + color.toLong()
+
+        val existing = slots[key]
+        if (existing != null && existing.hash == hash && existing.valid) {
+            return existing
+        }
 
         paint.textSize = textSize
         paint.typeface = typeface
         paint.color = color
-        if (shadowRadius > 0f) {
-            paint.setShadowLayer(shadowRadius, 2f, 2f, Color.argb(128, 0, 0, 0))
-        } else {
-            paint.clearShadowLayer()
-        }
-
-        strokePaint.textSize = textSize
-        strokePaint.typeface = typeface
-        strokePaint.strokeWidth = outlineWidth
-        strokePaint.color = outlineColor
 
         val fm = paint.fontMetrics
-        val lineH = -fm.top + fm.bottom
+        val measuredW = paint.measureText(text)
+        val w = (if (maxWidth > 0f) minOf(measuredW, maxWidth) else measuredW).toInt() + 8
+        val h = (-fm.top + fm.bottom).toInt() + 4
 
-        val lines = text.split("\n")
-        var y = -fm.top + 4f
-
-        for (line in lines) {
-            val x = if (centerH) (region.w - paint.measureText(line)) / 2f else 8f
-            if (outlineWidth > 0f) canvas.drawText(line, x, y, strokePaint)
-            canvas.drawText(line, x, y, paint)
-            y += lineH * 1.2f
+        // Reuse existing slot position if same size, or allocate new
+        val slot: Slot
+        if (existing != null && existing.w >= w && existing.h >= h) {
+            slot = existing
+        } else {
+            // Allocate new position
+            if (nextY + h > maxY) return null // atlas full
+            slot = Slot(0, nextY, w, h)
+            slots[key] = slot
+            nextY += h + 2 // 2px gap
         }
 
-        uploadRegion(region.x, region.y, bmp)
+        slot.hash = hash
+        slot.valid = true
+
+        // Render to bitmap
+        val bmp = Bitmap.createBitmap(slot.w, slot.h, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bmp)
+
+        if (maxWidth > 0f && measuredW > maxWidth) {
+            canvas.save()
+            canvas.clipRect(0f, 0f, maxWidth, slot.h.toFloat())
+            canvas.drawText(text, 4f, -fm.top + 2f, paint)
+            canvas.restore()
+        } else {
+            canvas.drawText(text, 4f, -fm.top + 2f, paint)
+        }
+
+        uploadRegion(slot.x, slot.y, bmp)
         bmp.recycle()
-        return true
+        return slot
     }
 
     /**
-     * Render subtitle with furigana into the subtitle region.
+     * Render subtitle with shade, outline, furigana.
      */
+    data class SubtitleWord(val start: Int, val end: Int, val furigana: List<FuriSpan>)
+    data class FuriSpan(val charIdx: Int, val reading: String)
+
+    private var subtitleSlot = Slot(0, 0, 0, 0)
+    private var subtitleHash = 0L
+
     fun renderSubtitle(
         text: String,
         words: List<SubtitleWord>,
         textSize: Float,
+        maxWidth: Int,
         furiganaScale: Float = 0.45f,
         furiganaGap: Float = 0.7f,
         rowSpacing: Float = 1.4f,
@@ -129,32 +143,52 @@ class UIAtlas(private val texArray: TextureArray, private val layer: Int) {
         textColor: Int = Color.WHITE,
         outlineWidth: Float = 3f,
         eink: Boolean = false,
-    ): Boolean {
-        val hash = text.hashCode().toLong() * 31 + textSize.toLong() * 17 + textColor.toLong() + (if (eink) 1 else 0)
-        if (hash == subtitle.lastHash) return false
-        subtitle.lastHash = hash
-
-        val bmp = Bitmap.createBitmap(subtitle.w, subtitle.h, Bitmap.Config.ARGB_8888)
-        val canvas = Canvas(bmp)
+    ): Slot? {
+        val hash = text.hashCode().toLong() * 31 + textSize.toLong() * 17 + textColor + (if (eink) 1 else 0)
+        if (hash == subtitleHash && subtitleSlot.valid) return subtitleSlot
 
         paint.textSize = textSize
         paint.typeface = typeface
         paint.color = textColor
         paint.letterSpacing = letterSpacing / textSize
-        if (!eink) {
-            paint.setShadowLayer(4f, 1.5f, 1.5f, Color.argb(128, 0, 0, 0))
-            strokePaint.textSize = textSize
-            strokePaint.typeface = typeface
-            strokePaint.letterSpacing = paint.letterSpacing
-            strokePaint.strokeWidth = outlineWidth
-            strokePaint.color = Color.BLACK
-        } else {
-            paint.clearShadowLayer()
-        }
 
         val fm = paint.fontMetrics
         val lineH = -fm.top + fm.bottom
         val furiSize = textSize * furiganaScale
+        val hasFuri = words.any { it.furigana.isNotEmpty() }
+        val furiH = if (hasFuri) furiSize * 1.3f else 0f
+
+        val lines = text.split("\n")
+        val lineWidths = lines.map { paint.measureText(it) }
+        val maxLineW = lineWidths.maxOrNull() ?: 0f
+
+        val bmpW = (maxLineW + 24).toInt().coerceAtMost(maxWidth)
+        val bmpH = (lines.size * lineH * rowSpacing + furiH + 20).toInt()
+
+        // Allocate at a fixed position for subtitles (bottom of atlas)
+        val subY = texArray.size - bmpH - 4
+        subtitleSlot = Slot(0, subY, bmpW, bmpH)
+        subtitleSlot.hash = hash
+        subtitleSlot.valid = true
+        subtitleHash = hash
+
+        val bmp = Bitmap.createBitmap(bmpW, bmpH, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bmp)
+
+        // Shade background
+        val shadePaint = Paint().apply { color = bgColor }
+        canvas.drawRect(0f, 0f, bmpW.toFloat(), bmpH.toFloat(), shadePaint)
+
+        // Outline paint
+        val strokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            this.textSize = textSize
+            this.typeface = this@UIAtlas.typeface
+            this.letterSpacing = paint.letterSpacing
+            this.style = Paint.Style.STROKE
+            this.strokeWidth = outlineWidth
+            this.color = Color.BLACK
+        }
+
         val furiPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             this.textSize = furiSize
             this.typeface = this@UIAtlas.typeface
@@ -162,26 +196,17 @@ class UIAtlas(private val texArray: TextureArray, private val layer: Int) {
             this.textAlign = Paint.Align.CENTER
         }
 
-        val lines = text.split("\n")
-        val lineWidths = lines.map { paint.measureText(it) }
-        val maxW = lineWidths.maxOrNull() ?: 0f
-        val hasFuri = words.any { it.furigana.isNotEmpty() }
-        val furiH = if (hasFuri) furiSize * 1.3f else 0f
+        if (!eink) {
+            paint.setShadowLayer(4f, 1.5f, 1.5f, Color.argb(128, 0, 0, 0))
+        } else {
+            paint.clearShadowLayer()
+        }
 
-        val totalH = lines.size * lineH * rowSpacing + furiH
-        val shadeW = maxW + 20f
-        val shadeX = (subtitle.w - shadeW) / 2f
-        val shadeY = (subtitle.h - totalH) / 2f - 8f
-
-        // Background shade
-        val shadePaint = Paint().apply { color = bgColor }
-        canvas.drawRect(shadeX, shadeY, shadeX + shadeW, shadeY + totalH + 16f, shadePaint)
-
-        var y = shadeY + furiH + (-fm.top) + 8f
+        var y = furiH + (-fm.top) + 8f
 
         for ((lineIdx, line) in lines.withIndex()) {
             val lineW = lineWidths[lineIdx]
-            val x = (subtitle.w - lineW) / 2f
+            val x = (bmpW - lineW) / 2f
 
             if (!eink) canvas.drawText(line, x, y, strokePaint)
             canvas.drawText(line, x, y, paint)
@@ -202,7 +227,6 @@ class UIAtlas(private val texArray: TextureArray, private val layer: Int) {
                         val furiW = furiPaint.measureText(furi.reading)
                         val furiX = x + prefixW + charW / 2f
                         val furiY = y - lineH * furiganaGap
-
                         if (furiW > charW) {
                             canvas.save()
                             canvas.scale(charW / furiW, 1f, furiX, furiY)
@@ -218,22 +242,17 @@ class UIAtlas(private val texArray: TextureArray, private val layer: Int) {
             y += lineH * rowSpacing
         }
 
-        uploadRegion(subtitle.x, subtitle.y, bmp)
+        paint.clearShadowLayer()
+        paint.letterSpacing = 0f
+
+        uploadRegion(subtitleSlot.x, subtitleSlot.y, bmp)
         bmp.recycle()
-        return true
+        return subtitleSlot
     }
 
-    data class SubtitleWord(val start: Int, val end: Int, val furigana: List<FuriSpan>)
-    data class FuriSpan(val charIdx: Int, val reading: String)
-
-    /**
-     * Clear a region (make transparent).
-     */
-    fun clearRegion(region: Region) {
-        region.lastHash = 0
-        val bmp = Bitmap.createBitmap(region.w, region.h, Bitmap.Config.ARGB_8888)
-        uploadRegion(region.x, region.y, bmp)
-        bmp.recycle()
+    fun clearSubtitle() {
+        subtitleHash = 0
+        subtitleSlot.valid = false
     }
 
     fun measureText(text: String, textSize: Float): Float {
@@ -248,10 +267,23 @@ class UIAtlas(private val texArray: TextureArray, private val layer: Int) {
         return -fm.top + fm.bottom
     }
 
+    fun textAscent(textSize: Float): Float {
+        paint.textSize = textSize
+        return -paint.fontMetrics.top
+    }
+
+    fun resetSlots() {
+        slots.clear()
+        nextY = 8
+        subtitleHash = 0
+        subtitleSlot.valid = false
+    }
+
     private fun uploadRegion(x: Int, y: Int, bmp: Bitmap) {
         val src = if (bmp.config != Bitmap.Config.ARGB_8888)
             bmp.copy(Bitmap.Config.ARGB_8888, false).also { bmp.recycle() } else bmp
         val w = src.width; val h = src.height
+        if (x + w > texArray.size || y + h > texArray.size) return
         val buf = ByteBuffer.allocateDirect(w * h * 4).order(ByteOrder.nativeOrder())
         src.copyPixelsToBuffer(buf)
         buf.position(0)

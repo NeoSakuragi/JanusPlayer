@@ -1315,9 +1315,10 @@ class PlayerState(
         }
         atlas.typeface = cachedTypeface ?: android.graphics.Typeface.DEFAULT
 
-        atlas.renderSubtitle(
+        val slot = atlas.renderSubtitle(
             displayText, words,
             textSize = rc.sp(subFontSize).toFloat(),
+            maxWidth = rc.w.toInt(),
             furiganaScale = 0.45f,
             furiganaGap = deltaFurigana,
             rowSpacing = deltaRow,
@@ -1326,16 +1327,18 @@ class PlayerState(
             textColor = if (einkMode) android.graphics.Color.BLACK else android.graphics.Color.WHITE,
             outlineWidth = if (einkMode) 0f else rc.dp(2f),
             eink = einkMode,
-        )
+        ) ?: return
 
-        // Draw the subtitle region as a quad
-        val region = atlas.subtitle
-        val subW = region.w.toFloat()
-        val subH = region.h.toFloat()
+        // Draw the subtitle slot as a quad
+        val subW = slot.w.toFloat()
+        val subH = slot.h.toFloat()
         val subX = (rc.w - subW) / 2f
         val subY = barY - rc.dp(24f) - subH - deltaYShift * rc.density
         subtitleRect = floatArrayOf(subX, subY, subW, subH)
-        rc.drawRegion(region, subX, subY, subW, subH)
+        rc.batch.addQuad(subX, subY, subW, subH,
+            slot.u0 / atlas.texSize, slot.v0 / atlas.texSize,
+            slot.u1 / atlas.texSize, slot.v1 / atlas.texSize,
+            layer = com.janusplus.TextureArray.LAYER_UI.toFloat())
     }
 
     // ── Subtitle Bitmap Rendering (legacy) ──

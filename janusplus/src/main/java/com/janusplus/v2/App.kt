@@ -84,20 +84,32 @@ class RC(
             TextureArray.LAYER_UI.toFloat())
     }
 
+    private var textKeyCounter = 0L
+
     fun text(s: String, x: Float, y: Float, size: Int, r: Float, g: Float, b: Float, a: Float = 1f,
              volatile: Boolean = false) {
-        val st = screenText
-        if (st != null && !volatile) {
-            st.drawText(s, x, y, size.toFloat(), typeface, r, g, b, a)
+        val atlas = ui
+        if (atlas != null) {
+            val key = s.hashCode().toLong() * 31 + size + (x * 7).toLong() + (y * 13).toLong()
+            val color = android.graphics.Color.argb((a * 255).toInt(), (r * 255).toInt(), (g * 255).toInt(), (b * 255).toInt())
+            val slot = atlas.text(key, s, size.toFloat(), color) ?: return
+            batch.addQuad(x, y - atlas.textAscent(size.toFloat()), slot.w.toFloat(), slot.h.toFloat(),
+                slot.u0 / atlas.texSize, slot.v0 / atlas.texSize, slot.u1 / atlas.texSize, slot.v1 / atlas.texSize,
+                layer = TextureArray.LAYER_UI.toFloat())
         } else {
             font.addText(batch, s, x, y, size, r, g, b, a)
         }
     }
 
     fun textClipped(s: String, x: Float, y: Float, size: Int, maxW: Float, r: Float, g: Float, b: Float, a: Float = 1f) {
-        val st = screenText
-        if (st != null) {
-            st.drawTextClipped(s, x, y, size.toFloat(), maxW, typeface, r, g, b, a)
+        val atlas = ui
+        if (atlas != null) {
+            val key = s.hashCode().toLong() * 31 + size + (x * 7).toLong() + (y * 13).toLong() + (maxW * 3).toLong()
+            val color = android.graphics.Color.argb(255, (r * 255).toInt(), (g * 255).toInt(), (b * 255).toInt())
+            val slot = atlas.text(key, s, size.toFloat(), color, maxW) ?: return
+            batch.addQuad(x, y - atlas.textAscent(size.toFloat()), slot.w.toFloat(), slot.h.toFloat(),
+                slot.u0 / atlas.texSize, slot.v0 / atlas.texSize, slot.u1 / atlas.texSize, slot.v1 / atlas.texSize,
+                layer = TextureArray.LAYER_UI.toFloat())
         } else {
             font.addTextClipped(batch, s, x, y, size, maxW, r, g, b, a)
         }
@@ -157,8 +169,10 @@ class RC(
         solid(x + w - t, y, t, h, r, g, b, a)
     }
 
-    fun drawRegion(region: UIAtlas.Region, x: Float, y: Float, w: Float, h: Float) {
-        batch.addQuad(x, y, w, h, region.u0, region.v0, region.u1, region.v1,
+    fun drawRegion(slot: UIAtlas.Slot, x: Float, y: Float) {
+        val ts = ui?.texSize ?: return
+        batch.addQuad(x, y, slot.w.toFloat(), slot.h.toFloat(),
+            slot.u0 / ts, slot.v0 / ts, slot.u1 / ts, slot.v1 / ts,
             layer = TextureArray.LAYER_UI.toFloat())
     }
 
@@ -373,7 +387,7 @@ class App(val context: Context, private val assets: android.content.res.AssetMan
             }
             isBackNavigation = false
             currentState.cleanup(this)
-            screenTextRenderer?.release()
+            uiAtlas?.resetSlots()
             currentScreen = trans.first
             currentState = trans.second
             currentState.init(this)
@@ -421,20 +435,13 @@ class App(val context: Context, private val assets: android.content.res.AssetMan
         GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
         batch.begin()
 
-        // CPU text overlay only for non-player screens (player uses SubtitleBitmap for subs)
-        val str = if (currentScreen != Screen.PLAYER) screenTextRenderer else null
-        str?.beginFrame(width.toInt(), height.toInt())
-        val rc = RC(batch, font, texArray, coverAtlas, thumbAtlas, width, height, density, einkMode, str, defaultTypeface, uiAtlas)
+        val rc = RC(batch, font, texArray, coverAtlas, thumbAtlas, width, height, density, einkMode, null, defaultTypeface, uiAtlas)
         currentState.draw(this, rc)
 
         val flushT0 = System.nanoTime()
         batch.flush()
-
-        val strT0 = System.nanoTime()
-        str?.endFrame()
-        str?.draw(batch, width, height)
-        val strMs = (System.nanoTime() - strT0) / 1_000_000f
         val flushMs = (System.nanoTime() - flushT0) / 1_000_000f
+        val strMs = 0f
         hitRects = rc.hitRects.toList()
 
         val totalMs = (System.nanoTime() - now) / 1_000_000f
