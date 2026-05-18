@@ -277,18 +277,19 @@ class App(val context: Context, private val assets: android.content.res.AssetMan
         defaultTypeface = try { android.graphics.Typeface.createFromAsset(assets, "fonts/NotoSansJP-Regular.ttf") }
                           catch (_: Exception) { android.graphics.Typeface.DEFAULT }
 
-        // UI Atlas — CPU-rendered text regions in the texture array
-        uiAtlas = UIAtlas(texArray, TextureArray.LAYER_UI).also {
-            it.typeface = defaultTypeface
-            it.uploadWhitePixel()
-        }
         android.util.Log.i("App", "GL max: ${maxTexSize[0]}, layers: ${maxLayers[0]}")
         val uiTexSize = if (isTV) 2048 else 4096
         texArray = TextureArray(uiTexSize, TextureArray.LAYER_THUMB_FIRST + TextureArray.LAYER_THUMB_COUNT)
         texArray.initGL()
 
+        // UI Atlas — CPU-rendered text regions in the texture array
+        uiAtlas = UIAtlas(texArray, TextureArray.LAYER_UI).also {
+            it.typeface = defaultTypeface
+            it.uploadWhitePixel()
+        }
+
         font = FontAtlas(assets)
-        font.skipTextureUpload = (screenTextRenderer != null)
+        font.skipTextureUpload = true
         font.initGL(texArray)
 
         etc2Array = CompressedTextureArray(4096, 4)
