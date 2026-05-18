@@ -14,7 +14,7 @@ import com.janusplus.TextureArray
 import com.janusplus.CompressedTextureArray
 import com.janusplus.ThumbnailAtlas
 import com.janusplus.VideoBlitThread
-import com.janusplus.TextBitmapCache
+import com.janusplus.ScreenTextRenderer
 import com.janusplus.VideoSurface
 import com.janusplus.JanusApi
 import javax.microedition.khronos.egl.EGLConfig
@@ -49,8 +49,8 @@ class RC(
     val h: Float,
     val density: Float,
     val eink: Boolean = false,
-    val cpuText: TextBitmapCache? = null,
-    val shader: ShaderProgram? = null,
+    val screenText: ScreenTextRenderer? = null,
+    val typeface: android.graphics.Typeface = android.graphics.Typeface.DEFAULT,
 ) {
     // Theme colors
     val textR get() = if (eink) 0.1f else 1f
@@ -79,11 +79,21 @@ class RC(
     }
 
     fun text(s: String, x: Float, y: Float, size: Int, r: Float, g: Float, b: Float, a: Float = 1f) {
-        font.addText(batch, s, x, y, size, r, g, b, a)
+        val st = screenText
+        if (st != null) {
+            st.drawText(s, x, y, size.toFloat(), typeface, r, g, b, a)
+        } else {
+            font.addText(batch, s, x, y, size, r, g, b, a)
+        }
     }
 
     fun textClipped(s: String, x: Float, y: Float, size: Int, maxW: Float, r: Float, g: Float, b: Float, a: Float = 1f) {
-        font.addTextClipped(batch, s, x, y, size, maxW, r, g, b, a)
+        val st = screenText
+        if (st != null) {
+            st.drawTextClipped(s, x, y, size.toFloat(), maxW, typeface, r, g, b, a)
+        } else {
+            font.addTextClipped(batch, s, x, y, size, maxW, r, g, b, a)
+        }
     }
 
     fun textWrapped(s: String, x: Float, y: Float, size: Int, maxW: Float, maxLines: Int,
@@ -158,8 +168,9 @@ class App(val context: Context, private val assets: android.content.res.AssetMan
     val videoSurface = VideoSurface()
     var blitThread: VideoBlitThread? = null
     var einkMode = false
-    var cpuTextCache: TextBitmapCache? = null
     var isTV = false
+    var screenTextRenderer: ScreenTextRenderer? = null
+    var defaultTypeface: android.graphics.Typeface = android.graphics.Typeface.DEFAULT
 
     val projMatrix = FloatArray(16)
     var width = 0f; private set
@@ -230,9 +241,11 @@ class App(val context: Context, private val assets: android.content.res.AssetMan
         val maxLayers = IntArray(1); GLES30.glGetIntegerv(GLES30.GL_MAX_ARRAY_TEXTURE_LAYERS, maxLayers, 0)
         isTV = context.packageManager.hasSystemFeature("android.software.leanback")
         android.util.Log.i("App", "GL max: ${maxTexSize[0]}, isTV: $isTV")
+        screenTextRenderer = ScreenTextRenderer()
+        defaultTypeface = try { android.graphics.Typeface.createFromAsset(assets, "fonts/NotoSansJP-Regular.ttf") }
+                          catch (_: Exception) { android.graphics.Typeface.DEFAULT }
         android.util.Log.i("App", "GL max: ${maxTexSize[0]}, layers: ${maxLayers[0]}")
-        // UI array: covers + banner + thumbs at 2048 (5 layers × 16MB = 80MB)
-        texArray = TextureArray(2048, 5)
+        texArray = TextureArray(4096, TextureArray.LAYER_THUMB_FIRST + TextureArray.LAYER_THUMB_COUNT)
         texArray.initGL()
 
         font = FontAtlas(assets)
@@ -372,8 +385,13 @@ class App(val context: Context, private val assets: android.content.res.AssetMan
         GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
         batch.begin()
 
-        val rc = RC(batch, font, texArray, coverAtlas, thumbAtlas, width, height, density, einkMode, cpuTextCache, shader)
+        screenTextRenderer?.beginFrame(width.toInt(), height.toInt())
+        val rc = RC(batch, font, texArray, coverAtlas, thumbAtlas, width, height, density, einkMode, screenTextRenderer, defaultTypeface)
         currentState.draw(this, rc)
+
+        // Upload and draw CPU-rendered text overlay
+        screenTextRenderer?.endFrame()
+        screenTextRenderer?.draw(batch, width, height)
 
         val flushT0 = System.nanoTime()
         batch.flush()

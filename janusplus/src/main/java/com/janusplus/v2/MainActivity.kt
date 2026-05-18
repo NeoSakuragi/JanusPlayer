@@ -18,7 +18,9 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
-        app = App(this, assets, resources.displayMetrics.density)
+        val isTV = packageManager.hasSystemFeature("android.software.leanback")
+        val density = if (isTV) 1.5f else resources.displayMetrics.density
+        app = App(this, assets, density)
 
         // ExoPlayer with aggressive buffering — start playback ASAP
         val loadControl = androidx.media3.exoplayer.DefaultLoadControl.Builder()
