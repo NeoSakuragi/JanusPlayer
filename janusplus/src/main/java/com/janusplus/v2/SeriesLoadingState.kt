@@ -83,14 +83,19 @@ class SeriesLoadingState(private val item: JanusApi.LibraryItem) : GameState {
             val tf = try { android.graphics.Typeface.createFromAsset(app.context.assets, "fonts/NotoSansJP-Regular.ttf") }
                      catch (_: Exception) { android.graphics.Typeface.DEFAULT }
 
-            // Build glyph atlases at the sizes we need
-            val titleAtlas = GlyphAtlas(tf, 28f * density).also { it.build(listOf(title, "←")) }
-            val bodyAtlas = GlyphAtlas(tf, 13f * density).also { it.build(allTexts) }
-            val btnAtlas = GlyphAtlas(tf, 16f * density).also { it.build(listOf(Lang.s("play"), "▶ ")) }
-            val smallAtlas = GlyphAtlas(tf, 10f * density).also { it.build(allTexts) }
-            val settAtlas = GlyphAtlas(tf, 12f * density).also { it.build(listOf(Lang.s("settings"))) }
+            // Build glyph atlases — render ALL glyphs, get bitmaps back
+            val titleAtlas = GlyphAtlas(tf, 28f * density)
+            val titleBmp = titleAtlas.build(listOf(title, "←"))
+            val bodyAtlas = GlyphAtlas(tf, 13f * density)
+            val bodyBmp = bodyAtlas.build(allTexts)
+            val btnAtlas = GlyphAtlas(tf, 16f * density)
+            val btnBmp = btnAtlas.build(listOf(Lang.s("play"), "▶ "))
+            val smallAtlas = GlyphAtlas(tf, 10f * density)
+            val smallBmp = smallAtlas.build(allTexts)
+            val settAtlas = GlyphAtlas(tf, 12f * density)
+            val settBmp = settAtlas.build(listOf(Lang.s("settings")))
 
-            // 6. Build the page
+            // 6. Build the page — bitmaps included, ready for upload
             page = SeriesDisplayPage(
                 item = item,
                 title = title,
@@ -103,11 +108,11 @@ class SeriesLoadingState(private val item: JanusApi.LibraryItem) : GameState {
                 thumbBmp = thumbBmp,
                 thumbW = header.thumbW.toFloat(), thumbH = header.thumbH.toFloat(),
                 atlasW = header.atlasW, atlasH = header.atlasH, atlasCols = header.atlasCols,
-                titleAtlas = titleAtlas,
-                bodyAtlas = bodyAtlas,
-                btnAtlas = btnAtlas,
-                smallAtlas = smallAtlas,
-                settAtlas = settAtlas,
+                titleAtlas = titleAtlas, titleBmp = titleBmp,
+                bodyAtlas = bodyAtlas, bodyBmp = bodyBmp,
+                btnAtlas = btnAtlas, btnBmp = btnBmp,
+                smallAtlas = smallAtlas, smallBmp = smallBmp,
+                settAtlas = settAtlas, settBmp = settBmp,
                 density = density,
             )
             ready = true

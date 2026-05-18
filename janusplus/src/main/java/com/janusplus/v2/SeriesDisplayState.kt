@@ -33,40 +33,24 @@ class SeriesDisplayState(private val page: SeriesDisplayPage) : GameState {
 
     override fun init(app: App) {
         thumbLayer = app.texArray.nextThumbLayer()
+        val texSize = app.texArray.size.toFloat()
 
-        // Upload bitmaps to VRAM
-        page.bannerBmp?.let {
-            app.texArray.uploadLayerNow(TextureArray.LAYER_BANNER, it)
-        }
-        page.thumbBmp?.let {
-            app.texArray.uploadLayerNow(thumbLayer, it)
-        }
+        // Upload pre-built bitmaps to VRAM — no Canvas, no build, just upload
+        page.bannerBmp?.let { app.texArray.uploadLayerNow(TextureArray.LAYER_BANNER, it) }
+        page.thumbBmp?.let { app.texArray.uploadLayerNow(thumbLayer, it) }
 
-        // Upload glyph atlases — pack them all into LAYER_UI
-        // We use glTexSubImage3D to place each atlas bitmap at a known offset
-        uploadGlyphAtlas(app, page.titleAtlas, 0, 100)
-        uploadGlyphAtlas(app, page.bodyAtlas, 0, 300)
-        uploadGlyphAtlas(app, page.btnAtlas, 0, 600)
-        uploadGlyphAtlas(app, page.smallAtlas, 0, 800)
-        uploadGlyphAtlas(app, page.settAtlas, 0, 950)
+        // Upload glyph atlas bitmaps into LAYER_UI at fixed Y offsets
+        uploadAndOffset(app, page.titleAtlas, page.titleBmp, 0, 100, texSize)
+        uploadAndOffset(app, page.bodyAtlas, page.bodyBmp, 0, 300, texSize)
+        uploadAndOffset(app, page.btnAtlas, page.btnBmp, 0, 600, texSize)
+        uploadAndOffset(app, page.smallAtlas, page.smallBmp, 0, 800, texSize)
+        uploadAndOffset(app, page.settAtlas, page.settBmp, 0, 950, texSize)
         glyphTexUploaded = true
     }
 
-    private fun uploadGlyphAtlas(app: App, atlas: GlyphAtlas, offsetX: Int, offsetY: Int) {
-        val texts = listOf("") // dummy — atlas already built
-        val bmp = atlas.build(emptyList()) // rebuild returns same cached data? No — build() creates new bitmap
-        // Actually, we need the bitmap from the loading state. Let me store it.
-        // For now, rebuild:
-        val allTexts = mutableListOf(page.title, page.synopsis, Lang.s("play"), Lang.s("settings"),
-            Lang.s("episodes", page.episodeCount), "←", "▶ ")
-        for (ep in page.episodes) {
-            allTexts.add("${ep.episode}. ${ep.titleEn}")
-            allTexts.add("${ep.durationSec / 60} min")
-        }
-        val atlasBmp = atlas.build(allTexts)
-
-        // Offset all glyph UVs by the atlas position in LAYER_UI
-        val texSize = app.texArray.size.toFloat()
+    private fun uploadAndOffset(app: App, atlas: GlyphAtlas, bmp: android.graphics.Bitmap,
+                                 offsetX: Int, offsetY: Int, texSize: Float) {
+        // Offset glyph UVs from atlas-local to LAYER_UI-global coordinates
         for ((cp, g) in atlas.glyphs) {
             atlas.glyphs[cp] = GlyphAtlas.Glyph(
                 u0 = (g.u0 * atlas.atlasW + offsetX) / texSize,
@@ -77,17 +61,17 @@ class SeriesDisplayState(private val page: SeriesDisplayPage) : GameState {
             )
         }
 
-        // Upload to LAYER_UI at offset
-        val w = atlasBmp.width; val h = atlasBmp.height
+        // Upload bitmap to LAYER_UI at offset
+        val w = bmp.width; val h = bmp.height
         if (offsetX + w <= app.texArray.size && offsetY + h <= app.texArray.size) {
             val buf = java.nio.ByteBuffer.allocateDirect(w * h * 4).order(java.nio.ByteOrder.nativeOrder())
-            atlasBmp.copyPixelsToBuffer(buf); buf.position(0)
+            bmp.copyPixelsToBuffer(buf); buf.position(0)
             android.opengl.GLES30.glBindTexture(android.opengl.GLES30.GL_TEXTURE_2D_ARRAY, app.texArray.textureId)
             android.opengl.GLES30.glTexSubImage3D(android.opengl.GLES30.GL_TEXTURE_2D_ARRAY, 0,
                 offsetX, offsetY, glyphLayer, w, h, 1,
                 android.opengl.GLES30.GL_RGBA, android.opengl.GLES30.GL_UNSIGNED_BYTE, buf)
         }
-        atlasBmp.recycle()
+        bmp.recycle()
     }
 
     private fun computeLayout(rc: RC) {

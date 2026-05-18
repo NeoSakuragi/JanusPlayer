@@ -23,12 +23,18 @@ data class SeriesDisplayPage(
     val atlasW: Int, val atlasH: Int, val atlasCols: Int,
 
     // Glyph atlases per text size — the LUTs
-    // Each maps codepoint → (u0, v0, u1, v1, w, h, advance, ascent)
-    val titleAtlas: GlyphAtlas,   // 28sp — series title, back arrow
-    val bodyAtlas: GlyphAtlas,    // 13sp — synopsis, episode titles, episode count
-    val btnAtlas: GlyphAtlas,     // 16sp — play button
-    val smallAtlas: GlyphAtlas,   // 10sp — duration labels
-    val settAtlas: GlyphAtlas,    // 12sp — settings button
+    val titleAtlas: GlyphAtlas,
+    val bodyAtlas: GlyphAtlas,
+    val btnAtlas: GlyphAtlas,
+    val smallAtlas: GlyphAtlas,
+    val settAtlas: GlyphAtlas,
+
+    // Pre-rendered atlas bitmaps (uploaded to VRAM in display init, then recycled)
+    val titleBmp: android.graphics.Bitmap,
+    val bodyBmp: android.graphics.Bitmap,
+    val btnBmp: android.graphics.Bitmap,
+    val smallBmp: android.graphics.Bitmap,
+    val settBmp: android.graphics.Bitmap,
 
     val density: Float,
 ) {
