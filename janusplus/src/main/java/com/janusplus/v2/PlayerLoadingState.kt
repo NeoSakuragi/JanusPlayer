@@ -30,16 +30,22 @@ class PlayerLoadingState(
         val density = app.density
         val texW = app.texArray.size
         val token = api.token ?: ""
-        val tf = app.defaultTypeface
+        val fontAssets = listOf(
+            "fonts/NotoSansJP-Regular.ttf", "fonts/NotoSerifJP-Regular.ttf",
+            "fonts/ShipporiMincho-Regular.ttf", "fonts/KleeOne-Regular.ttf",
+            "fonts/KosugiMaru-Regular.ttf"
+        )
 
         // 1. Load prefs
         val p = app.context.getSharedPreferences("player_prefs", android.content.Context.MODE_PRIVATE)
+        val fontIdx = p.getInt("font_idx", 0)
         val prefs = PlayerPrefs(
             deltaFurigana = p.getFloat("df", 0.7f),
             deltaRow = p.getFloat("dr", 1.4f),
             deltaSpacing = p.getFloat("ds", 0f),
             deltaYShift = p.getFloat("dy", 0f),
             subFontSize = p.getInt("font_size", 32),
+            fontIdx = fontIdx,
             readingMode = p.getInt("reading_mode", 3),
             condensedMode = p.getBoolean("condensed", false),
             debugBoxes = p.getBoolean("debug_boxes", false),
@@ -98,8 +104,9 @@ class PlayerLoadingState(
         allSubTexts.add(ReadingUtils.HIRAGANA)
         allSubTexts.add(ReadingUtils.KATAKANA)
 
-        // 4. Build UI atlases — one base (18sp) + one icon (36sp)
-        // All other UI sizes use RC.textScaled() from the 18sp atlas
+        // 4. Build UI atlases — use selected font for UI too
+        val tf = try { android.graphics.Typeface.createFromAsset(app.context.assets, fontAssets[fontIdx.coerceIn(0, fontAssets.size - 1)]) }
+                 catch (_: Exception) { app.defaultTypeface }
         val uiTexts = listOf(
             "${episode.episode}. ${episode.title()}",
             "←", "▶", "⏮", "⏭", "●", Lang.s("settings"),
@@ -108,7 +115,7 @@ class PlayerLoadingState(
             "Audio Subtitle Reading Mode Font Size Condensed Theme Debug Boxes",
             "DF DR DS DY Furigana Row Space Letter Y Offset E-Ink Dark",
             "PRO ADVANCED INTERMEDIATE NOVICE ON OFF Track Japanese",
-            "Noto Sans Serif Shippori",
+            "Noto Sans Serif Shippori Klee One",
         )
 
         val uiAtlases = mutableListOf<Triple<Int, GlyphAtlas, Bitmap>>()

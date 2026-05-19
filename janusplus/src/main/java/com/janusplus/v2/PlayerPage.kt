@@ -7,7 +7,7 @@ import com.janusplus.SrtParser
 
 data class PlayerPrefs(
     val deltaFurigana: Float, val deltaRow: Float, val deltaSpacing: Float, val deltaYShift: Float,
-    val subFontSize: Int, val readingMode: Int, val condensedMode: Boolean,
+    val subFontSize: Int, val fontIdx: Int, val readingMode: Int, val condensedMode: Boolean,
     val debugBoxes: Boolean, val einkMode: Boolean,
 )
 

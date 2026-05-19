@@ -27,9 +27,8 @@ class GlyphAtlas(private val typeface: Typeface, private val textSize: Float) {
         paint.textSize = textSize
         paint.typeface = typeface
 
+        // lineHeight and ascent set after measuring actual ink bounds below
         val fm = paint.fontMetrics
-        lineHeight = -fm.top + fm.bottom
-        ascent = -fm.top
 
         val codepoints = mutableSetOf<Int>()
         for (text in texts) {
@@ -41,17 +40,35 @@ class GlyphAtlas(private val typeface: Typeface, private val textSize: Float) {
             }
         }
 
-        data class GlyphInfo(val cp: Int, val w: Int, val h: Int, val advance: Float)
+        data class GlyphInfo(val cp: Int, val w: Int, val h: Int, val advance: Float, val inkTop: Float)
         val infos = mutableListOf<GlyphInfo>()
         val padding = 2
+        val bounds = android.graphics.Rect()
+
+        // First pass: measure actual ink bounds to find tightest uniform cell height
+        var maxInkTop = 0f    // max distance above baseline (positive)
+        var maxInkBottom = 0f // max distance below baseline (positive)
+        for (cp in codepoints) {
+            val ch = String(intArrayOf(cp), 0, 1)
+            val advance = paint.measureText(ch)
+            if (advance <= 0) continue
+            paint.getTextBounds(ch, 0, ch.length, bounds)
+            val inkT = (-bounds.top).toFloat()  // distance above baseline
+            val inkB = bounds.bottom.toFloat()   // distance below baseline
+            if (inkT > maxInkTop) maxInkTop = inkT
+            if (inkB > maxInkBottom) maxInkBottom = inkB
+        }
+        val cellAscent = maxInkTop + padding
+        val cellHeight = (cellAscent + maxInkBottom + padding).toInt()
+        ascent = cellAscent
+        lineHeight = cellHeight.toFloat()
 
         for (cp in codepoints) {
             val ch = String(intArrayOf(cp), 0, 1)
             val advance = paint.measureText(ch)
             if (advance <= 0) continue
             val gw = advance.toInt() + padding * 2
-            val gh = lineHeight.toInt() + padding * 2
-            infos.add(GlyphInfo(cp, gw, gh, advance))
+            infos.add(GlyphInfo(cp, gw, cellHeight, advance, cellAscent))
         }
 
         // Row-pack to compute minimal height
@@ -76,15 +93,14 @@ class GlyphAtlas(private val typeface: Typeface, private val textSize: Float) {
             if (curX + info.w > pageW) { curX = 0; curY += rowH + 1; rowH = 0 }
 
             val ch = String(intArrayOf(info.cp), 0, 1)
-            canvas.drawText(ch, curX + padding.toFloat(), curY + padding + ascent, paint)
+            canvas.drawText(ch, curX + padding.toFloat(), curY + cellAscent, paint)
 
-            // UV coords are LOCAL to this bitmap (will be remapped by uploader)
             glyphs[info.cp] = Glyph(
                 u0 = curX.toFloat(), v0 = curY.toFloat(),
                 u1 = (curX + info.w).toFloat(), v1 = (curY + info.h).toFloat(),
                 page = 0,
                 w = info.w.toFloat(), h = info.h.toFloat(),
-                advance = info.advance, ascent = ascent + padding
+                advance = info.advance, ascent = cellAscent
             )
 
             if (info.h > rowH) rowH = info.h

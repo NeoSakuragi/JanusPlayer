@@ -44,6 +44,13 @@ class PlayerState(private val page: PlayerPage) : GameState {
     var deltaSpacing = 0f
     var deltaYShift = 0f
     var subFontSize = 32
+    var currentFontIdx = 0
+    val fontNames = listOf("Noto Sans", "Noto Serif", "Shippori", "Klee One", "Kosugi Maru")
+    private val fontAssets = listOf(
+        "fonts/NotoSansJP-Regular.ttf", "fonts/NotoSerifJP-Regular.ttf",
+        "fonts/ShipporiMincho-Regular.ttf", "fonts/KleeOne-Regular.ttf",
+        "fonts/KosugiMaru-Regular.ttf"
+    )
 
     private var cues: List<SrtParser.Cue> = emptyList()
     private var currentCue: SrtParser.Cue? = null
@@ -129,7 +136,8 @@ class PlayerState(private val page: PlayerPage) : GameState {
         app.context.getSharedPreferences("player_prefs", android.content.Context.MODE_PRIVATE).edit()
             .putFloat("df", deltaFurigana).putFloat("dr", deltaRow)
             .putFloat("ds", deltaSpacing).putFloat("dy", deltaYShift)
-            .putInt("font_size", subFontSize).putInt("reading_mode", readingMode.ordinal)
+            .putInt("font_size", subFontSize).putInt("font_idx", currentFontIdx)
+            .putInt("reading_mode", readingMode.ordinal)
             .putBoolean("condensed", condensedMode).putBoolean("debug_boxes", debugBoxes)
             .putBoolean("eink_mode", einkMode).apply()
     }
@@ -143,6 +151,7 @@ class PlayerState(private val page: PlayerPage) : GameState {
         deltaFurigana = prefs.deltaFurigana; deltaRow = prefs.deltaRow
         deltaSpacing = prefs.deltaSpacing; deltaYShift = prefs.deltaYShift
         subFontSize = prefs.subFontSize
+        currentFontIdx = prefs.fontIdx.coerceIn(0, fontNames.size - 1)
         readingMode = ReadingMode.entries.getOrNull(prefs.readingMode) ?: ReadingMode.PRO
         condensedMode = prefs.condensedMode; debugBoxes = prefs.debugBoxes
         einkMode = prefs.einkMode; app.einkMode = einkMode
@@ -291,7 +300,7 @@ class PlayerState(private val page: PlayerPage) : GameState {
             Action.MENU -> when (mode) {
                 Mode.PLAYING -> { pause(); openSettings() }
                 Mode.PAUSED -> openSettings()
-                Mode.SETTINGS -> { mode = Mode.PAUSED }
+                Mode.SETTINGS -> { mode = Mode.PLAYING; play() }
             }
             Action.REWIND -> seekRelative(-5000)
             Action.FORWARD -> seekRelative(5000)
@@ -341,7 +350,7 @@ class PlayerState(private val page: PlayerPage) : GameState {
                 Mode.SETTINGS -> { settingsFocus = (settingsFocus + 1).coerceAtMost((settingsRows.size - 1).coerceAtLeast(0)) }
             }
             Action.BACK -> when (mode) {
-                Mode.SETTINGS -> mode = Mode.PAUSED
+                Mode.SETTINGS -> { mode = Mode.PLAYING; play() }
                 Mode.PAUSED -> { hlStart = -1; hlEnd = -1; mode = Mode.PLAYING; play() }
                 Mode.PLAYING -> { cleanup(app); app.goBack() }
             }
@@ -757,6 +766,7 @@ class PlayerState(private val page: PlayerPage) : GameState {
             })
         }
         rows.add(SettingsRow("Reading Mode", readingMode.name, "mode") { cycleReadingMode(); savePrefs() })
+        rows.add(SettingsRow("Font", fontNames[currentFontIdx], "font") { cycleFont(); savePrefs() })
         rows.add(SettingsRow("Font Size", "${subFontSize}sp", "size") { cycleFontSize(); savePrefs() })
         rows.add(SettingsRow("Condensed", if (condensedMode) "ON" else "OFF", "cond") { condensedMode = !condensedMode; savePrefs() })
         rows.add(SettingsRow("DF (Furigana)", "%.1f".format(deltaFurigana), "DF",
@@ -861,9 +871,15 @@ class PlayerState(private val page: PlayerPage) : GameState {
         rebuildSubtitleAtlases()
     }
 
+    private fun cycleFont() {
+        currentFontIdx = (currentFontIdx + 1) % fontNames.size
+        rebuildSubtitleAtlases()
+    }
+
     private fun rebuildSubtitleAtlases() {
         val app = appRef ?: return
-        val tf = app.defaultTypeface
+        val tf = try { android.graphics.Typeface.createFromAsset(app.context.assets, fontAssets[currentFontIdx]) }
+                 catch (_: Exception) { app.defaultTypeface }
         val d = app.density
         val texW = app.texArray.size
 
