@@ -26,6 +26,7 @@ class PlayerLoadingState(
     }
 
     private fun loadPage(app: App) {
+        val t0 = System.currentTimeMillis()
         val api = app.api ?: return
         val density = app.density
         val texW = app.texArray.size
@@ -76,6 +77,8 @@ class PlayerLoadingState(
 
         superThread.join()
         srtThread?.join()
+        val tSubs = System.currentTimeMillis()
+        android.util.Log.d("PlayerLoad", "subs fetched in ${tSubs - t0}ms superSRT=${superSRT != null} cues=${cues.size}")
         val superData = superSRT
         val cueData = cues
 
@@ -137,6 +140,15 @@ class PlayerLoadingState(
 
         // 6. No separate dict atlases — dict popup reuses subAtlas with GL scaling
         val dictAtlases = mutableListOf<Triple<Int, GlyphAtlas, Bitmap>>()
+
+        val tAtlas = System.currentTimeMillis()
+        val subGlyphs = subAtlas?.glyphs?.size ?: 0
+        val subPages = 1 + (subAtlas?.extraPages?.size ?: 0)
+        val subBmpH = subBmp?.height ?: 0
+        android.util.Log.d("PlayerLoad", "atlases built in ${tAtlas - tSubs}ms " +
+            "uiGlyphs=${uiAtlas.glyphs.size} subGlyphs=$subGlyphs subPages=$subPages " +
+            "subBmp=${texW}x${subBmpH} totalMem=${(texW * subBmpH * 4) / 1024}KB " +
+            "total=${tAtlas - t0}ms")
 
         page = PlayerPage(item, episode, baseUrl, prefs, cueData, superData,
             uiAtlases, subAtlas, subBmp, furiAtlas, furiBmp, dictAtlases)

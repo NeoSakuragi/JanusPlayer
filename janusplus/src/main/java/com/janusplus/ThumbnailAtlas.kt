@@ -16,10 +16,10 @@ class ThumbnailAtlas {
     @Volatile private var ready = false
     @Volatile var layerIndex = 0
     var texArray: TextureArray? = null
-    var ownTextureId = 0; private set  // Separate GL_TEXTURE_2D for covers (faster on MediaTek)
+    var ownTextureId = 0; private set
+    private var texSize = 2048
 
-    data class TileUpload(val bitmap: Bitmap, val x: Int, val y: Int, val layer: Int)
-    data class PendingAtlas(val tiles: List<TileUpload>, val uvMap: HashMap<String, ThumbUV>, val layer: Int)
+    data class PendingAtlas(val bitmap: Bitmap, val uvMap: HashMap<String, ThumbUV>)
     val pendingQueue = ConcurrentLinkedQueue<PendingAtlas>()
 
     fun initCoverGL(size: Int) {
@@ -43,11 +43,10 @@ class ThumbnailAtlas {
         android.opengl.GLES30.glBindTexture(android.opengl.GLES30.GL_TEXTURE_2D, ownTextureId)
     }
 
-    private var currentTiles: List<TileUpload>? = null
-    private var currentUvMap: HashMap<String, ThumbUV>? = null
-    private var tileIdx = 0
-    private var texSize = 2048
-
+    /**
+     * Pack all covers into one sprite sheet on the background thread.
+     * The resulting bitmap is queued for a single GPU upload on the GL thread.
+     */
     fun pack(entries: List<Pair<String, Bitmap>>, forLayer: Int) {
         if (entries.isEmpty()) return
 
@@ -56,9 +55,14 @@ class ThumbnailAtlas {
         val count = entries.size
 
         val cols = kotlin.math.ceil(kotlin.math.sqrt(count.toDouble())).toInt()
-        val layerSize = texSize.toFloat()
+        val rows = (count + cols - 1) / cols
+        val atlasW = (cols * thumbW).coerceAtMost(texSize)
+        val atlasH = (rows * thumbH).coerceAtMost(texSize)
+
+        val atlas = Bitmap.createBitmap(atlasW, atlasH, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(atlas)
         val newMap = HashMap<String, ThumbUV>(count * 2)
-        val tiles = mutableListOf<TileUpload>()
+        val layerSize = texSize.toFloat()
 
         for ((i, pair) in entries.withIndex()) {
             val (key, bmp) = pair
@@ -78,11 +82,7 @@ class ThumbnailAtlas {
                 val off = (bmp.height - visH) / 2
                 Rect(0, off, bmp.width, off + visH)
             }
-
-            // Render tile to its own small bitmap
-            val tile = Bitmap.createBitmap(thumbW, thumbH, Bitmap.Config.ARGB_8888)
-            Canvas(tile).drawBitmap(bmp, srcRect, Rect(0, 0, thumbW, thumbH), null)
-            tiles.add(TileUpload(tile, x, y, forLayer))
+            canvas.drawBitmap(bmp, srcRect, Rect(x, y, x + thumbW, y + thumbH), null)
 
             newMap[key] = ThumbUV(
                 x.toFloat() / layerSize,
@@ -94,61 +94,38 @@ class ThumbnailAtlas {
             bmp.recycle()
         }
 
-        pendingQueue.add(PendingAtlas(tiles, newMap, forLayer))
+        pendingQueue.add(PendingAtlas(atlas, newMap))
     }
 
-    // Upload one tile per frame — small glTexSubImage3D calls don't break swap cadence
+    /**
+     * GL thread: upload the pre-built sprite sheet in one call.
+     */
     fun processPending() {
-        if (currentTiles == null) {
-            val pending = pendingQueue.poll() ?: return
-            if (pending.layer != layerIndex) {
-                for (t in pending.tiles) t.bitmap.recycle()
-                return
-            }
-            currentTiles = pending.tiles
-            currentUvMap = pending.uvMap
-            tileIdx = 0
+        val pending = pendingQueue.poll() ?: return
+        val w = pending.bitmap.width; val h = pending.bitmap.height
+
+        if (ownTextureId != 0) {
+            val buf = ByteBuffer.allocateDirect(w * h * 4).order(ByteOrder.nativeOrder())
+            pending.bitmap.copyPixelsToBuffer(buf); buf.position(0)
+            android.opengl.GLES30.glBindTexture(android.opengl.GLES30.GL_TEXTURE_2D, ownTextureId)
+            android.opengl.GLES30.glTexSubImage2D(android.opengl.GLES30.GL_TEXTURE_2D, 0,
+                0, 0, w, h,
+                android.opengl.GLES30.GL_RGBA, android.opengl.GLES30.GL_UNSIGNED_BYTE, buf)
+        } else {
+            texArray?.uploadLayerNow(layerIndex, pending.bitmap)
         }
 
-        val tiles = currentTiles ?: return
-        val ta = texArray ?: return
-
-        // Composite all tiles into one bitmap, then upload as glTexImage2D
-        // (avoids glTexSubImage which permanently breaks MediaTek swap cadence)
-        val composite = android.graphics.Bitmap.createBitmap(texSize, texSize, android.graphics.Bitmap.Config.ARGB_8888)
-        val canvas = android.graphics.Canvas(composite)
-        while (tileIdx < tiles.size) {
-            val tile = tiles[tileIdx]
-            canvas.drawBitmap(tile.bitmap, tile.x.toFloat(), tile.y.toFloat(), null)
-            tile.bitmap.recycle()
-            tileIdx++
-        }
-        // Full texture replace — not a sub-image update
-        val buf = ByteBuffer.allocateDirect(texSize * texSize * 4).order(ByteOrder.nativeOrder())
-        composite.copyPixelsToBuffer(buf); buf.position(0)
-        android.opengl.GLES30.glBindTexture(android.opengl.GLES30.GL_TEXTURE_2D, ownTextureId)
-        android.opengl.GLES30.glTexImage2D(android.opengl.GLES30.GL_TEXTURE_2D, 0, android.opengl.GLES30.GL_RGBA,
-            texSize, texSize, 0, android.opengl.GLES30.GL_RGBA, android.opengl.GLES30.GL_UNSIGNED_BYTE, buf)
-        composite.recycle()
-
-        uvMap = currentUvMap ?: HashMap()
+        pending.bitmap.recycle()
+        uvMap = pending.uvMap
         ready = true
-        currentTiles = null
-        currentUvMap = null
     }
 
     fun getUV(key: String): ThumbUV? = uvMap[key]
-
     fun isReady(): Boolean = ready
 
     fun invalidate() {
         ready = false
-        currentTiles?.forEach { it.bitmap.recycle() }
-        currentTiles = null; currentUvMap = null
-        while (true) {
-            val p = pendingQueue.poll() ?: break
-            for (t in p.tiles) t.bitmap.recycle()
-        }
+        while (true) { (pendingQueue.poll() ?: break).bitmap.recycle() }
     }
 
     fun clear() {
@@ -156,19 +133,6 @@ class ThumbnailAtlas {
         ready = false
         invalidate()
         val ta = texArray
-        if (ta != null) {
-            layerIndex = ta.nextThumbLayer()
-        }
-    }
-
-    private fun nextPow2(v: Int): Int {
-        var n = v - 1
-        n = n or (n shr 1)
-        n = n or (n shr 2)
-        n = n or (n shr 4)
-        n = n or (n shr 8)
-        n = n or (n shr 16)
-        val texSize = texArray?.size ?: 4096
-        return (n + 1).coerceAtMost(texSize)
+        if (ta != null) { layerIndex = ta.nextThumbLayer() }
     }
 }

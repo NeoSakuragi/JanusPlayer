@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"database/sql"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -51,6 +53,7 @@ func main() {
 	mux.HandleFunc("/api/health", handleHealth)
 	mux.HandleFunc("/api/version", handleVersion)
 	mux.HandleFunc("/api/library", handleLibrary)
+	mux.HandleFunc("/api/library/covers", handleLibraryCovers)
 	mux.HandleFunc("/api/items/", handleItems)
 
 	// Packed blob endpoints
@@ -81,10 +84,12 @@ func main() {
 	mux.HandleFunc("/api/update/plus", handleUpdatePlus)
 	mux.HandleFunc("/install", handleInstallPage)
 	mux.HandleFunc("/install/", handleInstallPage)
+	mux.HandleFunc("/plus", handleInstallPlusPage)
+	mux.HandleFunc("/plus/", handleInstallPlusPage)
 
 	addr := host + ":" + port
 	fmt.Println("Janus Media Server (Go)")
-	fmt.Printf("  DB:     %s\n", filepath.Join(dataDir, "janus.db"))
+	fmt.Printf("  DB:     %s\n", envOr("JANUS_DB", filepath.Join(dataDir, "janus.db")))
 	fmt.Printf("  Media:  %s\n", mediaDir)
 	fmt.Printf("  Listen: http://%s\n\n", addr)
 
@@ -108,7 +113,7 @@ func envOr(key, fallback string) string {
 // ── Database ──────────────────────────────────────────
 
 func initDB() {
-	dbPath := filepath.Join(dataDir, "janus.db")
+	dbPath := envOr("JANUS_DB", filepath.Join(dataDir, "janus.db"))
 	var err error
 	db, err = sql.Open("sqlite3", dbPath+"?_journal=WAL&_busy_timeout=5000")
 	if err != nil {
@@ -146,6 +151,7 @@ var migrations = []struct {
 		ending_sec REAL DEFAULT 0,
 		PRIMARY KEY (item_id, season)
 	)`},
+	{"003_poster_path", `ALTER TABLE items ADD COLUMN poster_path TEXT DEFAULT ''`},
 }
 
 func runMigrations() {
@@ -336,31 +342,74 @@ func handleUpdatePlus(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleLibrary(w http.ResponseWriter, r *http.Request) {
+	var libVersion string
+	db.QueryRow("SELECT value FROM meta WHERE key='library_version'").Scan(&libVersion)
+	etag := `"lib-` + libVersion + `"`
+	if r.Header.Get("If-None-Match") == etag {
+		w.WriteHeader(304)
+		return
+	}
+	w.Header().Set("ETag", etag)
+
 	writeCachedJSON(w, "library", func() any {
-		rows, err := db.Query("SELECT id, type, title_en, title_ja, cover, episode_count, season_count, duration_min FROM items ORDER BY title_en")
+		rows, err := db.Query(`SELECT id, type, title_en, title_ja, cover, episode_count,
+			season_count, duration_min, COALESCE(poster_path,'')
+			FROM items ORDER BY title_en`)
 		if err != nil {
 			return map[string]any{"error": err.Error()}
 		}
 		defer rows.Close()
 
-		var libVersion string
-		db.QueryRow("SELECT value FROM meta WHERE key='library_version'").Scan(&libVersion)
-
-		items := []map[string]any{}
+		type itemRow struct {
+			id, typ, titleEn, titleJa, cover, posterPath string
+			epCount, seasonCount, durMin                 int
+		}
+		var allItems []itemRow
 		for rows.Next() {
-			var id, typ, titleEn, titleJa, cover string
-			var epCount, seasonCount, durMin int
-			rows.Scan(&id, &typ, &titleEn, &titleJa, &cover, &epCount, &seasonCount, &durMin)
-			item := map[string]any{
-				"id": id, "type": typ,
-				"title_en": titleEn, "title_ja": titleJa,
-				"cover": cover, "episode_count": epCount,
-				"locales": queryItemLocales(id),
+			var it itemRow
+			rows.Scan(&it.id, &it.typ, &it.titleEn, &it.titleJa, &it.cover,
+				&it.epCount, &it.seasonCount, &it.durMin, &it.posterPath)
+			allItems = append(allItems, it)
+		}
+
+		// Bulk-fetch all item locales in one query
+		localeMap := map[string]map[string]map[string]string{}
+		locRows, _ := db.Query("SELECT item_id, language, title, synopsis FROM item_locales")
+		if locRows != nil {
+			for locRows.Next() {
+				var itemID, lang, title, synopsis string
+				locRows.Scan(&itemID, &lang, &title, &synopsis)
+				if localeMap[itemID] == nil {
+					localeMap[itemID] = map[string]map[string]string{}
+				}
+				localeMap[itemID][lang] = map[string]string{"title": title, "synopsis": synopsis}
 			}
-			if typ == "MOVIE" {
-				item["duration_min"] = durMin
+			locRows.Close()
+		}
+
+		items := make([]map[string]any, 0, len(allItems))
+		for _, it := range allItems {
+			locales := localeMap[it.id]
+			if locales == nil {
+				locales = map[string]map[string]string{}
+				if it.titleEn != "" {
+					locales["en"] = map[string]string{"title": it.titleEn}
+				}
+				if it.titleJa != "" {
+					locales["ja"] = map[string]string{"title": it.titleJa}
+				}
+			}
+			item := map[string]any{
+				"id": it.id, "type": it.typ,
+				"title_en": it.titleEn, "title_ja": it.titleJa,
+				"cover": it.cover, "episode_count": it.epCount,
+				"poster_path": it.posterPath,
+				"locales":     locales,
+			}
+			if it.typ == "MOVIE" {
+				item["duration_min"] = it.durMin
 			} else {
-				item["season_count"] = seasonCount
+				item["season_count"] = it.seasonCount
 			}
 			items = append(items, item)
 		}
@@ -371,6 +420,48 @@ func handleLibrary(w http.ResponseWriter, r *http.Request) {
 			"items":         items,
 		}
 	})
+}
+
+// GET /api/library/covers — all covers packed in one binary response
+// Format: [4 bytes LE: count] per entry: [4 bytes: id_len][id bytes][4 bytes: jpeg_len][jpeg bytes]
+func handleLibraryCovers(w http.ResponseWriter, r *http.Request) {
+	rows, err := db.Query("SELECT id, cover FROM items ORDER BY title_en")
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	defer rows.Close()
+
+	type coverEntry struct{ id, cover string }
+	var entries []coverEntry
+	for rows.Next() {
+		var id, cover string
+		rows.Scan(&id, &cover)
+		entries = append(entries, coverEntry{id, cover})
+	}
+
+	var buf bytes.Buffer
+	binary.Write(&buf, binary.LittleEndian, int32(len(entries)))
+	for _, e := range entries {
+		// Try mediaDir first, then dataDir
+		var data []byte
+		for _, dir := range []string{mediaDir, dataDir} {
+			path := filepath.Join(dir, e.cover)
+			if d, err := os.ReadFile(path); err == nil {
+				data = d
+				break
+			}
+		}
+		idBytes := []byte(e.id)
+		binary.Write(&buf, binary.LittleEndian, int32(len(idBytes)))
+		buf.Write(idBytes)
+		binary.Write(&buf, binary.LittleEndian, int32(len(data)))
+		buf.Write(data)
+	}
+
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Cache-Control", "max-age=3600")
+	w.Write(buf.Bytes())
 }
 
 func handleItems(w http.ResponseWriter, r *http.Request) {
@@ -799,6 +890,81 @@ const installPageHTML = `<!DOCTYPE html>
 </html>
 `
 
+func handleInstallPlusPage(w http.ResponseWriter, r *http.Request) {
+	if strings.HasSuffix(r.URL.Path, "/download") {
+		apkPath := filepath.Join(dataDir, "updates", "janusplus.apk")
+		f, err := os.Open(apkPath)
+		if err != nil {
+			http.Error(w, "no APK available", 404)
+			return
+		}
+		defer f.Close()
+		stat, _ := f.Stat()
+		w.Header().Set("Content-Type", "application/vnd.android.package-archive")
+		w.Header().Set("Content-Disposition", "attachment; filename=\"janusplus.apk\"")
+		http.ServeContent(w, r, "janusplus.apk", stat.ModTime(), f)
+		return
+	}
+
+	var name, size string
+	db.QueryRow("SELECT value FROM meta WHERE key='plus_version_name'").Scan(&name)
+	db.QueryRow("SELECT value FROM meta WHERE key='plus_size'").Scan(&size)
+	sizeMB := atoi(size) / (1024 * 1024)
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	fmt.Fprintf(w, installPlusHTML, name, sizeMB)
+}
+
+const installPlusHTML = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Janus+ — Install</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #0a0a1a; color: #e0e0e0; font-family: -apple-system, sans-serif;
+         display: flex; justify-content: center; align-items: center; min-height: 100vh; }
+  .card { text-align: center; max-width: 360px; padding: 48px 32px; }
+  .logo { font-size: 48px; margin-bottom: 8px; }
+  h1 { font-size: 28px; font-weight: 700; color: #fff; margin-bottom: 4px; }
+  .plus { color: #BB86FC; }
+  .sub { color: #888; font-size: 14px; margin-bottom: 32px; }
+  .btn { display: inline-block; background: #BB86FC; color: #fff; text-decoration: none;
+         font-size: 16px; font-weight: 600; padding: 14px 40px; border-radius: 8px;
+         transition: background 0.2s; }
+  .btn:hover { background: #9C64E0; }
+  .meta { color: #666; font-size: 12px; margin-top: 16px; }
+  .steps { text-align: left; color: #aaa; font-size: 13px; margin-top: 32px; line-height: 1.8; }
+  .steps span { color: #BB86FC; font-weight: 600; }
+  .features { text-align: left; color: #bbb; font-size: 13px; margin-top: 24px; line-height: 2; }
+  .features span { color: #BB86FC; }
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="logo">ヤヌス</div>
+  <h1>Janus<span class="plus">+</span></h1>
+  <p class="sub">GPU-Accelerated Japanese Immersion Player</p>
+  <a href="plus/download" class="btn">Install v%s</a>
+  <p class="meta">Android · %d MB</p>
+  <div class="features">
+    <span>◆</span> OpenGL ES 3.0 renderer at 60fps<br>
+    <span>◆</span> Tap any word for instant dictionary<br>
+    <span>◆</span> Furigana + JLPT level tags<br>
+    <span>◆</span> D-pad + touch dual input<br>
+    <span>◆</span> TMDB covers + metadata
+  </div>
+  <div class="steps">
+    <span>1.</span> Tap Install to download the APK<br>
+    <span>2.</span> Open the file and allow installation<br>
+    <span>3.</span> Launch Janus+ and start learning
+  </div>
+</div>
+</body>
+</html>
+`
+
 func handleUpdate(w http.ResponseWriter, r *http.Request) {
 	apkPath := filepath.Join(dataDir, "updates", "janus.apk")
 	f, err := os.Open(apkPath)
@@ -1002,6 +1168,14 @@ func clearCache() {
 		jsonCache.Delete(key)
 		return true
 	})
+}
+
+func bumpLibraryVersion() {
+	db.Exec("UPDATE meta SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT), updated_at = strftime('%s','now') WHERE key = 'library_version'")
+	clearCache()
+	var v string
+	db.QueryRow("SELECT value FROM meta WHERE key='library_version'").Scan(&v)
+	log.Printf("Library version bumped to %s", v)
 }
 
 func atoi(s string) int {

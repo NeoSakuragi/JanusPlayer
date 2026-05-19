@@ -51,6 +51,7 @@ class JanusApi(private val baseUrl: String) {
         val cover: String, val episodeCount: Int,
         val seasonCount: Int, val durationMin: Int,
         val locales: Map<String, Locale> = emptyMap(),
+        val posterPath: String = "",
     ) {
         fun title(): String {
             val lang = Lang.current
@@ -60,6 +61,10 @@ class JanusApi(private val baseUrl: String) {
         fun synopsis(): String {
             val lang = Lang.current
             return locales[lang]?.synopsis?.takeIf { it.isNotEmpty() } ?: locales["en"]?.synopsis ?: ""
+        }
+        fun coverUrl(): String {
+            if (posterPath.isNotEmpty()) return "https://image.tmdb.org/t/p/w500$posterPath"
+            return ""
         }
     }
 
@@ -121,6 +126,7 @@ class JanusApi(private val baseUrl: String) {
                 seasonCount = obj.optInt("season_count", 1),
                 durationMin = obj.optInt("duration_min", 0),
                 locales = parseLocales(obj.optJSONObject("locales")),
+                posterPath = obj.optString("poster_path", ""),
             )
         }
     }
@@ -131,6 +137,32 @@ class JanusApi(private val baseUrl: String) {
             val l = obj.getJSONObject(lang)
             lang to Locale(l.optString("title", ""), l.optString("synopsis", ""))
         }
+    }
+
+    fun fetchLibraryCovers(): Map<String, android.graphics.Bitmap> {
+        val request = authRequest("$baseUrl/api/library/covers").build()
+        val response = try { client.newCall(request).execute() } catch (_: Exception) { return emptyMap() }
+        if (!response.isSuccessful) return emptyMap()
+        val bytes = response.body?.bytes() ?: return emptyMap()
+        if (bytes.size < 4) return emptyMap()
+
+        val result = mutableMapOf<String, android.graphics.Bitmap>()
+        var off = 0
+        val count = readInt(bytes, off); off += 4
+        for (i in 0 until count) {
+            if (off + 4 > bytes.size) break
+            val idLen = readInt(bytes, off); off += 4
+            if (off + idLen > bytes.size) break
+            val id = String(bytes, off, idLen, Charsets.UTF_8); off += idLen
+            if (off + 4 > bytes.size) break
+            val jpegLen = readInt(bytes, off); off += 4
+            if (jpegLen > 0 && off + jpegLen <= bytes.size) {
+                val bmp = android.graphics.BitmapFactory.decodeByteArray(bytes, off, jpegLen)
+                if (bmp != null) result["cover_$id"] = bmp
+                off += jpegLen
+            }
+        }
+        return result
     }
 
     fun fetchHeroBlob(itemId: String): HeroBlob? {
@@ -250,6 +282,7 @@ class JanusApi(private val baseUrl: String) {
         val bannerW: Int, val bannerH: Int, val bannerJpeg: ByteArray?,
         val atlasW: Int, val atlasH: Int, val atlasCols: Int, val thumbCount: Int,
         val thumbW: Int, val thumbH: Int,
+        val coverJpeg: ByteArray? = null,
     )
 
     var cacheDir: java.io.File? = null
@@ -306,7 +339,14 @@ class JanusApi(private val baseUrl: String) {
         val thumbCount = readInt(bytes, off); off += 4
         val thumbW = readInt(bytes, off); off += 4
         val thumbH = readInt(bytes, off); off += 4
-        return PageHeader(metaJson, bannerW, bannerH, bannerJpeg, atlasW, atlasH, atlasCols, thumbCount, thumbW, thumbH)
+        var coverJpeg: ByteArray? = null
+        if (off + 4 <= bytes.size) {
+            val coverLen = readInt(bytes, off); off += 4
+            if (coverLen > 0 && off + coverLen <= bytes.size) {
+                coverJpeg = bytes.copyOfRange(off, off + coverLen)
+            }
+        }
+        return PageHeader(metaJson, bannerW, bannerH, bannerJpeg, atlasW, atlasH, atlasCols, thumbCount, thumbW, thumbH, coverJpeg)
     }
 
     fun fetchPageAtlas(itemId: String, seasonNum: Int): ByteArray? {

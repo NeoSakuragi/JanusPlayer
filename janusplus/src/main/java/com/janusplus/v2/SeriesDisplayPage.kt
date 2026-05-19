@@ -16,6 +16,7 @@ data class SeriesDisplayPage(
     val fullEpisodes: List<JanusApi.Episode>,
 
     // Bitmaps (uploaded to VRAM in display state init, then discarded)
+    val coverBmp: android.graphics.Bitmap?,
     val bannerBmp: android.graphics.Bitmap?,
     val bannerW: Int, val bannerH: Int,
     val thumbBmp: android.graphics.Bitmap?,

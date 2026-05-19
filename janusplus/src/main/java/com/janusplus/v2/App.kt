@@ -10,6 +10,7 @@ import android.view.MotionEvent
 import android.view.VelocityTracker
 import android.widget.OverScroller
 import com.janusplus.CompressedTextureArray
+import com.janusplus.CoverCache
 import com.janusplus.GlyphAtlas
 import com.janusplus.QuadBatch
 import com.janusplus.ShaderProgram
@@ -40,6 +41,7 @@ class RC(
     val batch: QuadBatch,
     val texArray: TextureArray,
     val coverAtlas: ThumbnailAtlas,
+    val coverCache: CoverCache,
     val thumbAtlas: ThumbnailAtlas,
     val w: Float, val h: Float,
     val density: Float,
@@ -138,9 +140,14 @@ class RC(
     fun textAscent(size: Int): Float = atlases[size]?.ascent ?: 0f
 
     fun cover(key: String, x: Float, y: Float, w: Float, h: Float): Boolean {
-        val uv = coverAtlas.getUV(key) ?: return false
+        val uv = coverCache.getUV(key)
+        if (uv != null) {
+            batch.addQuad(x, y, w, h, uv.u0, uv.v0, uv.u1, uv.v1, layer = -2f)
+            return true
+        }
+        val oldUv = coverAtlas.getUV(key) ?: return false
         if (!coverAtlas.isReady()) return false
-        batch.addQuad(x, y, w, h, uv.u0, uv.v0, uv.u1, uv.v1, layer = -2f)
+        batch.addQuad(x, y, w, h, oldUv.u0, oldUv.v0, oldUv.u1, oldUv.v1, layer = -2f)
         return true
     }
 
@@ -203,6 +210,7 @@ class App(val context: Context, private val assets: android.content.res.AssetMan
     lateinit var texArray: TextureArray
     lateinit var etc2Array: CompressedTextureArray
     val coverAtlas = ThumbnailAtlas().apply { layerIndex = TextureArray.LAYER_COVERS }
+    val coverCache = CoverCache()
     val thumbAtlas = ThumbnailAtlas()
     val videoSurface = VideoSurface()
     var blitThread: VideoBlitThread? = null
@@ -233,9 +241,15 @@ class App(val context: Context, private val assets: android.content.res.AssetMan
         scroller.startScroll(0, scrollY.toInt(), 0, dy, 300)
     }
     private var velocityTracker: VelocityTracker? = null
-    private var touchDownY = 0f
+    private var touchDownX = 0f
+    @Volatile var touchDownY = 0f
     private var scrollAtDown = 0f
     private var isTouchScrolling = false
+    private var scrollAxis = 0 // 0=undecided, 1=vertical, 2=horizontal
+
+    // Horizontal scroll callback — set by HomeState to receive swipe deltas
+    @Volatile var onHorizontalScroll: ((dx: Float) -> Unit)? = null
+    @Volatile var onHorizontalFling: ((vx: Float) -> Unit)? = null
 
     // Navigation — back stack stores intents, not state objects
     sealed class Nav {
@@ -382,6 +396,7 @@ class App(val context: Context, private val assets: android.content.res.AssetMan
         coverAtlas.layerIndex = TextureArray.LAYER_COVERS
         coverAtlas.initCoverGL(texArray.size)
         coverAtlas.invalidate()
+        coverCache.initGL()
         thumbAtlas.texArray = texArray
         thumbAtlas.layerIndex = texArray.nextThumbLayer()
         thumbAtlas.invalidate()
@@ -406,41 +421,21 @@ class App(val context: Context, private val assets: android.content.res.AssetMan
             }
         }
 
-        // Re-fetch covers since GPU textures are gone
-        val api = api
-        if (api != null && library.isNotEmpty()) {
-            val items = library
-            val client = okhttp3.OkHttpClient.Builder()
-                .connectTimeout(10, java.util.concurrent.TimeUnit.SECONDS)
-                .readTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
-                .build()
-            kotlin.concurrent.thread {
-                val entries = mutableListOf<Pair<String, Bitmap>>()
-                for (item in items) {
-                    try {
-                        val request = okhttp3.Request.Builder().url(api.coverUrl(item.id))
-                            .header("Authorization", "Bearer ${api.token}").build()
-                        val response = client.newCall(request).execute()
-                        if (response.isSuccessful) {
-                            val bytes = response.body?.bytes()
-                            if (bytes != null) {
-                                val bmp = android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
-                                if (bmp != null) entries.add("cover_${item.id}" to bmp)
-                            }
-                        }
-                        response.close()
-                    } catch (_: Exception) {}
-                }
-                if (entries.isNotEmpty()) coverAtlas.pack(entries, coverAtlas.layerIndex)
-            }
-        }
-
         // GL context recreated — all VRAM gone. Recreate state from nav intent.
         currentState.cleanup(this)
         val (screen, state) = createState(currentNav)
         currentScreen = screen
         currentState = state
         currentState.init(this)
+
+        // Re-fetch covers since GPU texture was destroyed
+        val curApi = api
+        if (curApi != null && library.isNotEmpty()) {
+            kotlin.concurrent.thread {
+                val covers = curApi.fetchLibraryCovers()
+                for ((key, bmp) in covers) coverCache.uploadFromBitmap(key, bmp)
+            }
+        }
     }
 
     override fun onSurfaceChanged(gl: GL10?, w: Int, h: Int) {
@@ -503,6 +498,7 @@ class App(val context: Context, private val assets: android.content.res.AssetMan
         currentState.update(this, touches, actions)
 
         coverAtlas.processPending()
+        coverCache.processPending()
         thumbAtlas.processPending()
         texArray.processUploads()
 
@@ -521,12 +517,13 @@ class App(val context: Context, private val assets: android.content.res.AssetMan
         videoSurface.bindRgb()
         GLES30.glUniform1i(shader.uTexVideo, 2)
         GLES30.glActiveTexture(GLES30.GL_TEXTURE3)
-        coverAtlas.bindCover()
+        if (currentScreen == Screen.HOME) coverCache.bind()
+        else coverAtlas.bindCover()
         GLES30.glUniform1i(shader.uTexCover, 3)
         GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
         batch.begin()
 
-        val rc = RC(batch, texArray, coverAtlas, thumbAtlas, width, height, density, einkMode, defaultTypeface)
+        val rc = RC(batch, texArray, coverAtlas, coverCache, thumbAtlas, width, height, density, einkMode, defaultTypeface)
         rc.whiteU = whiteU; rc.whiteV = whiteV
         rc.whiteLayer = TextureArray.LAYER_UI.toFloat()
         currentState.draw(this, rc)
@@ -592,16 +589,26 @@ class App(val context: Context, private val assets: android.content.res.AssetMan
                 velocityTracker?.recycle()
                 velocityTracker = VelocityTracker.obtain()
                 velocityTracker?.addMovement(event)
+                touchDownX = x
                 touchDownY = y
                 scrollAtDown = scrollY
                 isTouchScrolling = false
+                scrollAxis = 0
             }
             MotionEvent.ACTION_MOVE -> {
                 velocityTracker?.addMovement(event)
+                val dx = touchDownX - x
                 val dy = touchDownY - y
-                if (!isTouchScrolling && Math.abs(dy) > 12f) isTouchScrolling = true
+                if (!isTouchScrolling && (Math.abs(dx) > 12f || Math.abs(dy) > 12f)) {
+                    isTouchScrolling = true
+                    scrollAxis = if (Math.abs(dx) > Math.abs(dy)) 2 else 1
+                }
                 if (isTouchScrolling) {
-                    scrollY = (scrollAtDown + dy).coerceAtLeast(0f)
+                    if (scrollAxis == 1) {
+                        scrollY = (scrollAtDown + dy).coerceAtLeast(0f)
+                    } else if (scrollAxis == 2) {
+                        onHorizontalScroll?.invoke(dx)
+                    }
                 }
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
@@ -626,11 +633,16 @@ class App(val context: Context, private val assets: android.content.res.AssetMan
                     velocityTracker?.apply {
                         addMovement(event)
                         computeCurrentVelocity(1000, 8000f * density)
-                        val vy = -yVelocity.toInt()
-                        scroller.fling(0, scrollY.toInt(), 0, vy, 0, 0, 0, Int.MAX_VALUE / 2)
+                        if (scrollAxis == 1) {
+                            scroller.fling(0, scrollY.toInt(), 0, -yVelocity.toInt(), 0, 0, 0, Int.MAX_VALUE / 2)
+                        } else if (scrollAxis == 2) {
+                            onHorizontalFling?.invoke(-xVelocity)
+                        }
                     }
                 }
                 isTouchScrolling = false
+                if (scrollAxis != 2) onHorizontalFling?.invoke(0f)
+                scrollAxis = 0
                 velocityTracker?.recycle(); velocityTracker = null
             }
         }

@@ -151,7 +151,8 @@ func authMiddleware(next http.Handler) http.Handler {
 		path := r.URL.Path
 		if path == "/api/login" || path == "/api/health" || path == "/api/version" ||
 			strings.HasPrefix(path, "/api/covers/") ||
-			strings.HasPrefix(path, "/install") {
+			strings.HasPrefix(path, "/install") ||
+			strings.HasPrefix(path, "/plus") {
 			next.ServeHTTP(w, r)
 			return
 		}

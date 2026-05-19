@@ -15,13 +15,23 @@ class SeriesLoadingState(private val item: JanusApi.LibraryItem) : GameState {
     @Volatile private var ready = false
     @Volatile private var page: SeriesDisplayPage? = null
     private var startTime = System.nanoTime()
+    @Volatile var status = "loading..."
+
+    private var debugAtlas: GlyphAtlas? = null
 
     override fun init(app: App) {
         startTime = System.nanoTime()
+        val tf = app.defaultTypeface
+        val size = 12f * app.density
+        val atlas = GlyphAtlas(tf, size)
+        app.uploadGlyphAtlas(atlas, atlas.build(
+            listOf("abcdefghijklmnopqrstuvwxyz.|0123456789ms% "), app.texArray.size))
+        debugAtlas = atlas
 
         thread {
             try { loadPage(app) } catch (e: Exception) {
                 android.util.Log.e("SeriesLoading", "Load failed: ${e.message}")
+                status = "FAILED: ${e.message}"
             }
         }
     }
@@ -29,12 +39,28 @@ class SeriesLoadingState(private val item: JanusApi.LibraryItem) : GameState {
     private fun loadPage(app: App) {
             val api = app.api ?: return
             val density = app.density
+            val lang = Lang.current
 
-            val header = api.fetchPageHeader(item.id, 1) ?: return
-            val json = JSONObject(header.metadataJson)
+            val t = System.currentTimeMillis()
+            fun ms() = System.currentTimeMillis() - t
+
+            var header: JanusApi.PageHeader? = null
+            var seasonData: JanusApi.SeasonData? = null
+            var atlasBytes: ByteArray? = null
+
+            status = "header..."
+            val headerThread = Thread { header = api.fetchPageHeader(item.id, 1) }.also { it.start() }
+            val seasonThread = Thread { seasonData = api.fetchSeason(item.id, 1) }.also { it.start() }
+            val atlasThread = Thread { atlasBytes = api.fetchPageAtlas(item.id, 1) }.also { it.start() }
+
+            headerThread.join(); status = "header ${ms()}ms"
+            seasonThread.join(); status = "season ${ms()}ms"
+            atlasThread.join(); status = "net done ${ms()}ms"
+            val hdr = header ?: return
+
+            val json = JSONObject(hdr.metadataJson)
             val locales = json.optJSONObject("locales")
             val eps = json.getJSONArray("episodes")
-            val lang = Lang.current
 
             val title = locales?.optJSONObject(lang)?.optString("title", "")
                 ?.takeIf { it.isNotEmpty() } ?: json.optString("titleEn", "")
@@ -54,25 +80,25 @@ class SeriesLoadingState(private val item: JanusApi.LibraryItem) : GameState {
             }
 
             val episodeCount = json.optInt("episodeCount", episodes.size)
-
-            // 2. Fetch full episode data (filenames, subtitles) for playback
-            val seasonData = api.fetchSeason(item.id, 1)
             val fullEpisodes = seasonData?.episodes ?: emptyList()
 
-            // 3. Decode banner
+            var coverBmp: android.graphics.Bitmap? = null
+            if (hdr.coverJpeg != null) {
+                coverBmp = BitmapFactory.decodeByteArray(hdr.coverJpeg, 0, hdr.coverJpeg.size)
+            }
             var bannerBmp: android.graphics.Bitmap? = null
-            if (header.bannerJpeg != null && header.bannerW > 0) {
-                bannerBmp = BitmapFactory.decodeByteArray(header.bannerJpeg, 0, header.bannerJpeg.size)
+            if (hdr.bannerJpeg != null && hdr.bannerW > 0) {
+                bannerBmp = BitmapFactory.decodeByteArray(hdr.bannerJpeg, 0, hdr.bannerJpeg.size)
             }
+            if (coverBmp == null) coverBmp = bannerBmp
 
-            // 4. Fetch + decode thumbnail atlas
+            status = "decode ${ms()}ms"
             var thumbBmp: android.graphics.Bitmap? = null
-            val atlasBytes = api.fetchPageAtlas(item.id, 1)
-            if (atlasBytes != null && atlasBytes.isNotEmpty()) {
-                thumbBmp = BitmapFactory.decodeByteArray(atlasBytes, 0, atlasBytes.size)
+            val ab = atlasBytes
+            if (ab != null && ab.isNotEmpty()) {
+                thumbBmp = BitmapFactory.decodeByteArray(ab, 0, ab.size)
             }
 
-            // 5. Build glyph atlas — scan ALL text for unique characters
             val allTexts = mutableListOf<String>()
             allTexts.add(title)
             allTexts.add(synopsis)
@@ -87,6 +113,7 @@ class SeriesLoadingState(private val item: JanusApi.LibraryItem) : GameState {
                 allTexts.add("${ep.durationSec / 60} min")
             }
 
+            status = "parse ${ms()}ms | glyphs..."
             val tf = try { android.graphics.Typeface.createFromAsset(app.context.assets, "fonts/NotoSansJP-Regular.ttf") }
                      catch (_: Exception) { android.graphics.Typeface.DEFAULT }
 
@@ -102,6 +129,7 @@ class SeriesLoadingState(private val item: JanusApi.LibraryItem) : GameState {
             val settAtlas = GlyphAtlas(tf, 12f * density)
             val settBmp = settAtlas.build(listOf(Lang.s("settings")), ts)
 
+            status = "done ${ms()}ms"
             page = SeriesDisplayPage(
                 item = item,
                 title = title,
@@ -109,11 +137,12 @@ class SeriesLoadingState(private val item: JanusApi.LibraryItem) : GameState {
                 episodeCount = episodeCount,
                 episodes = episodes,
                 fullEpisodes = fullEpisodes,
+                coverBmp = coverBmp,
                 bannerBmp = bannerBmp,
-                bannerW = header.bannerW, bannerH = header.bannerH,
+                bannerW = hdr.bannerW, bannerH = hdr.bannerH,
                 thumbBmp = thumbBmp,
-                thumbW = header.thumbW.toFloat(), thumbH = header.thumbH.toFloat(),
-                atlasW = header.atlasW, atlasH = header.atlasH, atlasCols = header.atlasCols,
+                thumbW = hdr.thumbW.toFloat(), thumbH = hdr.thumbH.toFloat(),
+                atlasW = hdr.atlasW, atlasH = hdr.atlasH, atlasCols = hdr.atlasCols,
                 titleAtlas = titleAtlas, titleBmp = titleBmp,
                 bodyAtlas = bodyAtlas, bodyBmp = bodyBmp,
                 btnAtlas = btnAtlas, btnBmp = btnBmp,
@@ -136,9 +165,31 @@ class SeriesLoadingState(private val item: JanusApi.LibraryItem) : GameState {
     override fun draw(app: App, rc: RC) {
         rc.solid(0f, 0f, rc.w, rc.h, 0.039f, 0.039f, 0.102f)
 
-        // Spinner
         val elapsed = (System.nanoTime() - startTime) / 1_000_000_000f
-        rc.spinner(rc.w / 2f, rc.h / 2f, elapsed)
+        rc.spinner(rc.w / 2f, rc.h / 2f - rc.dp(30f), elapsed)
+
+        val atlas = debugAtlas
+        if (atlas != null) {
+            val pad = 2f
+            val statusText = status
+            var cx = rc.dp(20f)
+            val sy = rc.h / 2f + rc.dp(40f)
+            for (ch in statusText) {
+                val g = atlas.glyphs[ch.code] ?: continue
+                rc.batch.addQuad(cx - pad, sy - g.ascent, g.w, g.h,
+                    g.u0, g.v0, g.u1, g.v1, 0.6f, 0.6f, 0.6f, 1f, layer = g.page.toFloat())
+                cx += g.advance
+            }
+            val timeText = "${"%.1f".format(elapsed)}s"
+            cx = rc.w / 2f - rc.dp(20f)
+            val ty = rc.h / 2f + rc.dp(60f)
+            for (ch in timeText) {
+                val g = atlas.glyphs[ch.code] ?: continue
+                rc.batch.addQuad(cx - pad, ty - g.ascent, g.w, g.h,
+                    g.u0, g.v0, g.u1, g.v1, 0.8f, 0.8f, 0.8f, 1f, layer = g.page.toFloat())
+                cx += g.advance
+            }
+        }
     }
 
     override fun cleanup(app: App) {}

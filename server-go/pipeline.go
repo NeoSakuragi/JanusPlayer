@@ -7,7 +7,8 @@ import (
 	"fmt"
 	"image"
 	"image/draw"
-	"image/png"
+	"image/jpeg"
+	_ "image/png"
 	"io"
 	"math"
 	"net/http"
@@ -232,17 +233,19 @@ func cmdAddSeries(args []string) {
 	// Get title from TMDB or use ID
 	titleEn := id
 	titleJa := ""
+	posterPath := ""
 	if tmdbID > 0 {
 		ti := fetchTMDBSeriesInfo(tmdbID)
 		if ti.titleEn != "" {
 			titleEn = ti.titleEn
 		}
 		titleJa = ti.titleJa
+		posterPath = ti.poster
 	}
 
 	// Insert into DB
-	db.Exec(`INSERT OR REPLACE INTO items (id, type, title_en, title_ja, cover, episode_count, season_count, tmdb_id) VALUES (?,?,?,?,?,?,?,?)`,
-		id, "TV_SERIES", titleEn, titleJa, fmt.Sprintf("covers/%s.jpg", id), len(episodes), len(seasonSet), tmdbID)
+	db.Exec(`INSERT OR REPLACE INTO items (id, type, title_en, title_ja, cover, episode_count, season_count, tmdb_id, poster_path) VALUES (?,?,?,?,?,?,?,?,?)`,
+		id, "TV_SERIES", titleEn, titleJa, fmt.Sprintf("covers/%s.jpg", id), len(episodes), len(seasonSet), tmdbID, posterPath)
 
 	for _, ep := range episodes {
 		db.Exec(`INSERT OR REPLACE INTO episodes (item_id, season, episode, filename, duration_sec, title_en, synopsis_en, synopsis_fr, synopsis_ja, thumb) VALUES (?,?,?,?,?,?,?,?,?,?)`,
@@ -250,10 +253,15 @@ func cmdAddSeries(args []string) {
 			ep.synopsisEn, ep.synopsisFr, ep.synopsisJa, ep.thumb)
 	}
 
-	// Update library version
-	db.Exec(`UPDATE meta SET value=?, updated_at=strftime('%s','now') WHERE key='library_version'`, fmt.Sprintf("%d", time.Now().Unix()))
+	bumpLibraryVersion()
 
 	fmt.Printf("\nAdded: %s — %d episodes, %d seasons\n", titleEn, len(episodes), len(seasonSet))
+
+	// Auto-build page blobs
+	os.MkdirAll(filepath.Join(mediaDir, "pages"), 0755)
+	for s := range seasonSet {
+		buildPageForSeason(id, s)
+	}
 }
 
 // ── Add Movie ─────────────────────────────────────────
@@ -288,6 +296,7 @@ func cmdAddMovie(args []string) {
 
 	titleEn := id
 	titleJa := ""
+	posterPath := ""
 	var synEn, synFr, synJa string
 	if tmdbID > 0 {
 		md := fetchTMDBMovie(tmdbID)
@@ -298,7 +307,7 @@ func cmdAddMovie(args []string) {
 		synEn = md.synopsisEn
 		synFr = md.synopsisFr
 		synJa = md.synopsisJa
-		// Download backdrop
+		posterPath = md.poster
 		if md.backdrop != "" {
 			downloadFile(tmdbImgBase+md.backdrop, filepath.Join(mediaDir, "covers", id+"-banner.jpg"))
 		}
@@ -309,15 +318,18 @@ func cmdAddMovie(args []string) {
 
 	durMin := int(info.duration / 60)
 
-	db.Exec(`INSERT OR REPLACE INTO items (id, type, title_en, title_ja, cover, episode_count, duration_min, synopsis_en, synopsis_fr, synopsis_ja, tmdb_id) VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
-		id, "MOVIE", titleEn, titleJa, fmt.Sprintf("covers/%s.jpg", id), 1, durMin, synEn, synFr, synJa, tmdbID)
+	db.Exec(`INSERT OR REPLACE INTO items (id, type, title_en, title_ja, cover, episode_count, duration_min, synopsis_en, synopsis_fr, synopsis_ja, tmdb_id, poster_path) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+		id, "MOVIE", titleEn, titleJa, fmt.Sprintf("covers/%s.jpg", id), 1, durMin, synEn, synFr, synJa, tmdbID, posterPath)
 
 	db.Exec(`INSERT OR REPLACE INTO episodes (item_id, season, episode, filename, duration_sec, synopsis_en, synopsis_fr, synopsis_ja) VALUES (?,?,?,?,?,?,?,?)`,
 		id, 1, 1, filepath.Base(videoFile), info.duration, synEn, synFr, synJa)
 
-	db.Exec(`UPDATE meta SET value=?, updated_at=strftime('%s','now') WHERE key='library_version'`, fmt.Sprintf("%d", time.Now().Unix()))
+	bumpLibraryVersion()
 
 	fmt.Printf("\nAdded: %s — %d min\n", titleEn, durMin)
+
+	os.MkdirAll(filepath.Join(mediaDir, "pages"), 0755)
+	buildPageForSeason(id, 1)
 }
 
 // ── Fetch TMDB ────────────────────────────────────────
@@ -336,10 +348,15 @@ func cmdFetchTMDB() {
 
 		if typ == "MOVIE" {
 			md := fetchTMDBMovie(tmdbID)
-			db.Exec(`UPDATE items SET synopsis_en=?, synopsis_fr=?, synopsis_ja=? WHERE id=?`,
-				md.synopsisEn, md.synopsisFr, md.synopsisJa, id)
-			fmt.Printf("  %s: synopsis updated\n", id)
+			db.Exec(`UPDATE items SET synopsis_en=?, synopsis_fr=?, synopsis_ja=?, poster_path=? WHERE id=?`,
+				md.synopsisEn, md.synopsisFr, md.synopsisJa, md.poster, id)
+			fmt.Printf("  %s: synopsis + poster updated (poster_path=%s)\n", id, md.poster)
 		} else {
+			ti := fetchTMDBSeriesInfo(tmdbID)
+			if ti.poster != "" {
+				db.Exec(`UPDATE items SET poster_path=? WHERE id=?`, ti.poster, id)
+				fmt.Printf("  %s: poster updated (poster_path=%s)\n", id, ti.poster)
+			}
 			epRows, _ := db.Query("SELECT season, episode FROM episodes WHERE item_id=? ORDER BY season, episode", id)
 			if epRows == nil {
 				continue
@@ -357,6 +374,7 @@ func cmdFetchTMDB() {
 			fmt.Printf("  %s: episodes updated\n", id)
 		}
 	}
+	bumpLibraryVersion()
 }
 
 // ── Extract Thumbs ────────────────────────────────────
@@ -438,14 +456,16 @@ func buildPageForSeason(itemID string, season int) {
 		return
 	}
 	type epInfo struct {
-		Episode     int    `json:"episode"`
-		TitleEn     string `json:"titleEn"`
-		DurationSec int    `json:"durationSec"`
+		Episode     int                          `json:"episode"`
+		TitleEn     string                       `json:"titleEn"`
+		DurationSec int                          `json:"durationSec"`
+		Locales     map[string]map[string]string `json:"locales,omitempty"`
 	}
 	var episodes []epInfo
 	for epRows.Next() {
 		var e epInfo
 		epRows.Scan(&e.Episode, &e.TitleEn, &e.DurationSec)
+		e.Locales = queryEpisodeLocales(itemID, season, e.Episode)
 		episodes = append(episodes, e)
 	}
 	epRows.Close()
@@ -497,8 +517,11 @@ func buildPageForSeason(itemID string, season int) {
 		}
 	}
 
-	// Thumbnails — collect PNG files from thumbs dir
+	// Thumbnails — check both mediaDir and dataDir
 	thumbDir := filepath.Join(mediaDir, "thumbs", itemID)
+	if _, err := os.Stat(thumbDir); os.IsNotExist(err) {
+		thumbDir = filepath.Join(dataDir, "thumbs", itemID)
+	}
 	var thumbFiles []string
 	for _, ep := range episodes {
 		png := filepath.Join(thumbDir, fmt.Sprintf("ep%03d.png", ep.Episode))
@@ -550,13 +573,23 @@ func buildPageForSeason(itemID string, season int) {
 				draw.Draw(atlas, image.Rect(x, y, x+thumbW, y+thumbH), img, image.Point{}, draw.Src)
 			}
 
-			// Save as PNG
+			// Save as JPEG (5-10x smaller than PNG for photo content)
 			af, err := os.Create(atlasPath)
 			if err == nil {
-				png.Encode(af, atlas)
+				jpeg.Encode(af, atlas, &jpeg.Options{Quality: 85})
 				af.Close()
 			}
 		}
+	}
+
+	// Load w500 cover (poster) — used as darkened background
+	var coverData []byte
+	coverPath := filepath.Join(mediaDir, "covers", itemID+".jpg")
+	if !fileExists(coverPath) {
+		coverPath = filepath.Join(dataDir, "covers", itemID+".jpg")
+	}
+	if fileExists(coverPath) {
+		coverData, _ = os.ReadFile(coverPath)
 	}
 
 	// Write binary header
@@ -574,6 +607,8 @@ func buildPageForSeason(itemID string, season int) {
 	binary.Write(&buf, binary.LittleEndian, int32(len(episodes)))
 	binary.Write(&buf, binary.LittleEndian, int32(thumbW))
 	binary.Write(&buf, binary.LittleEndian, int32(thumbH))
+	binary.Write(&buf, binary.LittleEndian, int32(len(coverData)))
+	buf.Write(coverData)
 	os.WriteFile(hdrPath, buf.Bytes(), 0644)
 
 	atlasKB := 0
@@ -1091,7 +1126,7 @@ type tmdbMovieData struct {
 }
 
 type tmdbSeriesInfo struct {
-	titleEn, titleJa string
+	titleEn, titleJa, poster string
 }
 
 func fetchTMDBEpisode(tmdbID, season, epNum int) tmdbEpisodeData {
@@ -1157,6 +1192,7 @@ func fetchTMDBSeriesInfo(tmdbID int) tmdbSeriesInfo {
 		switch lang {
 		case "en":
 			result.titleEn, _ = data["name"].(string)
+			result.poster, _ = data["poster_path"].(string)
 		case "ja":
 			result.titleJa, _ = data["name"].(string)
 		}

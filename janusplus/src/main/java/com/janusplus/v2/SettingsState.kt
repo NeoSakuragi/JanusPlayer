@@ -1,5 +1,6 @@
 package com.janusplus.v2
 
+import com.janusplus.AppUpdater
 import com.janusplus.GlyphAtlas
 import com.janusplus.Lang
 
@@ -11,9 +12,12 @@ class SettingsState : GameState {
 
     private var focusIdx = 0; private var rowCount = 0
     private var rowYPositions = FloatArray(20); private var animTime = 0f
+    private val rowActions = mutableListOf<(() -> Unit)?>()
 
     private val sizedAtlases = HashMap<Int, GlyphAtlas>()
     private var density = 1f
+
+    @Volatile private var updateStatus = ""
 
     override fun init(app: App) {
         app.scrollY = 0f; focusIdx = 0; density = app.density
@@ -30,6 +34,8 @@ class SettingsState : GameState {
         allText.add(Lang.s("account")); allText.add(Lang.s("logout")); allText.add("bruno")
         allText.add(Lang.s("server")); allText.add(Lang.s("server_url")); allText.add("canneji.duckdns.org")
         allText.add(Lang.s("check_update"))
+        allText.add("Checking..."); allText.add("Up to date"); allText.add("Downloading...")
+        allText.add("Installing..."); allText.add("Failed")
         allText.add("ON"); allText.add("OFF")
         allText.add(Lang.s("subtitles")); allText.add(Lang.s("font")); allText.add("Noto Sans JP")
         allText.add(Lang.s("font_size")); allText.add("20px")
@@ -59,7 +65,7 @@ class SettingsState : GameState {
         for (a in actions) when (a) {
             Action.UP -> { if (focusIdx > 0) { focusIdx--; scrollFocusIntoView(app) } }
             Action.DOWN -> { if (focusIdx < rowCount - 1) { focusIdx++; scrollFocusIntoView(app) } }
-            Action.SELECT -> {}
+            Action.SELECT -> { rowActions.getOrNull(focusIdx)?.invoke() }
             Action.BACK -> { app.goBack(); return }
             else -> {}
         }
@@ -83,7 +89,7 @@ class SettingsState : GameState {
         rc.solid(0f, 0f, rc.w, rc.h, 0.039f, 0.039f, 0.102f)
 
         var y = pad - scrollY
-        var rowIdx = 0
+        rowActions.clear()
 
         rc.text("←", pad, y + rc.dp(28f), rc.sp(22), 0.533f, 0.533f, 0.533f)
         rc.tappable(0f, y, rc.dp(60f), rc.dp(50f)) { app.goBack() }
@@ -91,35 +97,58 @@ class SettingsState : GameState {
         y += rc.dp(50f) + sectionGap
 
         y = drawSection(rc, y, Lang.s("account"))
-        y = drawRow(rc, y, rowIdx++, Lang.s("logout"), "bruno", 0.9f, 0.3f, 0.3f)
+        y = drawRow(rc, y, Lang.s("logout"), "bruno", vr = 0.9f, vg = 0.3f, vb = 0.3f)
         y += sectionGap
 
         y = drawSection(rc, y, Lang.s("server"))
-        y = drawRow(rc, y, rowIdx++, Lang.s("server_url"), "canneji.duckdns.org")
-        y = drawRow(rc, y, rowIdx++, Lang.s("check_update"), "")
+        y = drawRow(rc, y, Lang.s("server_url"), "canneji.duckdns.org")
+        y = drawRow(rc, y, Lang.s("check_update"), updateStatus) {
+            checkForUpdate(app)
+        }
         y += sectionGap
 
         y = drawSection(rc, y, Lang.s("subtitles"))
-        y = drawRow(rc, y, rowIdx++, Lang.s("font"), "Noto Sans JP")
-        y = drawRow(rc, y, rowIdx++, Lang.s("font_size"), "20px")
+        y = drawRow(rc, y, Lang.s("font"), "Noto Sans JP")
+        y = drawRow(rc, y, Lang.s("font_size"), "20px")
         y += sectionGap
 
         y = drawSection(rc, y, "Anki")
-        y = drawRow(rc, y, rowIdx++, "AnkiConnect", "http://127.0.0.1:8765")
-        y = drawRow(rc, y, rowIdx++, Lang.s("deck"), "Default")
+        y = drawRow(rc, y, "AnkiConnect", "http://127.0.0.1:8765")
+        y = drawRow(rc, y, Lang.s("deck"), "Default")
         y += sectionGap
 
         y = drawSection(rc, y, Lang.s("downloads"))
-        y = drawRow(rc, y, rowIdx++, Lang.s("downloaded_episodes"), "0")
+        y = drawRow(rc, y, Lang.s("downloaded_episodes"), "0")
         y += sectionGap
 
         y = drawSection(rc, y, Lang.s("about"))
-        y = drawRow(rc, y, rowIdx++, "Version", "0.7")
-        y = drawRow(rc, y, rowIdx++, Lang.s("language"), Lang.current.uppercase())
+        y = drawRow(rc, y, "Version", "0.7")
+        y = drawRow(rc, y, Lang.s("language"), Lang.current.uppercase())
 
-        rowCount = rowIdx
+        rowCount = rowActions.size
 
         rc.text("${app.fps}fps", rc.dp(8f), rc.dp(16f), rc.sp(10), 0.4f, 0.8f, 0.4f)
+    }
+
+    private fun checkForUpdate(app: App) {
+        val api = app.api ?: run { updateStatus = "Failed"; return }
+        updateStatus = "Checking..."
+        val updater = AppUpdater(app.context as android.app.Activity, "https://canneji.duckdns.org/janus")
+        updater.token = api.token
+        updater.checkForUpdate { info ->
+            if (info != null) {
+                updateStatus = "v${info.versionName} available"
+                app.onMainThread?.invoke {
+                    updater.downloadAndInstall(info) { progress ->
+                        updateStatus = if (progress < 0) "Failed"
+                            else if (progress > 100) "Installing..."
+                            else "Downloading... ${progress}%"
+                    }
+                }
+            } else {
+                updateStatus = "Up to date"
+            }
+        }
     }
 
     private fun drawSection(rc: RC, y: Float, title: String): Float {
@@ -128,8 +157,11 @@ class SettingsState : GameState {
         return y + rc.dp(32f)
     }
 
-    private fun drawRow(rc: RC, y: Float, idx: Int, label: String, value: String,
-                        vr: Float = 0.533f, vg: Float = 0.533f, vb: Float = 0.533f): Float {
+    private fun drawRow(rc: RC, y: Float, label: String, value: String,
+                        vr: Float = 0.533f, vg: Float = 0.533f, vb: Float = 0.533f,
+                        action: (() -> Unit)? = null): Float {
+        val idx = rowActions.size
+        rowActions.add(action)
         if (idx < rowYPositions.size) rowYPositions[idx] = y
 
         val focused = idx == focusIdx
@@ -145,6 +177,11 @@ class SettingsState : GameState {
             rc.text(value, rc.w - pad - valueW, y + rc.dp(24f), valueSize, vr, vg, vb)
         }
         rc.solid(pad, y + rowH - rc.dp(1f), contentW, rc.dp(1f), 0.08f, 0.08f, 0.14f)
+        val rowIndex = idx
+        rc.tappable(pad - rc.dp(8f), y, contentW + rc.dp(16f), rowH) {
+            focusIdx = rowIndex
+            action?.invoke()
+        }
         return y + rowH
     }
 

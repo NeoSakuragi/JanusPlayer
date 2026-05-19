@@ -1,10 +1,13 @@
 package com.janusplus.v2
 
 import com.janusplus.*
+import com.janusplus.CoverCache
 
 class SeriesDisplayState(private val page: SeriesDisplayPage) : GameState {
 
     private var thumbLayer = -1
+    private var hasCoverBg = false
+    private var coverU1 = 1f; private var coverV1 = 1f
 
     private var pad = 0f; private var heroH = 0f
     private var titleY = 0f; private var btnY = 0f; private var btnW = 0f; private var btnH = 0f
@@ -21,26 +24,35 @@ class SeriesDisplayState(private val page: SeriesDisplayPage) : GameState {
 
     override fun init(app: App) {
         if (thumbLayer < 0) thumbLayer = app.texArray.nextThumbLayer()
-        // Upload banner to cover texture (sampler2D) — sampler2DArray is too slow on MediaTek
-        page.bannerBmp?.let {
-            val ta = app.coverAtlas
-            if (ta.ownTextureId != 0) {
-                val bmp = if (it.config != android.graphics.Bitmap.Config.ARGB_8888)
-                    it.copy(android.graphics.Bitmap.Config.ARGB_8888, false).also { b -> it.recycle() } else it
-                val w = bmp.width.coerceAtMost(app.texArray.size)
-                val h = bmp.height.coerceAtMost(app.texArray.size)
-                val src = if (bmp.width > w || bmp.height > h)
-                    android.graphics.Bitmap.createScaledBitmap(bmp, w, h, true).also { bmp.recycle() } else bmp
-                val buf = java.nio.ByteBuffer.allocateDirect(w * h * 4).order(java.nio.ByteOrder.nativeOrder())
-                src.copyPixelsToBuffer(buf); buf.position(0)
-                android.opengl.GLES30.glBindTexture(android.opengl.GLES30.GL_TEXTURE_2D, ta.ownTextureId)
-                android.opengl.GLES30.glTexSubImage2D(android.opengl.GLES30.GL_TEXTURE_2D, 0,
-                    0, 0, w, h, android.opengl.GLES30.GL_RGBA, android.opengl.GLES30.GL_UNSIGNED_BYTE, buf)
-                src.recycle()
-            } else {
-                app.texArray.uploadLayerNow(TextureArray.LAYER_BANNER, it)
+
+        // Upload cover (or banner fallback) as stretched background via coverAtlas sampler2D
+        val bgBmp = page.coverBmp ?: page.bannerBmp
+        if (bgBmp != null) {
+            val uv = app.coverAtlas.let { ta ->
+                if (ta.ownTextureId != 0) {
+                    val bmp = if (bgBmp.config != android.graphics.Bitmap.Config.ARGB_8888)
+                        bgBmp.copy(android.graphics.Bitmap.Config.ARGB_8888, false).also { bgBmp.recycle() } else bgBmp
+                    val texSize = app.texArray.size
+                    val w = bmp.width.coerceAtMost(texSize)
+                    val h = bmp.height.coerceAtMost(texSize)
+                    val src = if (bmp.width > w || bmp.height > h)
+                        android.graphics.Bitmap.createScaledBitmap(bmp, w, h, true).also { bmp.recycle() } else bmp
+                    val buf = java.nio.ByteBuffer.allocateDirect(w * h * 4).order(java.nio.ByteOrder.nativeOrder())
+                    src.copyPixelsToBuffer(buf); buf.position(0)
+                    android.opengl.GLES30.glBindTexture(android.opengl.GLES30.GL_TEXTURE_2D, ta.ownTextureId)
+                    android.opengl.GLES30.glTexSubImage2D(android.opengl.GLES30.GL_TEXTURE_2D, 0,
+                        0, 0, w, h, android.opengl.GLES30.GL_RGBA, android.opengl.GLES30.GL_UNSIGNED_BYTE, buf)
+                    src.recycle()
+                    CoverCache.SlotUV(0f, 0f, w.toFloat() / texSize, h.toFloat() / texSize)
+                } else null
             }
+            if (uv != null) {
+                coverU1 = uv.u1; coverV1 = uv.v1
+                hasCoverBg = true
+            }
+            if (page.coverBmp != null) page.bannerBmp?.recycle()
         }
+
         page.thumbBmp?.let { app.texArray.uploadLayerNow(thumbLayer, it) }
         app.uploadGlyphAtlas(page.titleAtlas, page.titleBmp)
         app.uploadGlyphAtlas(page.bodyAtlas, page.bodyBmp)
@@ -117,26 +129,26 @@ class SeriesDisplayState(private val page: SeriesDisplayPage) : GameState {
         val scrollY = app.scrollY
         val ht = -scrollY
 
-        rc.solid(0f, 0f, rc.w, rc.h, 0.039f, 0.039f, 0.102f)
+        // Fixed cover background — stays still during scroll, stretched + darkened
+        if (hasCoverBg) {
+            val coverAspect = (coverU1 * app.texArray.size) / (coverV1 * app.texArray.size)
+            val screenAspect = rc.w / rc.h
+            val cu0: Float; val cv0: Float; val cu1f: Float; val cv1f: Float
+            if (coverAspect < screenAspect) {
+                val f = coverAspect / screenAspect; val crop = coverV1 * (1f - f) / 2f
+                cu0 = 0f; cu1f = coverU1; cv0 = crop; cv1f = coverV1 - crop
+            } else {
+                val f = screenAspect / coverAspect; val crop = coverU1 * (1f - f) / 2f
+                cu0 = crop; cu1f = coverU1 - crop; cv0 = 0f; cv1f = coverV1
+            }
+            rc.batch.addQuad(0f, 0f, rc.w, rc.h, cu0, cv0, cu1f, cv1f,
+                0.15f, 0.15f, 0.15f, 1f, layer = -2f)
+        } else {
+            rc.solid(0f, 0f, rc.w, rc.h, 0.039f, 0.039f, 0.102f)
+        }
 
         // Hero section — only draw if on screen
         if (ht + heroH > 0) {
-            if (page.bannerBmp != null) {
-                val texSize = app.texArray.size.toFloat()
-                val bw = page.bannerW.toFloat(); val bh = page.bannerH.toFloat()
-                val bannerAspect = bw / bh; val screenAspect = rc.w / heroH
-                var cu0: Float; var cv0: Float; var cu1: Float; var cv1: Float
-                val maxU = bw / texSize; val maxV = bh / texSize
-                if (bannerAspect < screenAspect) {
-                    val f = bannerAspect / screenAspect; val crop = maxV * (1f - f) / 2f
-                    cu0 = 0f; cu1 = maxU; cv0 = crop; cv1 = maxV - crop
-                } else {
-                    val f = screenAspect / bannerAspect; val crop = maxU * (1f - f) / 2f
-                    cu0 = crop; cu1 = maxU - crop; cv0 = 0f; cv1 = maxV
-                }
-                // Use cover texture (sampler2D) instead of texture array — faster on MediaTek
-                rc.batch.addQuad(0f, ht, rc.w, heroH, cu0, cv0, cu1, cv1, layer = -2f)
-            }
             drawText(rc, page.titleAtlas, page.title, pad, ht + titleY, 1f, 1f, 1f)
             drawText(rc, page.titleAtlas, "←", pad, ht + titleY - rc.dp(30f), 0.533f, 0.533f, 0.533f)
             rc.tappable(0f, ht + titleY - rc.dp(50f), rc.dp(60f), rc.dp(60f)) { app.goBack() }
