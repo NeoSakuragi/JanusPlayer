@@ -18,6 +18,7 @@ class SettingsState : GameState {
     private var density = 1f
 
     @Volatile private var updateStatus = ""
+    @Volatile private var cacheStatus = ""
 
     override fun init(app: App) {
         app.scrollY = 0f; focusIdx = 0; density = app.density
@@ -37,6 +38,7 @@ class SettingsState : GameState {
         allText.add("Checking..."); allText.add("Up to date"); allText.add("Downloading...")
         allText.add("Installing..."); allText.add("Failed")
         allText.add("ON"); allText.add("OFF")
+        allText.add("Debug"); allText.add("Clear cache"); allText.add("cleared files KB")
         allText.add(Lang.s("subtitles")); allText.add(Lang.s("font")); allText.add("Noto Sans JP")
         allText.add(Lang.s("font_size")); allText.add("20px")
         allText.add("Anki"); allText.add("AnkiConnect"); allText.add("http://127.0.0.1:8765")
@@ -121,8 +123,14 @@ class SettingsState : GameState {
         y = drawRow(rc, y, Lang.s("downloaded_episodes"), "0")
         y += sectionGap
 
+        y = drawSection(rc, y, "Debug")
+        y = drawRow(rc, y, "Clear cache", cacheStatus) {
+            clearCache(app)
+        }
+        y += sectionGap
+
         y = drawSection(rc, y, Lang.s("about"))
-        y = drawRow(rc, y, "Version", "0.7")
+        y = drawRow(rc, y, "Version", "0.17")
         y = drawRow(rc, y, Lang.s("language"), Lang.current.uppercase())
 
         rowCount = rowActions.size
@@ -148,6 +156,20 @@ class SettingsState : GameState {
             } else {
                 updateStatus = "Up to date"
             }
+        }
+    }
+
+    private fun clearCache(app: App) {
+        kotlin.concurrent.thread {
+            val cacheDir = app.context.cacheDir
+            var count = 0
+            var bytes = 0L
+            cacheDir.walkTopDown().filter { it.isFile }.forEach {
+                bytes += it.length()
+                it.delete()
+                count++
+            }
+            cacheStatus = "cleared $count files (${bytes / 1024}KB)"
         }
     }
 

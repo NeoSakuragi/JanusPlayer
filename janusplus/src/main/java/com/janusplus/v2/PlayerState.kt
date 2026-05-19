@@ -468,6 +468,13 @@ class PlayerState(private val page: PlayerPage) : GameState {
         if (m and Layer.FPS != 0) {
             val blitMs = app.blitThread?.lastBlitMs ?: 0f
             uiText(rc, "${app.fps}fps  blit:${"%.1f".format(blitMs)}", rc.dp(8f), rc.dp(16f), 10, 0.4f, 0.8f, 0.4f)
+            val log = app.lastLoadLog
+            if (log.isNotEmpty()) {
+                val lh = uiHeight(rc, 10) + rc.dp(2f)
+                for ((i, line) in log.withIndex()) {
+                    uiText(rc, line, rc.dp(8f), rc.dp(30f) + i * lh, 10, 0.4f, 0.7f, 0.4f)
+                }
+            }
         }
     }
 
@@ -876,6 +883,9 @@ class PlayerState(private val page: PlayerPage) : GameState {
         rebuildSubtitleAtlases()
     }
 
+    private var subGlyphLayer = -1
+    private var subGlyphY = -1
+
     private fun rebuildSubtitleAtlases() {
         val app = appRef ?: return
         val tf = try { android.graphics.Typeface.createFromAsset(app.context.assets, fontAssets[currentFontIdx]) }
@@ -901,7 +911,14 @@ class PlayerState(private val page: PlayerPage) : GameState {
         allTexts.add(ReadingUtils.HIRAGANA); allTexts.add(ReadingUtils.KATAKANA)
         allTexts.add("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.();:-/ ")
 
-        // Rebuild at new font size — synchronous on GL thread
+        // Reset glyph cursor to where subs started — reuse same texture space
+        if (subGlyphLayer >= 0) {
+            app.resetGlyphCursor(subGlyphLayer, subGlyphY)
+        } else {
+            subGlyphLayer = app.currentGlyphLayer
+            subGlyphY = app.currentGlyphY
+        }
+
         val sa = GlyphAtlas(tf, subFontSize * d)
         app.uploadGlyphAtlas(sa, sa.build(allTexts, texW))
         subAtlas = sa

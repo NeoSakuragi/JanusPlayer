@@ -226,6 +226,13 @@ class SeriesDisplayState(private val page: SeriesDisplayPage) : GameState {
         }
 
         drawText(rc, page.smallAtlas, "${app.fps}fps", rc.dp(8f), rc.dp(16f), 0.4f, 0.8f, 0.4f)
+        val log = app.lastLoadLog
+        if (log.isNotEmpty()) {
+            val lh = page.smallAtlas.lineHeight + rc.dp(2f)
+            for ((i, line) in log.withIndex()) {
+                drawText(rc, page.smallAtlas, line, rc.dp(8f), rc.dp(30f) + i * lh, 0.4f, 0.7f, 0.4f)
+            }
+        }
     }
 
     private val glyphPad = 2f

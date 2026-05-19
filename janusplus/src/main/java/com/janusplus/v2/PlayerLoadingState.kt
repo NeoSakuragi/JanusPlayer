@@ -14,19 +14,29 @@ class PlayerLoadingState(
     @Volatile private var ready = false
     @Volatile private var page: PlayerPage? = null
     private var startTime = System.nanoTime()
+    @Volatile var lines = mutableListOf("loading...")
+
+    private var debugAtlas: GlyphAtlas? = null
 
     override fun init(app: App) {
         startTime = System.nanoTime()
+        val tf = app.defaultTypeface
+        val atlas = GlyphAtlas(tf, 12f * app.density)
+        app.uploadGlyphAtlas(atlas, atlas.build(
+            listOf("abcdefghijklmnopqrstuvwxyz.|0123456789ms% "), app.texArray.size))
+        debugAtlas = atlas
 
         thread {
             try { loadPage(app) } catch (e: Exception) {
                 android.util.Log.e("PlayerLoading", "Load failed: ${e.message}")
+                lines.add("FAILED: ${e.message}")
             }
         }
     }
 
     private fun loadPage(app: App) {
         val t0 = System.currentTimeMillis()
+        fun ms() = System.currentTimeMillis() - t0
         val api = app.api ?: return
         val density = app.density
         val texW = app.texArray.size
@@ -53,6 +63,7 @@ class PlayerLoadingState(
             einkMode = p.getBoolean("eink_mode", false),
         )
 
+        lines.add("prefs ${ms()}ms")
         // 2. Fetch subtitles — SuperSRT + SRT in parallel
         var superSRT: JanusApi.SuperSRT? = null
         var cues: List<SrtParser.Cue> = emptyList()
@@ -78,6 +89,7 @@ class PlayerLoadingState(
         superThread.join()
         srtThread?.join()
         val tSubs = System.currentTimeMillis()
+        lines.add("subs ${ms()}ms")
         android.util.Log.d("PlayerLoad", "subs fetched in ${tSubs - t0}ms superSRT=${superSRT != null} cues=${cues.size}")
         val superData = superSRT
         val cueData = cues
@@ -141,6 +153,7 @@ class PlayerLoadingState(
         // 6. No separate dict atlases — dict popup reuses subAtlas with GL scaling
         val dictAtlases = mutableListOf<Triple<Int, GlyphAtlas, Bitmap>>()
 
+        lines.add("glyphs ${ms()}ms")
         val tAtlas = System.currentTimeMillis()
         val subGlyphs = subAtlas?.glyphs?.size ?: 0
         val subPages = 1 + (subAtlas?.extraPages?.size ?: 0)
@@ -159,6 +172,7 @@ class PlayerLoadingState(
         if (ready) {
             val p = page ?: return
             ready = false
+            app.lastLoadLog = lines.toList()
             app.replace(Screen.PLAYER, PlayerState(p))
         }
         for (a in actions) { if (a == Action.BACK) app.goBack() }
@@ -167,7 +181,30 @@ class PlayerLoadingState(
     override fun draw(app: App, rc: RC) {
         rc.solid(0f, 0f, rc.w, rc.h, 0.039f, 0.039f, 0.102f)
         val elapsed = (System.nanoTime() - startTime) / 1_000_000_000f
-        rc.spinner(rc.w / 2f, rc.h / 2f, elapsed)
+        rc.spinner(rc.w / 2f, rc.h * 0.3f, elapsed)
+        val atlas = debugAtlas ?: return
+        val pad = 2f
+        val lineH = atlas.lineHeight + rc.dp(4f)
+        val snapshot = lines.toList()
+        for ((i, line) in snapshot.withIndex()) {
+            var cx = rc.dp(20f)
+            val y = rc.h * 0.45f + i * lineH
+            if (y > rc.h) break
+            for (ch in line) {
+                val g = atlas.glyphs[ch.code] ?: continue
+                rc.batch.addQuad(cx - pad, y - g.ascent, g.w, g.h,
+                    g.u0, g.v0, g.u1, g.v1, 0.5f, 0.8f, 0.5f, 1f, layer = g.page.toFloat())
+                cx += g.advance
+            }
+        }
+        var cx = rc.dp(20f)
+        val ty = rc.h * 0.45f + snapshot.size * lineH
+        for (ch in "${"%.1f".format(elapsed)}s") {
+            val g = atlas.glyphs[ch.code] ?: continue
+            rc.batch.addQuad(cx - pad, ty - g.ascent, g.w, g.h,
+                g.u0, g.v0, g.u1, g.v1, 1f, 1f, 1f, 1f, layer = g.page.toFloat())
+            cx += g.advance
+        }
     }
 
     override fun cleanup(app: App) {}

@@ -15,7 +15,7 @@ class SeriesLoadingState(private val item: JanusApi.LibraryItem) : GameState {
     @Volatile private var ready = false
     @Volatile private var page: SeriesDisplayPage? = null
     private var startTime = System.nanoTime()
-    @Volatile var status = "loading..."
+    @Volatile var lines = mutableListOf("loading...")
 
     private var debugAtlas: GlyphAtlas? = null
 
@@ -31,7 +31,7 @@ class SeriesLoadingState(private val item: JanusApi.LibraryItem) : GameState {
         thread {
             try { loadPage(app) } catch (e: Exception) {
                 android.util.Log.e("SeriesLoading", "Load failed: ${e.message}")
-                status = "FAILED: ${e.message}"
+                lines.add("FAILED: ${e.message}")
             }
         }
     }
@@ -48,14 +48,14 @@ class SeriesLoadingState(private val item: JanusApi.LibraryItem) : GameState {
             var seasonData: JanusApi.SeasonData? = null
             var atlasBytes: ByteArray? = null
 
-            status = "header..."
+            lines.add("header...")
             val headerThread = Thread { header = api.fetchPageHeader(item.id, 1) }.also { it.start() }
             val seasonThread = Thread { seasonData = api.fetchSeason(item.id, 1) }.also { it.start() }
             val atlasThread = Thread { atlasBytes = api.fetchPageAtlas(item.id, 1) }.also { it.start() }
 
-            headerThread.join(); status = "header ${ms()}ms"
-            seasonThread.join(); status = "season ${ms()}ms"
-            atlasThread.join(); status = "net done ${ms()}ms"
+            headerThread.join(); lines.add("header ${ms()}ms")
+            seasonThread.join(); lines.add("season ${ms()}ms")
+            atlasThread.join(); lines.add("net done ${ms()}ms")
             val hdr = header ?: return
 
             val json = JSONObject(hdr.metadataJson)
@@ -92,7 +92,7 @@ class SeriesLoadingState(private val item: JanusApi.LibraryItem) : GameState {
             }
             if (coverBmp == null) coverBmp = bannerBmp
 
-            status = "decode ${ms()}ms"
+            lines.add("decode ${ms()}ms")
             var thumbBmp: android.graphics.Bitmap? = null
             val ab = atlasBytes
             if (ab != null && ab.isNotEmpty()) {
@@ -113,7 +113,7 @@ class SeriesLoadingState(private val item: JanusApi.LibraryItem) : GameState {
                 allTexts.add("${ep.durationSec / 60} min")
             }
 
-            status = "parse ${ms()}ms | glyphs..."
+            lines.add("parse ${ms()}ms")
             val tf = try { android.graphics.Typeface.createFromAsset(app.context.assets, "fonts/NotoSansJP-Regular.ttf") }
                      catch (_: Exception) { android.graphics.Typeface.DEFAULT }
 
@@ -129,7 +129,7 @@ class SeriesLoadingState(private val item: JanusApi.LibraryItem) : GameState {
             val settAtlas = GlyphAtlas(tf, 12f * density)
             val settBmp = settAtlas.build(listOf(Lang.s("settings")), ts)
 
-            status = "done ${ms()}ms"
+            lines.add("glyphs ${ms()}ms")
             page = SeriesDisplayPage(
                 item = item,
                 title = title,
@@ -157,6 +157,7 @@ class SeriesLoadingState(private val item: JanusApi.LibraryItem) : GameState {
         if (ready) {
             val p = page ?: return
             ready = false
+            app.lastLoadLog = lines.toList()
             app.replace(Screen.SERIES, SeriesDisplayState(p))
         }
         for (a in actions) { if (a == Action.BACK) app.goBack() }
@@ -164,31 +165,30 @@ class SeriesLoadingState(private val item: JanusApi.LibraryItem) : GameState {
 
     override fun draw(app: App, rc: RC) {
         rc.solid(0f, 0f, rc.w, rc.h, 0.039f, 0.039f, 0.102f)
-
         val elapsed = (System.nanoTime() - startTime) / 1_000_000_000f
-        rc.spinner(rc.w / 2f, rc.h / 2f - rc.dp(30f), elapsed)
-
-        val atlas = debugAtlas
-        if (atlas != null) {
-            val pad = 2f
-            val statusText = status
+        rc.spinner(rc.w / 2f, rc.h * 0.3f, elapsed)
+        val atlas = debugAtlas ?: return
+        val pad = 2f
+        val lineH = atlas.lineHeight + rc.dp(4f)
+        val snapshot = lines.toList()
+        for ((i, line) in snapshot.withIndex()) {
             var cx = rc.dp(20f)
-            val sy = rc.h / 2f + rc.dp(40f)
-            for (ch in statusText) {
+            val y = rc.h * 0.45f + i * lineH
+            if (y > rc.h) break
+            for (ch in line) {
                 val g = atlas.glyphs[ch.code] ?: continue
-                rc.batch.addQuad(cx - pad, sy - g.ascent, g.w, g.h,
-                    g.u0, g.v0, g.u1, g.v1, 0.6f, 0.6f, 0.6f, 1f, layer = g.page.toFloat())
+                rc.batch.addQuad(cx - pad, y - g.ascent, g.w, g.h,
+                    g.u0, g.v0, g.u1, g.v1, 0.5f, 0.8f, 0.5f, 1f, layer = g.page.toFloat())
                 cx += g.advance
             }
-            val timeText = "${"%.1f".format(elapsed)}s"
-            cx = rc.w / 2f - rc.dp(20f)
-            val ty = rc.h / 2f + rc.dp(60f)
-            for (ch in timeText) {
-                val g = atlas.glyphs[ch.code] ?: continue
-                rc.batch.addQuad(cx - pad, ty - g.ascent, g.w, g.h,
-                    g.u0, g.v0, g.u1, g.v1, 0.8f, 0.8f, 0.8f, 1f, layer = g.page.toFloat())
-                cx += g.advance
-            }
+        }
+        var cx = rc.dp(20f)
+        val ty = rc.h * 0.45f + snapshot.size * lineH
+        for (ch in "${"%.1f".format(elapsed)}s") {
+            val g = atlas.glyphs[ch.code] ?: continue
+            rc.batch.addQuad(cx - pad, ty - g.ascent, g.w, g.h,
+                g.u0, g.v0, g.u1, g.v1, 1f, 1f, 1f, 1f, layer = g.page.toFloat())
+            cx += g.advance
         }
     }
 

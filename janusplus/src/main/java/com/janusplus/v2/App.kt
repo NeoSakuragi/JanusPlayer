@@ -216,12 +216,16 @@ class App(val context: Context, private val assets: android.content.res.AssetMan
     var blitThread: VideoBlitThread? = null
     var einkMode = false
     var isTV = false
+    @Volatile var lastLoadLog: List<String> = emptyList()
     var defaultTypeface: android.graphics.Typeface = android.graphics.Typeface.DEFAULT
 
     var whiteU = 0f; private set
     var whiteV = 0f; private set
     private var glyphLayer = TextureArray.LAYER_GLYPH_FIRST
     private var glyphY = 0
+    val currentGlyphLayer get() = glyphLayer
+    val currentGlyphY get() = glyphY
+    fun resetGlyphCursor(layer: Int, y: Int) { glyphLayer = layer; glyphY = y }
 
     val projMatrix = FloatArray(16)
     var width = 0f; private set
