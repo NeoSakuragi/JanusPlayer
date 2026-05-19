@@ -30,7 +30,7 @@ class SettingsState : GameState {
         allText.add(Lang.s("account")); allText.add(Lang.s("logout")); allText.add("bruno")
         allText.add(Lang.s("server")); allText.add(Lang.s("server_url")); allText.add("canneji.duckdns.org")
         allText.add(Lang.s("check_update"))
-        allText.add(Lang.s("playback")); allText.add(Lang.s("hardware_decoding")); allText.add("ON"); allText.add("OFF")
+        allText.add("ON"); allText.add("OFF")
         allText.add(Lang.s("subtitles")); allText.add(Lang.s("font")); allText.add("Noto Sans JP")
         allText.add(Lang.s("font_size")); allText.add("20px")
         allText.add("Anki"); allText.add("AnkiConnect"); allText.add("http://127.0.0.1:8765")
@@ -97,10 +97,6 @@ class SettingsState : GameState {
         y = drawSection(rc, y, Lang.s("server"))
         y = drawRow(rc, y, rowIdx++, Lang.s("server_url"), "canneji.duckdns.org")
         y = drawRow(rc, y, rowIdx++, Lang.s("check_update"), "")
-        y += sectionGap
-
-        y = drawSection(rc, y, Lang.s("playback"))
-        y = drawRow(rc, y, rowIdx++, Lang.s("hardware_decoding"), "OFF")
         y += sectionGap
 
         y = drawSection(rc, y, Lang.s("subtitles"))

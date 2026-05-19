@@ -156,13 +156,21 @@ class SeriesDisplayState(private val page: SeriesDisplayPage) : GameState {
 
             if (page.thumbBmp != null && page.atlasCols > 0 && page.atlasW > 0 && page.atlasH > 0) {
                 val ac = i % page.atlasCols; val ar = i / page.atlasCols
-                val scale = minOf(texSize / page.atlasW, texSize / page.atlasH, 1f)
-                val sw = page.atlasW * scale; val sh = page.atlasH * scale
-                val u0 = (ac * page.thumbW) / page.atlasW * sw / texSize
-                val v0 = (ar * page.thumbH) / page.atlasH * sh / texSize
-                val u1 = ((ac + 1) * page.thumbW) / page.atlasW * sw / texSize
-                val v1 = ((ar + 1) * page.thumbH) / page.atlasH * sh / texSize
-                rc.batch.addQuad(x, y, cardW, thumbCardH, u0, v0, u1, v1, layer = thumbLayer.toFloat())
+                // Thumb origin in atlas (pixels)
+                val txOrig = ac * page.thumbW
+                val tyOrig = ar * page.thumbH
+                // Center-crop: show as many source pixels as the card can fit at 1:1
+                val showW = cardW.coerceAtMost(page.thumbW)
+                val showH = thumbCardH.coerceAtMost(page.thumbH)
+                val cropX = txOrig + (page.thumbW - showW) / 2f
+                val cropY = tyOrig + (page.thumbH - showH) / 2f
+                // UV in texture space
+                val u0 = cropX / texSize
+                val v0 = cropY / texSize
+                val u1 = (cropX + showW) / texSize
+                val v1 = (cropY + showH) / texSize
+                rc.batch.addQuad(x + (cardW - showW) / 2f, y + (thumbCardH - showH) / 2f,
+                    showW, showH, u0, v0, u1, v1, layer = thumbLayer.toFloat())
             }
 
             val ep = page.episodes[i]

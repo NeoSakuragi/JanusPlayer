@@ -1,9 +1,15 @@
 package main
 
 import (
+	"bytes"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"image"
+	"image/draw"
+	"image/png"
 	"io"
+	"math"
 	"net/http"
 	"os"
 	"os/exec"
@@ -30,6 +36,8 @@ func runCommand(cmd string, args []string) {
 		cmdFetchTMDB()
 	case "extract-thumbs":
 		cmdExtractThumbs()
+	case "build-pages":
+		cmdBuildPages()
 	case "strip-tags":
 		cmdStripTags()
 	case "migrate-subs":
@@ -53,7 +61,8 @@ func runCommand(cmd string, args []string) {
 		fmt.Println("  add-series      Add a TV series")
 		fmt.Println("  add-movie       Add a movie")
 		fmt.Println("  fetch-tmdb      Refresh TMDB data")
-		fmt.Println("  extract-thumbs  Generate missing thumbnails")
+		fmt.Println("  extract-thumbs  Generate missing thumbnails from video files")
+		fmt.Println("  build-pages     Build page blobs (atlas + header) for all series")
 		fmt.Println("  strip-tags      Strip SRT tags")
 		fmt.Println("  add-user        Create user: --name=X --password=Y [--role=admin|viewer]")
 		fmt.Println("  list-users      List all users")
@@ -372,10 +381,18 @@ func cmdExtractThumbs() {
 
 		thumbDir := filepath.Join(mediaDir, "thumbs", itemID)
 		os.MkdirAll(thumbDir, 0755)
-		thumbFile := fmt.Sprintf("ep%03d.jpg", epNum)
+		thumbFile := fmt.Sprintf("ep%03d.png", epNum)
 		thumbPath := filepath.Join(thumbDir, thumbFile)
 
-		if extractFrame(videoPath, thumbPath, 360) {
+		// Seek to 6min or 25% of duration for short content
+		seekSec := 360
+		var dur float64
+		db.QueryRow("SELECT duration_sec FROM episodes WHERE item_id=? AND episode=?", itemID, epNum).Scan(&dur)
+		if dur > 0 && dur*0.25 < float64(seekSec) {
+			seekSec = int(dur * 0.25)
+		}
+
+		if extractFrame(videoPath, thumbPath, seekSec) {
 			relPath := fmt.Sprintf("thumbs/%s/%s", itemID, thumbFile)
 			db.Exec(`UPDATE episodes SET thumb=? WHERE item_id=? AND episode=?`, relPath, itemID, epNum)
 			count++
@@ -383,6 +400,188 @@ func cmdExtractThumbs() {
 		}
 	}
 	fmt.Printf("Extracted %d thumbnails\n", count)
+}
+
+// ── Build Pages ──────────────────────────────────────
+
+func cmdBuildPages() {
+	os.MkdirAll(filepath.Join(mediaDir, "pages"), 0755)
+
+	rows, _ := db.Query("SELECT DISTINCT item_id FROM episodes ORDER BY item_id")
+	if rows == nil {
+		return
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var itemID string
+		rows.Scan(&itemID)
+
+		// Get seasons
+		seasonRows, _ := db.Query("SELECT DISTINCT season FROM episodes WHERE item_id=? ORDER BY season", itemID)
+		if seasonRows == nil {
+			continue
+		}
+		for seasonRows.Next() {
+			var season int
+			seasonRows.Scan(&season)
+			buildPageForSeason(itemID, season)
+		}
+		seasonRows.Close()
+	}
+}
+
+func buildPageForSeason(itemID string, season int) {
+	// Collect episodes
+	epRows, _ := db.Query("SELECT episode, title_en, duration_sec FROM episodes WHERE item_id=? AND season=? ORDER BY episode", itemID, season)
+	if epRows == nil {
+		return
+	}
+	type epInfo struct {
+		Episode     int    `json:"episode"`
+		TitleEn     string `json:"titleEn"`
+		DurationSec int    `json:"durationSec"`
+	}
+	var episodes []epInfo
+	for epRows.Next() {
+		var e epInfo
+		epRows.Scan(&e.Episode, &e.TitleEn, &e.DurationSec)
+		episodes = append(episodes, e)
+	}
+	epRows.Close()
+	if len(episodes) == 0 {
+		return
+	}
+
+	// Item metadata
+	var titleEn, titleJa string
+	db.QueryRow("SELECT title_en, title_ja FROM items WHERE id=?", itemID).Scan(&titleEn, &titleJa)
+
+	// Locales
+	locales := map[string]map[string]string{}
+	locRows, _ := db.Query("SELECT language, title, synopsis FROM item_locales WHERE item_id=?", itemID)
+	if locRows != nil {
+		for locRows.Next() {
+			var lang, title, synopsis string
+			locRows.Scan(&lang, &title, &synopsis)
+			locales[lang] = map[string]string{"title": title, "synopsis": synopsis}
+		}
+		locRows.Close()
+	}
+
+	meta := map[string]interface{}{
+		"titleEn":      titleEn,
+		"titleJa":      titleJa,
+		"episodeCount":  len(episodes),
+		"locales":      locales,
+		"episodes":     episodes,
+	}
+	metaJSON, _ := json.Marshal(meta)
+
+	// Banner
+	var bannerData []byte
+	var bannerW, bannerH int
+	bannerPath := filepath.Join(mediaDir, "covers", itemID+"-banner.jpg")
+	if !fileExists(bannerPath) {
+		bannerPath = filepath.Join(mediaDir, "covers", itemID+".jpg")
+	}
+	if fileExists(bannerPath) {
+		f, err := os.Open(bannerPath)
+		if err == nil {
+			img, _, err := image.DecodeConfig(f)
+			f.Close()
+			if err == nil {
+				bannerW, bannerH = img.Width, img.Height
+			}
+			bannerData, _ = os.ReadFile(bannerPath)
+		}
+	}
+
+	// Thumbnails — collect PNG files from thumbs dir
+	thumbDir := filepath.Join(mediaDir, "thumbs", itemID)
+	var thumbFiles []string
+	for _, ep := range episodes {
+		png := filepath.Join(thumbDir, fmt.Sprintf("ep%03d.png", ep.Episode))
+		jpg := filepath.Join(thumbDir, fmt.Sprintf("ep%03d.jpg", ep.Episode))
+		if fileExists(png) {
+			thumbFiles = append(thumbFiles, png)
+		} else if fileExists(jpg) {
+			thumbFiles = append(thumbFiles, jpg)
+		}
+	}
+
+	var atlasW, atlasH, atlasCols, thumbW, thumbH int
+	atlasPath := filepath.Join(mediaDir, "pages", fmt.Sprintf("%s_s%d.atlas", itemID, season))
+
+	if len(thumbFiles) > 0 {
+		// Read first thumb to get dimensions
+		f, err := os.Open(thumbFiles[0])
+		if err == nil {
+			cfg, _, err := image.DecodeConfig(f)
+			f.Close()
+			if err == nil {
+				thumbW, thumbH = cfg.Width, cfg.Height
+			}
+		}
+
+		if thumbW > 0 && thumbH > 0 {
+			n := len(thumbFiles)
+			atlasCols = int(math.Ceil(math.Sqrt(float64(n))))
+			atlasRows := int(math.Ceil(float64(n) / float64(atlasCols)))
+			atlasW = atlasCols * thumbW
+			atlasH = atlasRows * thumbH
+
+			// Pack atlas
+			atlas := image.NewRGBA(image.Rect(0, 0, atlasW, atlasH))
+			for i, tf := range thumbFiles {
+				f, err := os.Open(tf)
+				if err != nil {
+					continue
+				}
+				img, _, err := image.Decode(f)
+				f.Close()
+				if err != nil {
+					continue
+				}
+				col := i % atlasCols
+				row := i / atlasCols
+				x := col * thumbW
+				y := row * thumbH
+				draw.Draw(atlas, image.Rect(x, y, x+thumbW, y+thumbH), img, image.Point{}, draw.Src)
+			}
+
+			// Save as PNG
+			af, err := os.Create(atlasPath)
+			if err == nil {
+				png.Encode(af, atlas)
+				af.Close()
+			}
+		}
+	}
+
+	// Write binary header
+	hdrPath := filepath.Join(mediaDir, "pages", fmt.Sprintf("%s_s%d.hdr", itemID, season))
+	var buf bytes.Buffer
+	binary.Write(&buf, binary.LittleEndian, int32(len(metaJSON)))
+	buf.Write(metaJSON)
+	binary.Write(&buf, binary.LittleEndian, int32(bannerW))
+	binary.Write(&buf, binary.LittleEndian, int32(bannerH))
+	binary.Write(&buf, binary.LittleEndian, int32(len(bannerData)))
+	buf.Write(bannerData)
+	binary.Write(&buf, binary.LittleEndian, int32(atlasW))
+	binary.Write(&buf, binary.LittleEndian, int32(atlasH))
+	binary.Write(&buf, binary.LittleEndian, int32(atlasCols))
+	binary.Write(&buf, binary.LittleEndian, int32(len(episodes)))
+	binary.Write(&buf, binary.LittleEndian, int32(thumbW))
+	binary.Write(&buf, binary.LittleEndian, int32(thumbH))
+	os.WriteFile(hdrPath, buf.Bytes(), 0644)
+
+	atlasKB := 0
+	if fi, err := os.Stat(atlasPath); err == nil {
+		atlasKB = int(fi.Size() / 1024)
+	}
+	fmt.Printf("%s s%d: %d eps, thumb=%dx%d, atlas=%dx%d, %dKB\n",
+		itemID, season, len(episodes), thumbW, thumbH, atlasW, atlasH, atlasKB)
 }
 
 // ── Strip Tags ────────────────────────────────────────
@@ -836,7 +1035,11 @@ func extractFrame(videoPath, outputPath string, seekSec int) bool {
 	if fileExists(outputPath) {
 		return true
 	}
-	return exec.Command("ffmpeg", "-v", "quiet", "-y", "-ss", strconv.Itoa(seekSec), "-i", videoPath, "-vframes", "1", "-q:v", "2", outputPath).Run() == nil
+	// PNG at 480px wide, even height, from video source
+	return exec.Command("ffmpeg", "-v", "quiet", "-y",
+		"-ss", strconv.Itoa(seekSec), "-i", videoPath,
+		"-vframes", "1", "-vf", "scale=480:-2", "-update", "1",
+		outputPath).Run() == nil
 }
 
 func stripSrtFile(path string) {
