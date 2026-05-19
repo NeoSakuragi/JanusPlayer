@@ -1,5 +1,6 @@
 package com.janusplus.v2
 
+import com.janusplus.AnkiDroidClient
 import com.janusplus.AppUpdater
 import com.janusplus.GlyphAtlas
 import com.janusplus.Lang
@@ -19,6 +20,7 @@ class SettingsState : GameState {
 
     @Volatile private var updateStatus = ""
     @Volatile private var cacheStatus = ""
+    @Volatile private var ankiStatus = ""
 
     override fun init(app: App) {
         app.scrollY = 0f; focusIdx = 0; density = app.density
@@ -39,6 +41,7 @@ class SettingsState : GameState {
         allText.add("Installing..."); allText.add("Failed")
         allText.add("ON"); allText.add("OFF")
         allText.add("Debug"); allText.add("Clear cache"); allText.add("cleared files KB")
+        allText.add("Test Anki card"); allText.add("sent"); allText.add("dupe"); allText.add("no ankidroid"); allText.add("no perm")
         allText.add(Lang.s("subtitles")); allText.add(Lang.s("font")); allText.add("Noto Sans JP")
         allText.add(Lang.s("font_size")); allText.add("20px")
         allText.add("Anki"); allText.add("AnkiConnect"); allText.add("http://127.0.0.1:8765")
@@ -127,6 +130,9 @@ class SettingsState : GameState {
         y = drawRow(rc, y, "Clear cache", cacheStatus) {
             clearCache(app)
         }
+        y = drawRow(rc, y, "Test Anki card", ankiStatus) {
+            testAnkiCard(app)
+        }
         y += sectionGap
 
         y = drawSection(rc, y, Lang.s("about"))
@@ -156,6 +162,74 @@ class SettingsState : GameState {
             } else {
                 updateStatus = "Up to date"
             }
+        }
+    }
+
+    private fun testAnkiCard(app: App) {
+        try {
+            val client = AnkiDroidClient(app.context)
+            if (!client.isAvailable()) { ankiStatus = "no ankidroid"; return }
+            if (!client.hasPermission()) {
+                app.onMainThread?.invoke {
+                    val activity = app.context as? android.app.Activity
+                    if (activity != null) client.requestPermission(activity)
+                }
+                ankiStatus = "requesting perm..."
+                return
+            }
+            ankiStatus = "sending..."
+            kotlin.concurrent.thread {
+                try {
+                    // Generate a test screenshot
+                    val imgFile = java.io.File(app.context.cacheDir, "anki_test.jpg")
+                    val bmp = android.graphics.Bitmap.createBitmap(640, 360, android.graphics.Bitmap.Config.ARGB_8888)
+                    val canvas = android.graphics.Canvas(bmp)
+                    canvas.drawColor(0xFF1A1A2E.toInt())
+                    val paint = android.graphics.Paint().apply {
+                        color = 0xFFBB86FC.toInt(); textSize = 64f; isAntiAlias = true
+                        typeface = android.graphics.Typeface.DEFAULT_BOLD
+                    }
+                    canvas.drawText("飲む", 220f, 200f, paint)
+                    imgFile.outputStream().use { bmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, 90, it) }
+                    bmp.recycle()
+
+                    // Generate a test audio (silent WAV, 1 second)
+                    val audioFile = java.io.File(app.context.cacheDir, "anki_test.mp3")
+                    val sr = 44100; val samples = sr
+                    val wavSize = 44 + samples * 2
+                    val wav = java.io.ByteArrayOutputStream(wavSize)
+                    fun writeShort(v: Int) { wav.write(v and 0xFF); wav.write((v shr 8) and 0xFF) }
+                    fun writeInt(v: Int) { writeShort(v); writeShort(v shr 16) }
+                    wav.write("RIFF".toByteArray()); writeInt(wavSize - 8)
+                    wav.write("WAVEfmt ".toByteArray()); writeInt(16); writeShort(1); writeShort(1)
+                    writeInt(sr); writeInt(sr * 2); writeShort(2); writeShort(16)
+                    wav.write("data".toByteArray()); writeInt(samples * 2)
+                    for (i in 0 until samples) writeShort((16000 * kotlin.math.sin(440.0 * 2 * Math.PI * i / sr)).toInt())
+                    audioFile.writeBytes(wav.toByteArray())
+
+                    val result = client.addCard(AnkiDroidClient.CardInfo(
+                        expression = "飲む",
+                        reading = "飲[の]む",
+                        meaning = "to drink",
+                        sentence = "水を飲む",
+                        source = "Janus Test",
+                        jlpt = "N5",
+                        screenshotFile = imgFile,
+                        audioFile = audioFile,
+                    ))
+                    ankiStatus = when (result) {
+                        is AnkiDroidClient.Result.Success -> "sent id=${result.noteId}"
+                        is AnkiDroidClient.Result.Duplicate -> "dupe"
+                        is AnkiDroidClient.Result.NotInstalled -> "no ankidroid"
+                        is AnkiDroidClient.Result.NoPermission -> "no perm"
+                        is AnkiDroidClient.Result.Error -> "err: ${result.message}"
+                    }
+                } catch (e: Exception) {
+                    ankiStatus = "err: ${e.message}"
+                }
+            }
+        } catch (e: Exception) {
+            ankiStatus = "err: ${e.message}"
         }
     }
 

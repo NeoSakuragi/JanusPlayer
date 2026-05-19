@@ -49,4 +49,5 @@ dependencies {
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("androidx.media3:media3-exoplayer:1.5.1")
     implementation("androidx.media3:media3-common:1.5.1")
+    implementation("com.github.ankidroid:Anki-Android:api-v1.1.0")
 }
