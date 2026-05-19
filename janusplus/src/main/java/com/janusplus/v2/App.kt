@@ -140,7 +140,7 @@ class RC(
     fun cover(key: String, x: Float, y: Float, w: Float, h: Float): Boolean {
         val uv = coverAtlas.getUV(key) ?: return false
         if (!coverAtlas.isReady()) return false
-        batch.addQuad(x, y, w, h, uv.u0, uv.v0, uv.u1, uv.v1, layer = coverAtlas.layerIndex.toFloat())
+        batch.addQuad(x, y, w, h, uv.u0, uv.v0, uv.u1, uv.v1, layer = -2f)
         return true
     }
 
@@ -361,7 +361,8 @@ class App(val context: Context, private val assets: android.content.res.AssetMan
         defaultTypeface = try { android.graphics.Typeface.createFromAsset(assets, "fonts/NotoSansJP-Regular.ttf") }
                           catch (_: Exception) { android.graphics.Typeface.DEFAULT }
 
-        val uiTexSize = if (isTV) 2048 else 4096
+        val uiTexSize = if (isTV) 2048 else maxTexSize[0].coerceAtMost(4096)
+        android.util.Log.i("App", "GL maxTexture=${maxTexSize[0]} using=$uiTexSize isTV=$isTV")
         texArray = TextureArray(uiTexSize)
         texArray.initGL()
 
@@ -379,6 +380,7 @@ class App(val context: Context, private val assets: android.content.res.AssetMan
 
         coverAtlas.texArray = texArray
         coverAtlas.layerIndex = TextureArray.LAYER_COVERS
+        coverAtlas.initCoverGL(texArray.size)
         coverAtlas.invalidate()
         thumbAtlas.texArray = texArray
         thumbAtlas.layerIndex = texArray.nextThumbLayer()
@@ -452,10 +454,8 @@ class App(val context: Context, private val assets: android.content.res.AssetMan
     private var swapIntervalFrames = 0
 
     override fun onDrawFrame(gl: GL10?) {
-        if (swapIntervalFrames < 10) {
-            android.opengl.EGL14.eglSwapInterval(android.opengl.EGL14.eglGetCurrentDisplay(), 1)
-            swapIntervalFrames++
-        }
+        // Force swap interval every frame — some devices reset it
+        android.opengl.EGL14.eglSwapInterval(android.opengl.EGL14.eglGetCurrentDisplay(), 1)
         val now = System.nanoTime()
         if (lastFrameNano > 0) frameIntervalMs = frameIntervalMs * 0.9f + (now - lastFrameNano) / 1_000_000f * 0.1f
         lastFrameNano = now
@@ -520,6 +520,9 @@ class App(val context: Context, private val assets: android.content.res.AssetMan
         GLES30.glActiveTexture(GLES30.GL_TEXTURE2)
         videoSurface.bindRgb()
         GLES30.glUniform1i(shader.uTexVideo, 2)
+        GLES30.glActiveTexture(GLES30.GL_TEXTURE3)
+        coverAtlas.bindCover()
+        GLES30.glUniform1i(shader.uTexCover, 3)
         GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
         batch.begin()
 

@@ -3,6 +3,8 @@ package com.janusplus
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Rect
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import java.util.concurrent.ConcurrentLinkedQueue
 
 class ThumbnailAtlas {
@@ -14,10 +16,37 @@ class ThumbnailAtlas {
     @Volatile private var ready = false
     @Volatile var layerIndex = 0
     var texArray: TextureArray? = null
+    var ownTextureId = 0; private set  // Separate GL_TEXTURE_2D for covers (faster on MediaTek)
 
-    // Background thread builds atlas + UV map, GL thread applies after upload
-    data class PendingAtlas(val bitmap: Bitmap, val uvMap: HashMap<String, ThumbUV>, val layer: Int)
+    data class TileUpload(val bitmap: Bitmap, val x: Int, val y: Int, val layer: Int)
+    data class PendingAtlas(val tiles: List<TileUpload>, val uvMap: HashMap<String, ThumbUV>, val layer: Int)
     val pendingQueue = ConcurrentLinkedQueue<PendingAtlas>()
+
+    fun initCoverGL(size: Int) {
+        texSize = size
+        if (ownTextureId != 0) {
+            android.opengl.GLES30.glDeleteTextures(1, intArrayOf(ownTextureId), 0)
+        }
+        val ids = IntArray(1)
+        android.opengl.GLES30.glGenTextures(1, ids, 0)
+        ownTextureId = ids[0]
+        android.opengl.GLES30.glBindTexture(android.opengl.GLES30.GL_TEXTURE_2D, ownTextureId)
+        android.opengl.GLES30.glTexImage2D(android.opengl.GLES30.GL_TEXTURE_2D, 0, android.opengl.GLES30.GL_RGBA,
+            size, size, 0, android.opengl.GLES30.GL_RGBA, android.opengl.GLES30.GL_UNSIGNED_BYTE, null)
+        android.opengl.GLES30.glTexParameteri(android.opengl.GLES30.GL_TEXTURE_2D, android.opengl.GLES30.GL_TEXTURE_MIN_FILTER, android.opengl.GLES30.GL_LINEAR)
+        android.opengl.GLES30.glTexParameteri(android.opengl.GLES30.GL_TEXTURE_2D, android.opengl.GLES30.GL_TEXTURE_MAG_FILTER, android.opengl.GLES30.GL_LINEAR)
+        android.opengl.GLES30.glTexParameteri(android.opengl.GLES30.GL_TEXTURE_2D, android.opengl.GLES30.GL_TEXTURE_WRAP_S, android.opengl.GLES30.GL_CLAMP_TO_EDGE)
+        android.opengl.GLES30.glTexParameteri(android.opengl.GLES30.GL_TEXTURE_2D, android.opengl.GLES30.GL_TEXTURE_WRAP_T, android.opengl.GLES30.GL_CLAMP_TO_EDGE)
+    }
+
+    fun bindCover() {
+        android.opengl.GLES30.glBindTexture(android.opengl.GLES30.GL_TEXTURE_2D, ownTextureId)
+    }
+
+    private var currentTiles: List<TileUpload>? = null
+    private var currentUvMap: HashMap<String, ThumbUV>? = null
+    private var tileIdx = 0
+    private var texSize = 2048
 
     fun pack(entries: List<Pair<String, Bitmap>>, forLayer: Int) {
         if (entries.isEmpty()) return
@@ -27,13 +56,9 @@ class ThumbnailAtlas {
         val count = entries.size
 
         val cols = kotlin.math.ceil(kotlin.math.sqrt(count.toDouble())).toInt()
-        val rows = (count + cols - 1) / cols
-        val atlasW = nextPow2(cols * thumbW)
-        val atlasH = nextPow2(rows * thumbH)
-
-        val atlas = Bitmap.createBitmap(atlasW, atlasH, Bitmap.Config.RGB_565)
-        val canvas = Canvas(atlas)
+        val layerSize = texSize.toFloat()
         val newMap = HashMap<String, ThumbUV>(count * 2)
+        val tiles = mutableListOf<TileUpload>()
 
         for ((i, pair) in entries.withIndex()) {
             val (key, bmp) = pair
@@ -53,9 +78,12 @@ class ThumbnailAtlas {
                 val off = (bmp.height - visH) / 2
                 Rect(0, off, bmp.width, off + visH)
             }
-            canvas.drawBitmap(bmp, srcRect, Rect(x, y, x + thumbW, y + thumbH), null)
 
-            val layerSize = (texArray?.size ?: 4096).toFloat()
+            // Render tile to its own small bitmap
+            val tile = Bitmap.createBitmap(thumbW, thumbH, Bitmap.Config.ARGB_8888)
+            Canvas(tile).drawBitmap(bmp, srcRect, Rect(0, 0, thumbW, thumbH), null)
+            tiles.add(TileUpload(tile, x, y, forLayer))
+
             newMap[key] = ThumbUV(
                 x.toFloat() / layerSize,
                 y.toFloat() / layerSize,
@@ -66,36 +94,67 @@ class ThumbnailAtlas {
             bmp.recycle()
         }
 
-        pendingQueue.add(PendingAtlas(atlas, newMap, forLayer))
+        pendingQueue.add(PendingAtlas(tiles, newMap, forLayer))
     }
 
-    // Called on GL thread — uploads bitmap directly to GPU and THEN sets ready
+    // Upload one tile per frame — small glTexSubImage3D calls don't break swap cadence
     fun processPending() {
-        val pending = pendingQueue.poll() ?: return
-        if (pending.layer != layerIndex) {
-            pending.bitmap.recycle()
-            return
+        if (currentTiles == null) {
+            val pending = pendingQueue.poll() ?: return
+            if (pending.layer != layerIndex) {
+                for (t in pending.tiles) t.bitmap.recycle()
+                return
+            }
+            currentTiles = pending.tiles
+            currentUvMap = pending.uvMap
+            tileIdx = 0
         }
+
+        val tiles = currentTiles ?: return
         val ta = texArray ?: return
-        ta.uploadLayerNow(pending.layer, pending.bitmap)
-        uvMap = pending.uvMap
+
+        // Composite all tiles into one bitmap, then upload as glTexImage2D
+        // (avoids glTexSubImage which permanently breaks MediaTek swap cadence)
+        val composite = android.graphics.Bitmap.createBitmap(texSize, texSize, android.graphics.Bitmap.Config.ARGB_8888)
+        val canvas = android.graphics.Canvas(composite)
+        while (tileIdx < tiles.size) {
+            val tile = tiles[tileIdx]
+            canvas.drawBitmap(tile.bitmap, tile.x.toFloat(), tile.y.toFloat(), null)
+            tile.bitmap.recycle()
+            tileIdx++
+        }
+        // Full texture replace — not a sub-image update
+        val buf = ByteBuffer.allocateDirect(texSize * texSize * 4).order(ByteOrder.nativeOrder())
+        composite.copyPixelsToBuffer(buf); buf.position(0)
+        android.opengl.GLES30.glBindTexture(android.opengl.GLES30.GL_TEXTURE_2D, ownTextureId)
+        android.opengl.GLES30.glTexImage2D(android.opengl.GLES30.GL_TEXTURE_2D, 0, android.opengl.GLES30.GL_RGBA,
+            texSize, texSize, 0, android.opengl.GLES30.GL_RGBA, android.opengl.GLES30.GL_UNSIGNED_BYTE, buf)
+        composite.recycle()
+
+        uvMap = currentUvMap ?: HashMap()
         ready = true
+        currentTiles = null
+        currentUvMap = null
     }
 
     fun getUV(key: String): ThumbUV? = uvMap[key]
 
     fun isReady(): Boolean = ready
 
-    // GL context lost — texture data gone, need re-upload
     fun invalidate() {
         ready = false
-        while (true) { (pendingQueue.poll() ?: break).bitmap.recycle() }
+        currentTiles?.forEach { it.bitmap.recycle() }
+        currentTiles = null; currentUvMap = null
+        while (true) {
+            val p = pendingQueue.poll() ?: break
+            for (t in p.tiles) t.bitmap.recycle()
+        }
     }
 
     fun clear() {
         uvMap = HashMap()
         ready = false
-        while (true) { (pendingQueue.poll() ?: break).bitmap.recycle() }
+        invalidate()
         val ta = texArray
         if (ta != null) {
             layerIndex = ta.nextThumbLayer()

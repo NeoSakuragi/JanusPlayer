@@ -38,6 +38,7 @@ class MainActivity : AppCompatActivity() {
         setContentView(glView)
         glView.requestFocus()
 
+
         // Claim media keys so Fire TV remote buttons reach our dispatchKeyEvent
         val mediaSession = android.media.session.MediaSession(this, "JanusPlus")
         mediaSession.setCallback(object : android.media.session.MediaSession.Callback() {
@@ -65,13 +66,21 @@ class MainActivity : AppCompatActivity() {
             ).build())
         mediaSession.isActive = true
 
+        // 720p@60Hz on TV (MediaTek can't sustain 60fps at 1080p with texture sampling)
+        // Display upscales to native resolution
         if (android.os.Build.VERSION.SDK_INT >= 30) {
             window.attributes = window.attributes.apply {
-                preferredDisplayModeId = display?.supportedModes
-                    ?.filter { it.refreshRate >= 59f && it.physicalWidth <= 1280 }
-                    ?.maxByOrNull { it.physicalWidth * it.physicalHeight }?.modeId
-                    ?: display?.supportedModes?.filter { it.refreshRate >= 59f }
+                preferredDisplayModeId = if (app.isTV) {
+                    display?.supportedModes
+                        ?.filter { it.refreshRate >= 59f && it.physicalWidth <= 1280 }
+                        ?.maxByOrNull { it.physicalWidth * it.physicalHeight }?.modeId
+                        ?: display?.supportedModes?.filter { it.refreshRate >= 59f }
+                            ?.maxByOrNull { it.physicalWidth * it.physicalHeight }?.modeId ?: 0
+                } else {
+                    display?.supportedModes
+                        ?.filter { it.refreshRate >= 59f }
                         ?.maxByOrNull { it.physicalWidth * it.physicalHeight }?.modeId ?: 0
+                }
             }
         } else {
             window.attributes = window.attributes.apply {

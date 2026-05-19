@@ -11,6 +11,7 @@ class ShaderProgram {
     var uTexEtc2 = -1; private set
     var uTexFont = -1; private set
     var uTexVideo = -1; private set
+    var uTexCover = -1; private set
 
     fun compile() {
         val vert = loadShader(GLES30.GL_VERTEX_SHADER, VERT_SRC)
@@ -33,6 +34,7 @@ class ShaderProgram {
         uTexEtc2 = GLES30.glGetUniformLocation(programId, "uTexEtc2")
         uTexFont = GLES30.glGetUniformLocation(programId, "uTexFont")
         uTexVideo = GLES30.glGetUniformLocation(programId, "uTexVideo")
+        uTexCover = GLES30.glGetUniformLocation(programId, "uTexCover")
     }
 
     fun use() = GLES30.glUseProgram(programId)
@@ -103,30 +105,17 @@ uniform mediump sampler2DArray uTex;
 uniform mediump sampler2DArray uTexEtc2;
 uniform mediump sampler2DArray uTexFont;
 uniform mediump sampler2D uTexVideo;
+uniform mediump sampler2D uTexCover;
 out vec4 fragColor;
 void main() {
-    if (vUVL.z < 0.0) {
+    if (vUVL.z < -1.5) {
+        fragColor = texture(uTexCover, vUVL.xy) * vColor;
+    } else if (vUVL.z < 0.0) {
         fragColor = texture(uTexVideo, vUVL.xy) * vColor;
     } else if (vUVL.z >= 100.0) {
         fragColor = texture(uTexFont, vec3(vUVL.xy, vUVL.z - 100.0)) * vColor;
     } else if (vUVL.z >= 10.0) {
         fragColor = texture(uTexEtc2, vec3(vUVL.xy, vUVL.z - 10.0)) * vColor;
-    } else if (vUVL.z >= 3.0 && vUVL.z <= 5.0) {
-        // Thumbnail layers — contrast + saturation + vignette
-        vec4 c = texture(uTex, vUVL);
-        // Contrast: push away from mid-gray
-        vec3 rgb = (c.rgb - 0.5) * 1.15 + 0.5;
-        // Saturation boost
-        float lum = dot(rgb, vec3(0.299, 0.587, 0.114));
-        rgb = mix(vec3(lum), rgb, 1.3);
-        // Subtle warm shift
-        rgb.r = min(rgb.r * 1.04, 1.0);
-        rgb.b = rgb.b * 0.96;
-        // Vignette — darken edges
-        vec2 uv = fract(vUVL.xy * 4.0); // tile-local UV (approx)
-        float vig = smoothstep(0.0, 0.6, 0.5 - length(uv - 0.5));
-        rgb = mix(rgb * 0.5, rgb, 0.7 + 0.3 * vig);
-        fragColor = vec4(clamp(rgb, 0.0, 1.0), c.a) * vColor;
     } else {
         fragColor = texture(uTex, vUVL) * vColor;
     }

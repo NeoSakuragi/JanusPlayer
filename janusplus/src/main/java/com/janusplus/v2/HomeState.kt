@@ -158,11 +158,9 @@ class HomeState : GameState {
 
                 val isFocused = rowFocused && i == seriesFocus
 
-                rc.solid(baseX, cardsY, cardW, cardH, 0.102f, 0.102f, 0.180f)
-                rc.cover("cover_${item.id}", baseX, cardsY, cardW, cardH)
-                val gradH = cardH * 0.35f
-                val clear = floatArrayOf(0f, 0f, 0f, 0f); val dark = floatArrayOf(0f, 0f, 0f, 0.8f)
-                rc.gradient(baseX, cardsY + cardH - gradH, cardW, gradH, clear, clear, dark, dark)
+                // Skip bg solid when cover is ready — eliminates full-card overdraw
+                if (!rc.cover("cover_${item.id}", baseX, cardsY, cardW, cardH))
+                    rc.solid(baseX, cardsY, cardW, cardH, 0.102f, 0.102f, 0.180f)
                 rc.textClipped(item.title(), baseX + rc.dp(8f), cardsY + cardH - rc.dp(10f), rc.sp(14), cardW - rc.dp(16f), 1f, 1f, 1f)
                 if (isFocused) rc.border(baseX, cardsY, cardW, cardH, 6f, 0.733f, 0.525f, 0.988f)
 
@@ -184,11 +182,8 @@ class HomeState : GameState {
 
                 val isFocused = rowFocused && i == movieFocus
 
-                rc.solid(baseX, cardsY, cardW, cardH, 0.102f, 0.102f, 0.180f)
-                rc.cover("cover_${item.id}", baseX, cardsY, cardW, cardH)
-                val gradH = cardH * 0.35f
-                val clear = floatArrayOf(0f, 0f, 0f, 0f); val dark = floatArrayOf(0f, 0f, 0f, 0.8f)
-                rc.gradient(baseX, cardsY + cardH - gradH, cardW, gradH, clear, clear, dark, dark)
+                if (!rc.cover("cover_${item.id}", baseX, cardsY, cardW, cardH))
+                    rc.solid(baseX, cardsY, cardW, cardH, 0.102f, 0.102f, 0.180f)
                 rc.textClipped(item.title(), baseX + rc.dp(8f), cardsY + cardH - rc.dp(10f), rc.sp(14), cardW - rc.dp(16f), 1f, 1f, 1f)
                 if (isFocused) rc.border(baseX, cardsY, cardW, cardH, 6f, 0.733f, 0.525f, 0.988f)
 
