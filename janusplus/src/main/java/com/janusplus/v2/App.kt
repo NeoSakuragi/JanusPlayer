@@ -292,10 +292,16 @@ class App(val context: Context, private val assets: android.content.res.AssetMan
     }
 
     fun uploadGlyphAtlas(atlas: GlyphAtlas, bmp: Bitmap) {
+        uploadSinglePage(atlas, bmp, 0)
+        for ((i, extra) in atlas.extraPages.withIndex()) {
+            uploadSinglePage(atlas, extra, i + 1)
+        }
+    }
+
+    private fun uploadSinglePage(atlas: GlyphAtlas, bmp: Bitmap, pageIdx: Int) {
         val h = bmp.height
         val ts = texArray.size.toFloat()
 
-        // Overflow to next layer if needed
         if (glyphY + h > texArray.size) {
             glyphLayer++
             glyphY = 0
@@ -306,7 +312,6 @@ class App(val context: Context, private val assets: android.content.res.AssetMan
             }
         }
 
-        // Upload strip to current layer at glyphY
         val w = bmp.width
         val buf = ByteBuffer.allocateDirect(w * h * 4).order(ByteOrder.nativeOrder())
         bmp.copyPixelsToBuffer(buf); buf.position(0)
@@ -315,11 +320,11 @@ class App(val context: Context, private val assets: android.content.res.AssetMan
             0, glyphY, glyphLayer, w, h, 1,
             GLES30.GL_RGBA, GLES30.GL_UNSIGNED_BYTE, buf)
 
-        // Remap atlas UVs from local pixel coords to texture-global UV + layer
         val glyphs = atlas.glyphs
         val keys = glyphs.keys.toIntArray()
         for (cp in keys) {
             val g = glyphs[cp] ?: continue
+            if (g.page != pageIdx) continue
             g.u0 = g.u0 / ts
             g.v0 = (g.v0 + glyphY) / ts
             g.u1 = g.u1 / ts
