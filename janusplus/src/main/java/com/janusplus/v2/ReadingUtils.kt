@@ -7,6 +7,9 @@ package com.janusplus.v2
  */
 object ReadingUtils {
 
+    const val HIRAGANA = "ぁあぃいぅうぇえぉおかがきぎくぐけげこごさざしじすずせぜそぞただちぢっつづてでとどなにぬねのはばぱひびぴふぶぷへべぺほぼぽまみむめもゃやゅゆょよらりるれろゎわゐゑをんゔゕゖ"
+    const val KATAKANA = "ァアィイゥウェエォオカガキギクグケゲコゴサザシジスズセゼソゾタダチヂッツヅテデトドナニヌネノハバパヒビピフブプヘベペホボポマミムメモャヤュユョヨラリルレロヮワヰヱヲンヴヵヶ"
+
     fun kata2hira(text: String): String = buildString {
         for (c in text) {
             if (c in 'ァ'..'ヶ') append(c - 0x60)

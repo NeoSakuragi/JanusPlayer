@@ -7,15 +7,17 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.concurrent.ConcurrentLinkedQueue
 
-class TextureArray(val size: Int = 2048, val layerCount: Int = LAYER_THUMB_FIRST + LAYER_THUMB_COUNT) {
+class TextureArray(val size: Int = 2048, val layerCount: Int = TOTAL_LAYERS) {
 
     companion object {
-        const val LAYER_FONT = 0   // font is on its own texture array now
-        const val LAYER_UI = 0     // white pixel + UI sprites — never overwritten
+        const val LAYER_UI = 0
         const val LAYER_COVERS = 1
         const val LAYER_BANNER = 2
         const val LAYER_THUMB_FIRST = 3
         const val LAYER_THUMB_COUNT = 3
+        const val LAYER_GLYPH_FIRST = 6
+        const val LAYER_GLYPH_COUNT = 4
+        const val TOTAL_LAYERS = LAYER_GLYPH_FIRST + LAYER_GLYPH_COUNT
     }
 
     private var nextThumbSlot = 0

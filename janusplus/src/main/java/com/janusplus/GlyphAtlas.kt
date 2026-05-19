@@ -1,40 +1,29 @@
 package com.janusplus
 
 import android.graphics.*
-import android.opengl.GLES30
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
-/**
- * Dynamic glyph cache. Scans text for unique codepoints, renders each glyph
- * once via Canvas, packs into a small atlas bitmap, uploads to VRAM.
- *
- * After build(): every codepoint has UV coordinates. Drawing text = drawing
- * one quad per character with the right UVs. Zero per-frame Canvas work.
- */
 class GlyphAtlas(private val typeface: Typeface, private val textSize: Float) {
 
     data class Glyph(
-        val u0: Float, val v0: Float, val u1: Float, val v1: Float,
+        var u0: Float, var v0: Float, var u1: Float, var v1: Float,
+        var page: Int,
         val w: Float, val h: Float, val advance: Float, val ascent: Float
     )
 
     val glyphs = HashMap<Int, Glyph>(512)
-    var atlasW = 0; private set
-    var atlasH = 0; private set
     var lineHeight = 0f; private set
     var ascent = 0f; private set
+    var bitmapW = 0; internal set
+    var bitmapH = 0; internal set
 
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.WHITE
         textAlign = Paint.Align.LEFT
     }
 
-    /**
-     * Scan all text, render unique glyphs into an atlas bitmap.
-     * Call from background thread. Returns the bitmap (caller uploads to GL).
-     */
-    fun build(texts: List<String>): Bitmap {
+    fun build(texts: List<String>, pageW: Int = 4096): Bitmap {
         paint.textSize = textSize
         paint.typeface = typeface
 
@@ -42,7 +31,6 @@ class GlyphAtlas(private val typeface: Typeface, private val textSize: Float) {
         lineHeight = -fm.top + fm.bottom
         ascent = -fm.top
 
-        // Collect unique codepoints
         val codepoints = mutableSetOf<Int>()
         for (text in texts) {
             var i = 0
@@ -53,8 +41,7 @@ class GlyphAtlas(private val typeface: Typeface, private val textSize: Float) {
             }
         }
 
-        // Measure each glyph
-        data class GlyphInfo(val cp: Int, val w: Int, val h: Int, val advance: Float, val bearingY: Float)
+        data class GlyphInfo(val cp: Int, val w: Int, val h: Int, val advance: Float)
         val infos = mutableListOf<GlyphInfo>()
         val padding = 2
 
@@ -64,47 +51,40 @@ class GlyphAtlas(private val typeface: Typeface, private val textSize: Float) {
             if (advance <= 0) continue
             val gw = advance.toInt() + padding * 2
             val gh = lineHeight.toInt() + padding * 2
-            infos.add(GlyphInfo(cp, gw, gh, advance, ascent))
+            infos.add(GlyphInfo(cp, gw, gh, advance))
         }
 
-        // Compute atlas size (row packing)
-        val maxW = 1024
+        // Row-pack to compute minimal height
         var curX = 0; var curY = 0; var rowH = 0
         for (info in infos) {
-            if (curX + info.w > maxW) {
-                curX = 0; curY += rowH + 1; rowH = 0
-            }
+            if (curX + info.w > pageW) { curX = 0; curY += rowH + 1; rowH = 0 }
             if (info.h > rowH) rowH = info.h
             curX += info.w + 1
         }
-        atlasW = maxW
-        atlasH = curY + rowH + 1
+        bitmapW = pageW
+        bitmapH = (curY + rowH + 1).coerceAtLeast(1)
+        // Round up to multiple of 4 for GL alignment
+        bitmapH = ((bitmapH + 3) / 4) * 4
 
-        // Power-of-two height (GL friendly)
-        atlasH = Integer.highestOneBit(atlasH - 1).shl(1).coerceAtLeast(64)
+        android.util.Log.d("GlyphAtlas", "size=${textSize.toInt()} glyphs=${infos.size} bitmap=${bitmapW}x${bitmapH}")
 
-        // Render
-        val bmp = Bitmap.createBitmap(atlasW, atlasH, Bitmap.Config.ARGB_8888)
+        val bmp = Bitmap.createBitmap(bitmapW, bitmapH, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(bmp)
 
         curX = 0; curY = 0; rowH = 0
         for (info in infos) {
-            if (curX + info.w > maxW) {
-                curX = 0; curY += rowH + 1; rowH = 0
-            }
+            if (curX + info.w > pageW) { curX = 0; curY += rowH + 1; rowH = 0 }
 
             val ch = String(intArrayOf(info.cp), 0, 1)
             canvas.drawText(ch, curX + padding.toFloat(), curY + padding + ascent, paint)
 
+            // UV coords are LOCAL to this bitmap (will be remapped by uploader)
             glyphs[info.cp] = Glyph(
-                u0 = curX.toFloat() / atlasW,
-                v0 = curY.toFloat() / atlasH,
-                u1 = (curX + info.w).toFloat() / atlasW,
-                v1 = (curY + info.h).toFloat() / atlasH,
-                w = info.w.toFloat(),
-                h = info.h.toFloat(),
-                advance = info.advance,
-                ascent = info.bearingY + padding
+                u0 = curX.toFloat(), v0 = curY.toFloat(),
+                u1 = (curX + info.w).toFloat(), v1 = (curY + info.h).toFloat(),
+                page = 0,
+                w = info.w.toFloat(), h = info.h.toFloat(),
+                advance = info.advance, ascent = ascent + padding
             )
 
             if (info.h > rowH) rowH = info.h
@@ -114,9 +94,6 @@ class GlyphAtlas(private val typeface: Typeface, private val textSize: Float) {
         return bmp
     }
 
-    /**
-     * Measure text width using the built glyph data.
-     */
     fun measureText(text: String): Float {
         var w = 0f
         var i = 0
@@ -128,4 +105,11 @@ class GlyphAtlas(private val typeface: Typeface, private val textSize: Float) {
         }
         return w
     }
+}
+
+fun String.toCodePoints(): IntArray {
+    val list = mutableListOf<Int>()
+    var i = 0
+    while (i < length) { val cp = Character.codePointAt(this, i); list.add(cp); i += Character.charCount(cp) }
+    return list.toIntArray()
 }

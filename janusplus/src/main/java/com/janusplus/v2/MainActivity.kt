@@ -20,14 +20,8 @@ class MainActivity : AppCompatActivity() {
 
         app = App(this, assets, resources.displayMetrics.density)
 
-        // ExoPlayer with aggressive buffering — start playback ASAP
         val loadControl = androidx.media3.exoplayer.DefaultLoadControl.Builder()
-            .setBufferDurationsMs(
-                15_000,   // minBufferMs (default 50s)
-                30_000,   // maxBufferMs (default 50s)
-                500,      // bufferForPlaybackMs (default 2500ms) — start after 0.5s
-                1_000     // bufferForPlaybackAfterRebufferMs (default 5000ms)
-            )
+            .setBufferDurationsMs(15_000, 30_000, 500, 1_000)
             .build()
         val player = androidx.media3.exoplayer.ExoPlayer.Builder(this)
             .setLoadControl(loadControl)
@@ -44,7 +38,33 @@ class MainActivity : AppCompatActivity() {
         setContentView(glView)
         glView.requestFocus()
 
-        // Force 720p at 60Hz (1080p causes 23fps on MediaTek Google TV)
+        // Claim media keys so Fire TV remote buttons reach our dispatchKeyEvent
+        val mediaSession = android.media.session.MediaSession(this, "JanusPlus")
+        mediaSession.setCallback(object : android.media.session.MediaSession.Callback() {
+            override fun onPlay() { app.keyQueue.add(android.view.KeyEvent.KEYCODE_MEDIA_PLAY) }
+            override fun onPause() { app.keyQueue.add(android.view.KeyEvent.KEYCODE_MEDIA_PAUSE) }
+            override fun onRewind() { app.keyQueue.add(android.view.KeyEvent.KEYCODE_MEDIA_REWIND) }
+            override fun onFastForward() { app.keyQueue.add(android.view.KeyEvent.KEYCODE_MEDIA_FAST_FORWARD) }
+            override fun onMediaButtonEvent(mediaButtonIntent: android.content.Intent): Boolean {
+                val event = mediaButtonIntent.getParcelableExtra<android.view.KeyEvent>(android.content.Intent.EXTRA_KEY_EVENT)
+                if (event != null && event.action == android.view.KeyEvent.ACTION_DOWN) {
+                    app.keyQueue.add(event.keyCode)
+                    return true
+                }
+                return super.onMediaButtonEvent(mediaButtonIntent)
+            }
+        })
+        mediaSession.setPlaybackState(android.media.session.PlaybackState.Builder()
+            .setState(android.media.session.PlaybackState.STATE_PLAYING, 0, 1f)
+            .setActions(
+                android.media.session.PlaybackState.ACTION_PLAY_PAUSE or
+                android.media.session.PlaybackState.ACTION_PLAY or
+                android.media.session.PlaybackState.ACTION_PAUSE or
+                android.media.session.PlaybackState.ACTION_REWIND or
+                android.media.session.PlaybackState.ACTION_FAST_FORWARD
+            ).build())
+        mediaSession.isActive = true
+
         if (android.os.Build.VERSION.SDK_INT >= 30) {
             window.attributes = window.attributes.apply {
                 preferredDisplayModeId = display?.supportedModes
@@ -60,8 +80,25 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // Load library on background thread with retry
-        val debugPlay = intent.getStringExtra("play") // e.g. "maison-ikkoku/1" or "dbz/200"
+        val testMode = intent.getStringExtra("test")
+        if (testMode == "glyphs") {
+            app.transition(Screen.HOME, GlyphTestState())
+            return
+        }
+        if (testMode == "dpad") {
+            kotlin.concurrent.thread { DpadTestState.runFromThread(app) }
+        }
+        if (testMode == "player") {
+            kotlin.concurrent.thread { PlayerLayerTest.runFromThread(app) }
+        }
+        if (testMode == "keys") {
+            app.transition(Screen.HOME, KeyTestState())
+            return
+        }
+
+        // --es series "choukai" → jump to series page
+        val debugSeries = intent.getStringExtra("series")
+        val debugPlay = intent.getStringExtra("play")
         thread {
             val api = JanusApi("https://canneji.duckdns.org/janus")
             api.cacheDir = cacheDir
@@ -72,7 +109,11 @@ class MainActivity : AppCompatActivity() {
                     checkForUpdate(api)
                     val library = api.fetchLibrary()
                     app.library = library
-                    if (debugPlay != null) {
+                    if (debugSeries != null) {
+                        val item = library.firstOrNull { it.id == debugSeries || it.titleEn.lowercase().contains(debugSeries.lowercase()) }
+                        if (item != null) app.navigate(App.Nav.Series(item))
+                        else loadCovers(api, library)
+                    } else if (debugPlay != null) {
                         launchDirectPlayer(api, library, debugPlay)
                     } else {
                         loadCovers(api, library)
@@ -120,7 +161,6 @@ class MainActivity : AppCompatActivity() {
         val parts = spec.split("/")
         val query = parts[0].lowercase()
         val epNum = parts.getOrNull(1)?.toIntOrNull() ?: 1
-
         val item = library.firstOrNull { it.titleEn.lowercase().contains(query) || it.id.contains(query) }
         if (item == null) { android.util.Log.e("DEBUG", "No item matching '$query'"); return }
 
@@ -128,7 +168,6 @@ class MainActivity : AppCompatActivity() {
         val episode = hero?.episode
         if (episode == null) { android.util.Log.e("DEBUG", "No episode data for ${item.id}"); return }
 
-        // If requested ep differs from hero's default, fetch the right season
         val ep = if (episode.episode != epNum) {
             val seasonCards = api.fetchSeasonCards(item.id, episode.season)
             val targetCard = seasonCards?.episodes?.firstOrNull { it.episode == epNum }
@@ -138,9 +177,7 @@ class MainActivity : AppCompatActivity() {
             } else episode
         } else episode
 
-        android.util.Log.d("DEBUG", "Direct play: ${item.titleEn} EP${ep.episode}")
-        val baseUrl = "https://canneji.duckdns.org/janus"
-        app.transition(Screen.PLAYER, PlayerState(item, ep, baseUrl))
+        app.navigate(App.Nav.Player(item, ep, "https://canneji.duckdns.org/janus"))
     }
 
     private fun checkForUpdate(api: JanusApi) {
@@ -152,9 +189,7 @@ class MainActivity : AppCompatActivity() {
                     android.app.AlertDialog.Builder(this)
                         .setTitle("Update Available")
                         .setMessage("Janus+ v${info.versionName} is available. Install now?")
-                        .setPositiveButton("Install") { _, _ ->
-                            updater.downloadAndInstall(info)
-                        }
+                        .setPositiveButton("Install") { _, _ -> updater.downloadAndInstall(info) }
                         .setNegativeButton("Later", null)
                         .show()
                 }
@@ -169,6 +204,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun dispatchKeyEvent(event: android.view.KeyEvent): Boolean {
         val code = event.keyCode
+        // Let volume through to system
         if (code == android.view.KeyEvent.KEYCODE_VOLUME_UP ||
             code == android.view.KeyEvent.KEYCODE_VOLUME_DOWN ||
             code == android.view.KeyEvent.KEYCODE_VOLUME_MUTE) {
@@ -181,6 +217,7 @@ class MainActivity : AppCompatActivity() {
         return true
     }
 
+
     @Suppress("DEPRECATION")
     override fun onBackPressed() {
         app.keyQueue.add(android.view.KeyEvent.KEYCODE_BACK)
@@ -189,8 +226,7 @@ class MainActivity : AppCompatActivity() {
     override fun onResume() { super.onResume(); if (::glView.isInitialized) glView.onResume() }
     override fun onPause() { super.onPause(); if (::glView.isInitialized) glView.onPause() }
     override fun onDestroy() {
-        app.exoPlayer?.release()
-        app.exoPlayer = null
+        app.exoPlayer?.release(); app.exoPlayer = null
         super.onDestroy()
     }
 }

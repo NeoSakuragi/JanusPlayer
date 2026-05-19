@@ -29,7 +29,6 @@ data class SeriesDisplayPage(
     val smallAtlas: GlyphAtlas,
     val settAtlas: GlyphAtlas,
 
-    // Pre-rendered atlas bitmaps (uploaded to VRAM in display init, then recycled)
     val titleBmp: android.graphics.Bitmap,
     val bodyBmp: android.graphics.Bitmap,
     val btnBmp: android.graphics.Bitmap,

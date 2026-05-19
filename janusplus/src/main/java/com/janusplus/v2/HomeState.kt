@@ -1,5 +1,6 @@
 package com.janusplus.v2
 
+import com.janusplus.GlyphAtlas
 import com.janusplus.JanusApi
 import com.janusplus.Lang
 import com.janusplus.ScrollPhysics
@@ -8,48 +9,68 @@ class HomeState : GameState {
 
     private var seriesList = emptyList<JanusApi.LibraryItem>()
     private var movieList = emptyList<JanusApi.LibraryItem>()
-    private var focusRow = 1 // 0=settings, 1=series, 2=movies
+    private var focusRow = 1
     private var seriesFocus = 0
     private var movieFocus = 0
     private val seriesScroll = ScrollPhysics()
     private val movieScroll = ScrollPhysics()
     private var loading = true
 
-    // Cached layout values for scroll-into-view
     private var cachedCardW = 0f; private var cachedSpacing = 0f; private var cachedPad = 0f
     private var cachedScreenW = 0f
 
-    private var textsPrepared = false
+    // Glyph atlases per text size (pixel size → atlas)
+    private val sizedAtlases = HashMap<Int, GlyphAtlas>()
+    private var atlasesUploaded = false
+    private var libraryAtlasesBuilt = false
+    private var density = 1f
 
     override fun init(app: App) {
+        density = app.density
         if (app.library.isNotEmpty()) {
             setLibrary(app.library)
             loading = false
         }
-        prepareStaticTexts(app)
+        buildStaticAtlases(app)
+        if (!loading) buildLibraryAtlases(app)
     }
 
-    private fun prepareStaticTexts(app: App) {
-        val atlas = app.uiAtlas ?: return
-        fun sp(v: Int) = (v * app.density).toInt().toFloat()
-        fun col(r: Float, g: Float, b: Float, a: Float = 1f) = android.graphics.Color.argb((a*255).toInt(), (r*255).toInt(), (g*255).toInt(), (b*255).toInt())
-        atlas.prepareText("Janus+|${sp(28).toInt()}|${col(0.733f, 0.525f, 0.988f)}", "Janus+", sp(28), col(0.733f, 0.525f, 0.988f))
-        atlas.prepareText("${Lang.s("series")}|${sp(16).toInt()}|${col(0.733f, 0.525f, 0.988f)}", Lang.s("series"), sp(16), col(0.733f, 0.525f, 0.988f))
-        atlas.prepareText("${Lang.s("movies")}|${sp(16).toInt()}|${col(0.8f, 0.8f, 0.8f)}", Lang.s("movies"), sp(16), col(0.8f, 0.8f, 0.8f))
-        atlas.prepareText("${Lang.s("settings")}|${sp(12).toInt()}|${col(0.733f, 0.525f, 0.988f)}", Lang.s("settings"), sp(12), col(0.733f, 0.525f, 0.988f))
-        atlas.prepareText("${Lang.s("loading_library")}|${sp(18).toInt()}|${col(0.8f, 0.8f, 0.8f)}", Lang.s("loading_library"), sp(18), col(0.8f, 0.8f, 0.8f))
-    }
+    private fun sp(v: Int): Int = (v * density).toInt()
 
-    private fun prepareLibraryTexts(app: App) {
-        val atlas = app.uiAtlas ?: return
+    private fun buildStaticAtlases(app: App) {
+        val tf = app.defaultTypeface
         val d = app.density
-        for (item in seriesList) {
-            atlas.prepareText("cover_${item.id}", item.title(), (14 * d).toInt().toFloat(), android.graphics.Color.WHITE, maxWidth = 200 * d)
+        val allText = mutableListOf<String>()
+        allText.add("Janus+")
+        allText.add(Lang.s("series"))
+        allText.add(Lang.s("movies"))
+        allText.add(Lang.s("settings"))
+        allText.add(Lang.s("loading_library"))
+        allText.add("0123456789fps")
+        allText.add("←")
+
+        val ts = app.texArray.size
+        val sizes = listOf(28, 16, 14, 12, 10, 18)
+        for (spVal in sizes) {
+            val pxSize = sp(spVal)
+            val atlas = GlyphAtlas(tf, spVal * d)
+            app.uploadGlyphAtlas(atlas, atlas.build(allText, ts))
+            sizedAtlases[pxSize] = atlas
         }
-        for (item in movieList) {
-            atlas.prepareText("cover_${item.id}", item.title(), (14 * d).toInt().toFloat(), android.graphics.Color.WHITE, maxWidth = 200 * d)
-        }
-        atlas.prepareText("home_fps", "60fps", (10 * d).toInt().toFloat(), android.graphics.Color.argb(255, 102, 204, 102))
+        atlasesUploaded = true
+    }
+
+    private fun buildLibraryAtlases(app: App) {
+        val tf = app.defaultTypeface
+        val d = app.density
+        val titles = mutableListOf<String>()
+        for (item in seriesList + movieList) titles.add(item.title())
+
+        val pxSize = sp(14)
+        val atlas = GlyphAtlas(tf, 14f * d)
+        app.uploadGlyphAtlas(atlas, atlas.build(titles, app.texArray.size))
+        sizedAtlases[pxSize] = atlas
+        libraryAtlasesBuilt = true
     }
 
     private fun setLibrary(lib: List<JanusApi.LibraryItem>) {
@@ -57,47 +78,32 @@ class HomeState : GameState {
         movieList = lib.filter { it.type.equals("MOVIE", ignoreCase = true) }
     }
 
-    override fun update(app: App, touches: List<Touch>, keys: List<Int>) {
+    override fun update(app: App, touches: List<Touch>, actions: List<Action>) {
         if (app.library.isNotEmpty() && loading) {
             setLibrary(app.library)
             loading = false
-            prepareLibraryTexts(app)
-            textsPrepared = true
+            buildLibraryAtlases(app)
         }
         seriesScroll.update(0.016f)
         movieScroll.update(0.016f)
 
-        for (key in keys) {
-            when (key) {
-                android.view.KeyEvent.KEYCODE_DPAD_UP -> {
-                    if (focusRow == 2) focusRow = 1
-                    else if (focusRow == 1) focusRow = 0
-                }
-                android.view.KeyEvent.KEYCODE_DPAD_DOWN -> {
-                    if (focusRow == 0) focusRow = 1
-                    else if (focusRow == 1 && movieList.isNotEmpty()) focusRow = 2
-                }
-                android.view.KeyEvent.KEYCODE_DPAD_LEFT -> {
-                    when (focusRow) {
-                        1 -> if (seriesFocus > 0) { seriesFocus--; scrollIntoView(true) }
-                        2 -> if (movieFocus > 0) { movieFocus--; scrollIntoView(false) }
-                    }
-                }
-                android.view.KeyEvent.KEYCODE_DPAD_RIGHT -> {
-                    when (focusRow) {
-                        1 -> if (seriesFocus < seriesList.size - 1) { seriesFocus++; scrollIntoView(true) }
-                        2 -> if (movieFocus < movieList.size - 1) { movieFocus++; scrollIntoView(false) }
-                    }
-                }
-                android.view.KeyEvent.KEYCODE_DPAD_CENTER, android.view.KeyEvent.KEYCODE_ENTER -> {
-                    when (focusRow) {
-                        0 -> app.transition(Screen.SETTINGS, SettingsState())
-                        1 -> seriesList.getOrNull(seriesFocus)?.let { app.transition(Screen.SERIES, SeriesLoadingState(it)) }
-                        2 -> movieList.getOrNull(movieFocus)?.let { app.transition(Screen.SERIES, SeriesLoadingState(it)) }
-                    }
-                }
-                android.view.KeyEvent.KEYCODE_BACK -> { /* home screen, no-op */ }
+        for (a in actions) when (a) {
+            Action.UP -> { if (focusRow == 2) focusRow = 1 else if (focusRow == 1) focusRow = 0 }
+            Action.DOWN -> { if (focusRow == 0) focusRow = 1 else if (focusRow == 1 && movieList.isNotEmpty()) focusRow = 2 }
+            Action.LEFT -> when (focusRow) {
+                1 -> if (seriesFocus > 0) { seriesFocus--; scrollIntoView(true) }
+                2 -> if (movieFocus > 0) { movieFocus--; scrollIntoView(false) }
             }
+            Action.RIGHT -> when (focusRow) {
+                1 -> if (seriesFocus < seriesList.size - 1) { seriesFocus++; scrollIntoView(true) }
+                2 -> if (movieFocus < movieList.size - 1) { movieFocus++; scrollIntoView(false) }
+            }
+            Action.SELECT -> when (focusRow) {
+                0 -> app.navigate(App.Nav.Settings)
+                1 -> seriesList.getOrNull(seriesFocus)?.let { app.navigate(App.Nav.Series(it)) }
+                2 -> movieList.getOrNull(movieFocus)?.let { app.navigate(App.Nav.Series(it)) }
+            }
+            else -> {}
         }
     }
 
@@ -117,29 +123,29 @@ class HomeState : GameState {
     }
 
     override fun draw(app: App, rc: RC) {
+        // Register atlases with RC
+        for ((size, atlas) in sizedAtlases) rc.atlases[size] = atlas
+
         val pad = rc.dp(32f)
         val cardW = rc.dp(200f); val cardH = rc.dp(280f); val spacing = rc.dp(16f)
         cachedCardW = cardW; cachedSpacing = spacing; cachedPad = pad; cachedScreenW = rc.w
 
         rc.solid(0f, 0f, rc.w, rc.h, 0.039f, 0.039f, 0.102f)
 
-        // Header
         rc.text("Janus+", pad, pad + rc.dp(28f), rc.sp(28), 0.733f, 0.525f, 0.988f)
 
-        // Settings button — top right
         val setBtnW = rc.dp(80f); val setBtnH = rc.dp(40f)
         val setBtnX = rc.w - pad - setBtnW; val setBtnY = pad
         val settFocused = focusRow == 0
         rc.solid(setBtnX, setBtnY, setBtnW, setBtnH, 0.102f, 0.102f, 0.180f)
         val setLabel = Lang.s("settings")
-        val setLabelW = rc.font.measureText(setLabel, rc.sp(12))
+        val setLabelW = rc.measureText(setLabel, rc.sp(12))
         rc.text(setLabel, setBtnX + (setBtnW - setLabelW) / 2f, setBtnY + rc.dp(26f), rc.sp(12), 0.733f, 0.525f, 0.988f)
         if (settFocused) rc.border(setBtnX, setBtnY, setBtnW, setBtnH, 6f, 0.733f, 0.525f, 0.988f)
-        rc.tappable(setBtnX, setBtnY, setBtnW, setBtnH) { app.transition(Screen.SETTINGS, SettingsState()) }
+        rc.tappable(setBtnX, setBtnY, setBtnW, setBtnH) { app.navigate(App.Nav.Settings) }
 
         var sectionY = pad + rc.dp(56f)
 
-        // Series row
         if (seriesList.isNotEmpty()) {
             val rowFocused = focusRow == 1
             rc.text(Lang.s("series"), pad, sectionY + rc.dp(16f), rc.sp(16),
@@ -151,23 +157,21 @@ class HomeState : GameState {
                 if (baseX + cardW < 0 || baseX > rc.w) continue
 
                 val isFocused = rowFocused && i == seriesFocus
-                val x = baseX; val y = cardsY
 
-                rc.solid(x, y, cardW, cardH, 0.102f, 0.102f, 0.180f)
-                rc.cover("cover_${item.id}", x, y, cardW, cardH)
+                rc.solid(baseX, cardsY, cardW, cardH, 0.102f, 0.102f, 0.180f)
+                rc.cover("cover_${item.id}", baseX, cardsY, cardW, cardH)
                 val gradH = cardH * 0.35f
                 val clear = floatArrayOf(0f, 0f, 0f, 0f); val dark = floatArrayOf(0f, 0f, 0f, 0.8f)
-                rc.gradient(x, y + cardH - gradH, cardW, gradH, clear, clear, dark, dark)
-                rc.textClipped(item.title(), x + rc.dp(8f), y + cardH - rc.dp(10f), rc.sp(14), cardW - rc.dp(16f), 1f, 1f, 1f)
-                if (isFocused) rc.border(x, y, cardW, cardH, 6f, 0.733f, 0.525f, 0.988f)
+                rc.gradient(baseX, cardsY + cardH - gradH, cardW, gradH, clear, clear, dark, dark)
+                rc.textClipped(item.title(), baseX + rc.dp(8f), cardsY + cardH - rc.dp(10f), rc.sp(14), cardW - rc.dp(16f), 1f, 1f, 1f)
+                if (isFocused) rc.border(baseX, cardsY, cardW, cardH, 6f, 0.733f, 0.525f, 0.988f)
 
                 val tappedItem = item
-                rc.tappable(baseX, cardsY, cardW, cardH) { app.transition(Screen.SERIES, SeriesLoadingState(tappedItem)) }
+                rc.tappable(baseX, cardsY, cardW, cardH) { app.navigate(App.Nav.Series(tappedItem)) }
             }
             sectionY = cardsY + cardH + rc.dp(24f)
         }
 
-        // Movies row
         if (movieList.isNotEmpty()) {
             val rowFocused = focusRow == 2
             rc.text(Lang.s("movies"), pad, sectionY + rc.dp(16f), rc.sp(16),
@@ -179,28 +183,27 @@ class HomeState : GameState {
                 if (baseX + cardW < 0 || baseX > rc.w) continue
 
                 val isFocused = rowFocused && i == movieFocus
-                val x = baseX; val y = cardsY
 
-                rc.solid(x, y, cardW, cardH, 0.102f, 0.102f, 0.180f)
-                rc.cover("cover_${item.id}", x, y, cardW, cardH)
+                rc.solid(baseX, cardsY, cardW, cardH, 0.102f, 0.102f, 0.180f)
+                rc.cover("cover_${item.id}", baseX, cardsY, cardW, cardH)
                 val gradH = cardH * 0.35f
                 val clear = floatArrayOf(0f, 0f, 0f, 0f); val dark = floatArrayOf(0f, 0f, 0f, 0.8f)
-                rc.gradient(x, y + cardH - gradH, cardW, gradH, clear, clear, dark, dark)
-                rc.textClipped(item.title(), x + rc.dp(8f), y + cardH - rc.dp(10f), rc.sp(14), cardW - rc.dp(16f), 1f, 1f, 1f)
-                if (isFocused) rc.border(x, y, cardW, cardH, 6f, 0.733f, 0.525f, 0.988f)
+                rc.gradient(baseX, cardsY + cardH - gradH, cardW, gradH, clear, clear, dark, dark)
+                rc.textClipped(item.title(), baseX + rc.dp(8f), cardsY + cardH - rc.dp(10f), rc.sp(14), cardW - rc.dp(16f), 1f, 1f, 1f)
+                if (isFocused) rc.border(baseX, cardsY, cardW, cardH, 6f, 0.733f, 0.525f, 0.988f)
 
                 val tappedItem = item
-                rc.tappable(baseX, cardsY, cardW, cardH) { app.transition(Screen.MOVIE, SeriesLoadingState(tappedItem)) }
+                rc.tappable(baseX, cardsY, cardW, cardH) { app.navigate(App.Nav.Series(tappedItem)) }
             }
         }
 
         if (loading) {
             val t = Lang.s("loading_library")
-            val tw = rc.font.measureText(t, rc.sp(18))
+            val tw = rc.measureText(t, rc.sp(18))
             rc.text(t, (rc.w - tw) / 2f, rc.h / 2f, rc.sp(18), 0.8f, 0.8f, 0.8f)
         }
 
-        rc.text("${app.fps}fps", rc.dp(8f), rc.dp(16f), rc.sp(10), 0.4f, 0.8f, 0.4f, volatile = true)
+        rc.text("${app.fps}fps", rc.dp(8f), rc.dp(16f), rc.sp(10), 0.4f, 0.8f, 0.4f)
     }
 
     override fun cleanup(app: App) {}

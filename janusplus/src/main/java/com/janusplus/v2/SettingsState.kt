@@ -1,65 +1,67 @@
 package com.janusplus.v2
 
-import android.view.KeyEvent
+import com.janusplus.GlyphAtlas
 import com.janusplus.Lang
 
 class SettingsState : GameState {
 
-    private var pad = 0f
-    private var titleSize = 0
-    private var labelSize = 0
-    private var valueSize = 0
-    private var rowH = 0f
-    private var sectionGap = 0f
-    private var contentW = 0f
-    private var layoutDone = false
-    private var screenH = 0f
+    private var pad = 0f; private var titleSize = 0; private var labelSize = 0; private var valueSize = 0
+    private var rowH = 0f; private var sectionGap = 0f; private var contentW = 0f
+    private var layoutDone = false; private var screenH = 0f
 
-    private var focusIdx = 0
-    private var rowCount = 0
-    private var rowYPositions = FloatArray(20)
-    private var animTime = 0f
+    private var focusIdx = 0; private var rowCount = 0
+    private var rowYPositions = FloatArray(20); private var animTime = 0f
+
+    private val sizedAtlases = HashMap<Int, GlyphAtlas>()
+    private var density = 1f
 
     override fun init(app: App) {
-        app.scrollY = 0f
-        focusIdx = 0
+        app.scrollY = 0f; focusIdx = 0; density = app.density
+        buildAtlases(app)
+    }
+
+    private fun sp(v: Int): Int = (v * density).toInt()
+
+    private fun buildAtlases(app: App) {
+        val tf = app.defaultTypeface
+        val d = app.density
+        val allText = mutableListOf<String>()
+        allText.add("←"); allText.add(Lang.s("settings"))
+        allText.add(Lang.s("account")); allText.add(Lang.s("logout")); allText.add("bruno")
+        allText.add(Lang.s("server")); allText.add(Lang.s("server_url")); allText.add("canneji.duckdns.org")
+        allText.add(Lang.s("check_update"))
+        allText.add(Lang.s("playback")); allText.add(Lang.s("hardware_decoding")); allText.add("ON"); allText.add("OFF")
+        allText.add(Lang.s("subtitles")); allText.add(Lang.s("font")); allText.add("Noto Sans JP")
+        allText.add(Lang.s("font_size")); allText.add("20px")
+        allText.add("Anki"); allText.add("AnkiConnect"); allText.add("http://127.0.0.1:8765")
+        allText.add(Lang.s("deck")); allText.add("Default")
+        allText.add(Lang.s("downloads")); allText.add(Lang.s("downloaded_episodes")); allText.add("0")
+        allText.add(Lang.s("about")); allText.add("Version"); allText.add("0.7")
+        allText.add(Lang.s("language")); allText.add(Lang.current.uppercase())
+        allText.add("0123456789fps")
+
+        val ts = app.texArray.size
+        for (spVal in listOf(10, 11, 13, 16, 22, 28)) {
+            val pxSize = sp(spVal)
+            val atlas = GlyphAtlas(tf, spVal * d)
+            app.uploadGlyphAtlas(atlas, atlas.build(allText, ts))
+            sizedAtlases[pxSize] = atlas
+        }
     }
 
     private fun computeLayout(rc: RC) {
-        pad = rc.dp(32f)
-        titleSize = rc.sp(28)
-        labelSize = rc.sp(16)
-        valueSize = rc.sp(13)
-        rowH = rc.dp(56f)
-        sectionGap = rc.dp(24f)
-        contentW = rc.w - pad * 2
-        screenH = rc.h
-        layoutDone = true
+        pad = rc.dp(32f); titleSize = rc.sp(28); labelSize = rc.sp(16)
+        valueSize = rc.sp(13); rowH = rc.dp(56f); sectionGap = rc.dp(24f)
+        contentW = rc.w - pad * 2; screenH = rc.h; layoutDone = true
     }
 
-    override fun update(app: App, touches: List<Touch>, keys: List<Int>) {
-        for (key in keys) {
-            when (key) {
-                KeyEvent.KEYCODE_DPAD_UP -> {
-                    if (focusIdx > 0) {
-                        focusIdx--
-                        scrollFocusIntoView(app)
-                    }
-                }
-                KeyEvent.KEYCODE_DPAD_DOWN -> {
-                    if (focusIdx < rowCount - 1) {
-                        focusIdx++
-                        scrollFocusIntoView(app)
-                    }
-                }
-                KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> {
-                    // Future: invoke row actions
-                }
-                KeyEvent.KEYCODE_BACK -> {
-                    app.goBack()
-                    return
-                }
-            }
+    override fun update(app: App, touches: List<Touch>, actions: List<Action>) {
+        for (a in actions) when (a) {
+            Action.UP -> { if (focusIdx > 0) { focusIdx--; scrollFocusIntoView(app) } }
+            Action.DOWN -> { if (focusIdx < rowCount - 1) { focusIdx++; scrollFocusIntoView(app) } }
+            Action.SELECT -> {}
+            Action.BACK -> { app.goBack(); return }
+            else -> {}
         }
     }
 
@@ -67,17 +69,15 @@ class SettingsState : GameState {
         if (focusIdx >= rowCount || screenH <= 0) return
         val rowAbsY = rowYPositions[focusIdx] + app.scrollY
         val rowBottom = rowAbsY + rowH
-        if (rowBottom > app.scrollY + screenH) {
-            app.smoothScrollTo(rowBottom - screenH + pad)
-        }
-        if (rowAbsY < app.scrollY) {
-            app.smoothScrollTo((rowAbsY - pad).coerceAtLeast(0f))
-        }
+        if (rowBottom > app.scrollY + screenH) app.smoothScrollTo(rowBottom - screenH + pad)
+        if (rowAbsY < app.scrollY) app.smoothScrollTo((rowAbsY - pad).coerceAtLeast(0f))
     }
 
     override fun draw(app: App, rc: RC) {
         if (!layoutDone) computeLayout(rc)
         animTime += 0.016f
+
+        for ((size, atlas) in sizedAtlases) rc.atlases[size] = atlas
 
         val scrollY = app.scrollY
         rc.solid(0f, 0f, rc.w, rc.h, 0.039f, 0.039f, 0.102f)
@@ -85,54 +85,45 @@ class SettingsState : GameState {
         var y = pad - scrollY
         var rowIdx = 0
 
-        // Header
-        val backFocused = false // back button not in row list, handled by BACK key
         rc.text("←", pad, y + rc.dp(28f), rc.sp(22), 0.533f, 0.533f, 0.533f)
         rc.tappable(0f, y, rc.dp(60f), rc.dp(50f)) { app.goBack() }
         rc.text(Lang.s("settings"), pad + rc.dp(34f), y + rc.dp(28f), titleSize, 1f, 1f, 1f)
         y += rc.dp(50f) + sectionGap
 
-        // ── Account ──
         y = drawSection(rc, y, Lang.s("account"))
         y = drawRow(rc, y, rowIdx++, Lang.s("logout"), "bruno", 0.9f, 0.3f, 0.3f)
         y += sectionGap
 
-        // ── Server ──
         y = drawSection(rc, y, Lang.s("server"))
         y = drawRow(rc, y, rowIdx++, Lang.s("server_url"), "canneji.duckdns.org")
         y = drawRow(rc, y, rowIdx++, Lang.s("check_update"), "")
         y += sectionGap
 
-        // ── Playback ──
         y = drawSection(rc, y, Lang.s("playback"))
         y = drawRow(rc, y, rowIdx++, Lang.s("hardware_decoding"), "OFF")
         y += sectionGap
 
-        // ── Subtitles ──
         y = drawSection(rc, y, Lang.s("subtitles"))
         y = drawRow(rc, y, rowIdx++, Lang.s("font"), "Noto Sans JP")
         y = drawRow(rc, y, rowIdx++, Lang.s("font_size"), "20px")
         y += sectionGap
 
-        // ── Anki ──
         y = drawSection(rc, y, "Anki")
         y = drawRow(rc, y, rowIdx++, "AnkiConnect", "http://127.0.0.1:8765")
         y = drawRow(rc, y, rowIdx++, Lang.s("deck"), "Default")
         y += sectionGap
 
-        // ── Downloads ──
         y = drawSection(rc, y, Lang.s("downloads"))
         y = drawRow(rc, y, rowIdx++, Lang.s("downloaded_episodes"), "0")
         y += sectionGap
 
-        // ── About ──
         y = drawSection(rc, y, Lang.s("about"))
         y = drawRow(rc, y, rowIdx++, "Version", "0.7")
         y = drawRow(rc, y, rowIdx++, Lang.s("language"), Lang.current.uppercase())
 
         rowCount = rowIdx
 
-        rc.text("${app.fps}fps", rc.dp(8f), rc.dp(16f), rc.sp(10), 0.4f, 0.8f, 0.4f, volatile = true)
+        rc.text("${app.fps}fps", rc.dp(8f), rc.dp(16f), rc.sp(10), 0.4f, 0.8f, 0.4f)
     }
 
     private fun drawSection(rc: RC, y: Float, title: String): Float {
@@ -154,14 +145,12 @@ class SettingsState : GameState {
 
         rc.text(label, pad, y + rc.dp(24f), labelSize, 1f, 1f, 1f)
         if (value.isNotEmpty()) {
-            val valueW = rc.font.measureText(value, valueSize)
+            val valueW = rc.measureText(value, valueSize)
             rc.text(value, rc.w - pad - valueW, y + rc.dp(24f), valueSize, vr, vg, vb)
         }
         rc.solid(pad, y + rowH - rc.dp(1f), contentW, rc.dp(1f), 0.08f, 0.08f, 0.14f)
         return y + rowH
     }
 
-    override fun cleanup(app: App) {
-        app.scrollY = 0f
-    }
+    override fun cleanup(app: App) { app.scrollY = 0f }
 }

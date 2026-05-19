@@ -20,11 +20,17 @@ class SeriesLoadingState(private val item: JanusApi.LibraryItem) : GameState {
         startTime = System.nanoTime()
 
         thread {
-            val api = app.api ?: return@thread
+            try { loadPage(app) } catch (e: Exception) {
+                android.util.Log.e("SeriesLoading", "Load failed: ${e.message}")
+            }
+        }
+    }
+
+    private fun loadPage(app: App) {
+            val api = app.api ?: return
             val density = app.density
 
-            // 1. Fetch page data
-            val header = api.fetchPageHeader(item.id, 1) ?: return@thread
+            val header = api.fetchPageHeader(item.id, 1) ?: return
             val json = JSONObject(header.metadataJson)
             val locales = json.optJSONObject("locales")
             val eps = json.getJSONArray("episodes")
@@ -75,6 +81,7 @@ class SeriesLoadingState(private val item: JanusApi.LibraryItem) : GameState {
             allTexts.add(Lang.s("episodes", episodeCount))
             allTexts.add("←")
             allTexts.add("▶ ")
+            allTexts.add("0123456789fps")
             for (ep in episodes) {
                 allTexts.add("${ep.episode}. ${ep.titleEn}")
                 allTexts.add("${ep.durationSec / 60} min")
@@ -83,19 +90,18 @@ class SeriesLoadingState(private val item: JanusApi.LibraryItem) : GameState {
             val tf = try { android.graphics.Typeface.createFromAsset(app.context.assets, "fonts/NotoSansJP-Regular.ttf") }
                      catch (_: Exception) { android.graphics.Typeface.DEFAULT }
 
-            // Build glyph atlases — render ALL glyphs, get bitmaps back
+            val ts = if (app.isTV) 2048 else 4096
             val titleAtlas = GlyphAtlas(tf, 28f * density)
-            val titleBmp = titleAtlas.build(listOf(title, "←"))
+            val titleBmp = titleAtlas.build(listOf(title, "←"), ts)
             val bodyAtlas = GlyphAtlas(tf, 13f * density)
-            val bodyBmp = bodyAtlas.build(allTexts)
+            val bodyBmp = bodyAtlas.build(allTexts, ts)
             val btnAtlas = GlyphAtlas(tf, 16f * density)
-            val btnBmp = btnAtlas.build(listOf(Lang.s("play"), "▶ "))
+            val btnBmp = btnAtlas.build(listOf(Lang.s("play"), "▶ "), ts)
             val smallAtlas = GlyphAtlas(tf, 10f * density)
-            val smallBmp = smallAtlas.build(allTexts)
+            val smallBmp = smallAtlas.build(allTexts, ts)
             val settAtlas = GlyphAtlas(tf, 12f * density)
-            val settBmp = settAtlas.build(listOf(Lang.s("settings")))
+            val settBmp = settAtlas.build(listOf(Lang.s("settings")), ts)
 
-            // 6. Build the page — bitmaps included, ready for upload
             page = SeriesDisplayPage(
                 item = item,
                 title = title,
@@ -116,17 +122,15 @@ class SeriesLoadingState(private val item: JanusApi.LibraryItem) : GameState {
                 density = density,
             )
             ready = true
-        }
     }
 
-    override fun update(app: App, touches: List<Touch>, keys: List<Int>) {
+    override fun update(app: App, touches: List<Touch>, actions: List<Action>) {
         if (ready) {
             val p = page ?: return
-            app.transition(Screen.SERIES, SeriesDisplayState(p))
+            ready = false
+            app.replace(Screen.SERIES, SeriesDisplayState(p))
         }
-        for (key in keys) {
-            if (key == android.view.KeyEvent.KEYCODE_BACK) app.goBack()
-        }
+        for (a in actions) { if (a == Action.BACK) app.goBack() }
     }
 
     override fun draw(app: App, rc: RC) {
@@ -134,15 +138,7 @@ class SeriesLoadingState(private val item: JanusApi.LibraryItem) : GameState {
 
         // Spinner
         val elapsed = (System.nanoTime() - startTime) / 1_000_000_000f
-        val cx = rc.w / 2f; val cy = rc.h / 2f; val radius = rc.dp(24f)
-        for (i in 0 until 12) {
-            val angle = (i.toFloat() / 12) * 2f * Math.PI.toFloat() + elapsed * 6f
-            val dotX = cx + kotlin.math.cos(angle) * radius
-            val dotY = cy + kotlin.math.sin(angle) * radius
-            val alpha = i.toFloat() / 12
-            val dotR = rc.dp(3f + alpha * 2f)
-            rc.solid(dotX - dotR, dotY - dotR, dotR * 2, dotR * 2, 0.733f, 0.525f, 0.988f, alpha)
-        }
+        rc.spinner(rc.w / 2f, rc.h / 2f, elapsed)
     }
 
     override fun cleanup(app: App) {}
