@@ -136,6 +136,7 @@ class PlayerState(private val page: PlayerPage) : GameState {
     private var ankiCheckWord = ""
     private var ankiCheckResult = 0 // 0=unchecked, 1=checking, 2=not in anki, 3=already in anki, 4=mining, 5=failed
     @Volatile private var mineStatus = "" // live status shown on button
+    private var useTouchNav = true // hide cue buttons when D-pad detected
 
     private fun savePrefs() {
         val app = appRef ?: return
@@ -241,6 +242,7 @@ class PlayerState(private val page: PlayerPage) : GameState {
         }
 
         for (t in touches) {
+            useTouchNav = true
             when (t.action) {
                 0 -> {
                     if (mode == Mode.PAUSED && aabbHit(t.x, t.y, seekbarRect)) {
@@ -297,6 +299,7 @@ class PlayerState(private val page: PlayerPage) : GameState {
     }
 
     private fun handleAction(app: App, a: Action) {
+        if (a != Action.MINE) useTouchNav = false
         when (a) {
             Action.PLAY_PAUSE -> when (mode) {
                 Mode.PLAYING -> { pause(); enterPaused() }
@@ -398,6 +401,12 @@ class PlayerState(private val page: PlayerPage) : GameState {
             Mode.PAUSED -> {
                 if (dictPopupVisible && mineBtnRect[2] > 0 && aabbHit(x, y, mineBtnRect)) { mineCurrentWord(); return }
                 if (dictPopupVisible && aabbHit(x, y, dictPopupRect)) return
+                if (useTouchNav && prevCueBtnRect[2] > 0 && aabbHit(x, y, prevCueBtnRect)) {
+                    SrtParser.prevCueBefore(cues, positionMs)?.let { seekTo(it.startMs) }; return
+                }
+                if (useTouchNav && nextCueBtnRect[2] > 0 && aabbHit(x, y, nextCueBtnRect)) {
+                    SrtParser.nextCueAfter(cues, positionMs)?.let { seekTo(it.startMs) }; return
+                }
                 if (aabbHit(x, y, backBtnRect)) { cleanup(app); app.goBack(); return }
                 if (aabbHit(x, y, settingsBtnRect)) { openSettings(); return }
                 if (aabbHit(x, y, seekbarRect)) {
@@ -421,6 +430,12 @@ class PlayerState(private val page: PlayerPage) : GameState {
                 }
             }
             Mode.PLAYING -> {
+                if (useTouchNav && prevCueBtnRect[2] > 0 && aabbHit(x, y, prevCueBtnRect)) {
+                    SrtParser.prevCueBefore(cues, positionMs)?.let { seekTo(it.startMs) }; return
+                }
+                if (useTouchNav && nextCueBtnRect[2] > 0 && aabbHit(x, y, nextCueBtnRect)) {
+                    SrtParser.nextCueAfter(cues, positionMs)?.let { seekTo(it.startMs) }; return
+                }
                 if (aabbHit(x, y, subtitleRect)) {
                     val spanIdx = nearestWordSpan(x, y)
                     if (spanIdx >= 0) { pause(); mode = Mode.PAUSED; cursorIdx = spanIdx; updateHighlight(); lastTapTime = 0; return }
@@ -464,7 +479,10 @@ class PlayerState(private val page: PlayerPage) : GameState {
             rc.spinner(rc.w / 2f, rc.h / 2f, elapsed)
         }
 
-        if (m and Layer.CONTROLS != 0 && mode == Mode.PAUSED) drawControls(rc)
+        if (m and Layer.CONTROLS != 0) {
+            if (useTouchNav) drawCueButtons(rc)
+            if (mode == Mode.PAUSED) drawControls(rc)
+        }
 
         if (m and Layer.CUE != 0 && currentCueText.isNotEmpty() && subAtlas != null) drawCueLayer(rc)
         else if (m and Layer.CUE == 0 || currentCueText.isEmpty()) { subtitleRect = floatArrayOf(0f, 0f, 0f, 0f); charBoxes = emptyList() }
@@ -954,6 +972,21 @@ class PlayerState(private val page: PlayerPage) : GameState {
         val cue = findCueAtPosition(positionMs) ?: return
 
         if (ankiCheckResult == 4) return // already mining
+
+        // Check AnkiDroid permission — request if missing
+        if (!app.ankiClient.isAvailable()) {
+            app.lastLoadLog.add("mine: ankidroid not installed"); ankiCheckResult = 5; mineStatus = "!"; return
+        }
+        if (!app.ankiClient.hasPermission()) {
+            app.onMainThread?.invoke {
+                val activity = app.context as? android.app.Activity
+                if (activity != null) app.ankiClient.requestPermission(activity)
+            }
+            app.lastLoadLog.add("mine: requesting permission")
+            ankiCheckResult = 5; mineStatus = "!"
+            return
+        }
+
         ankiCheckResult = 4 // mining in progress
         mineStatus = "..."
 
@@ -1103,6 +1136,30 @@ class PlayerState(private val page: PlayerPage) : GameState {
     }
 
     // ── Controls ──
+
+    private var prevCueBtnRect = floatArrayOf(0f, 0f, 0f, 0f)
+    private var nextCueBtnRect = floatArrayOf(0f, 0f, 0f, 0f)
+
+    private fun drawCueButtons(rc: RC) {
+        val alpha = if (mode == Mode.PAUSED) 1f else 0.4f
+        val btnW = rc.dp(44f); val btnH = rc.dp(36f)
+        val x = pad
+        val y = rc.dp(60f) // below title + back arrow
+
+        // ⏮ prev cue
+        rc.solid(x, y, btnW, btnH, 0.13f, 0.13f, 0.2f, alpha * 0.8f)
+        val sz = rc.sp(uiBaseSp)
+        val pw = rc.measureText("<<", sz)
+        uiText(rc, "<<", x + (btnW - pw) / 2f, y + rc.dp(24f), uiBaseSp, 1f, 1f, 1f, alpha)
+        prevCueBtnRect = floatArrayOf(x, y, btnW, btnH)
+
+        // ⏭ next cue
+        val nx = x + btnW + rc.dp(8f)
+        rc.solid(nx, y, btnW, btnH, 0.13f, 0.13f, 0.2f, alpha * 0.8f)
+        val nw = rc.measureText(">>", sz)
+        uiText(rc, ">>", nx + (btnW - nw) / 2f, y + rc.dp(24f), uiBaseSp, 1f, 1f, 1f, alpha)
+        nextCueBtnRect = floatArrayOf(nx, y, btnW, btnH)
+    }
 
     private fun drawControls(rc: RC) {
         val centerX = rc.w / 2f
