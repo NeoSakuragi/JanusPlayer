@@ -121,7 +121,7 @@ class PlayerLoadingState(
             "←", "▶", "⏮", "⏭", "●", Lang.s("settings"),
             "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz",
             "0123456789:.%()/-+sp <>x",
-            "Audio Subtitle Reading Mode Font Size Speed Condensed Theme Debug Boxes",
+            "Audio Subtitle Reading Mode Font Size Speed Condensed Theme Debug Boxes Next",
             "DF DR DS DY Furigana Row Space Letter Y Offset E-Ink Dark",
             "PRO ADVANCED INTERMEDIATE NOVICE ON OFF Track Japanese",
             "Noto Sans Serif Shippori Klee One",

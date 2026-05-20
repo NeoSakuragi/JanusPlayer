@@ -138,6 +138,7 @@ class PlayerState(private val page: PlayerPage) : GameState {
     private var ankiCheckResult = 0 // 0=unchecked, 1=checking, 2=not in anki, 3=already in anki, 4=mining, 5=failed
     @Volatile private var mineStatus = "" // live status shown on button
     private var useTouchNav = true // hide cue buttons when D-pad detected
+    private var nextEpBtnRect = floatArrayOf(0f, 0f, 0f, 0f)
 
     private fun savePrefs() {
         val app = appRef ?: return
@@ -410,6 +411,7 @@ class PlayerState(private val page: PlayerPage) : GameState {
                 }
                 if (aabbHit(x, y, backBtnRect)) { cleanup(app); app.goBack(); return }
                 if (aabbHit(x, y, settingsBtnRect)) { openSettings(); return }
+                if (nextEpBtnRect[2] > 0 && aabbHit(x, y, nextEpBtnRect)) { playNextEpisode(app); return }
                 if (aabbHit(x, y, seekbarRect)) {
                     val progress = ((x - seekbarRect[0]) / seekbarRect[2]).coerceIn(0f, 1f)
                     seekTo((durationMs * progress).toLong().coerceIn(0, durationMs))
@@ -826,6 +828,14 @@ class PlayerState(private val page: PlayerPage) : GameState {
 
     // ── Settings Panel ──
 
+    private fun playNextEpisode(app: App) {
+        val nextEp = page.episode.copy(episode = page.episode.episode + 1)
+        val fn = page.episode.filename
+        val nextFn = fn.replace(Regex("\\d+\\.mkv$"), "${nextEp.episode}.mkv")
+        cleanup(app)
+        app.navigate(App.Nav.Player(page.item, nextEp.copy(filename = nextFn), page.baseUrl))
+    }
+
     private fun applyPlaybackSpeed() {
         appRef?.onMainThread?.invoke(Runnable {
             appRef?.exoPlayer?.setPlaybackParameters(
@@ -1197,6 +1207,15 @@ class PlayerState(private val page: PlayerPage) : GameState {
         settingsBtnRect = floatArrayOf(setBtnX, setBtnY, setBtnW, setBtnH)
         if (settFocused) rc.border(setBtnX, setBtnY, setBtnW, setBtnH, rc.dp(3f), 0.733f, 0.525f, 0.988f)
 
+        // Next episode button — below settings
+        val nextBtnW = rc.dp(120f); val nextBtnH = rc.dp(40f)
+        val nextBtnX = rc.w - pad - nextBtnW; val nextBtnY = setBtnY + setBtnH + rc.dp(8f)
+        rc.solid(nextBtnX, nextBtnY, nextBtnW, nextBtnH, 0.102f, 0.102f, 0.180f)
+        val nextLabel = "Next >>"
+        val nextLabelW = uiMeasure(rc, nextLabel, 14)
+        uiText(rc, nextLabel, nextBtnX + (nextBtnW - nextLabelW) / 2f, nextBtnY + rc.dp(26f), 14, 0.733f, 0.525f, 0.988f)
+        nextEpBtnRect = floatArrayOf(nextBtnX, nextBtnY, nextBtnW, nextBtnH)
+
         if (renderMask and Layer.SEEKBAR == 0) return
         val seekFocused = pausedFocus == PausedFocus.SEEKBAR
         val barW = rc.w - pad * 2
@@ -1297,7 +1316,7 @@ class PlayerState(private val page: PlayerPage) : GameState {
             "←", "▶", "⏮", "⏭", "●", Lang.s("settings"),
             "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz",
             "0123456789:.%()/-+sp <>x",
-            "Audio Subtitle Reading Mode Font Size Speed Condensed Theme Debug Boxes",
+            "Audio Subtitle Reading Mode Font Size Speed Condensed Theme Debug Boxes Next",
             "DF DR DS DY Furigana Row Space Letter Y Offset E-Ink Dark",
             "PRO ADVANCED INTERMEDIATE NOVICE ON OFF Track Japanese",
             "Noto Sans Serif Shippori Klee One",
