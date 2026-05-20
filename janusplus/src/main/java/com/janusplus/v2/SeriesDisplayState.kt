@@ -9,6 +9,17 @@ class SeriesDisplayState(private val page: SeriesDisplayPage) : GameState {
     private var hasCoverBg = false
     private var coverU1 = 1f; private var coverV1 = 1f
 
+    // Mutable episode data (updated on season switch)
+    private var currentEpisodes = page.episodes.toMutableList()
+    private var currentFullEpisodes = page.fullEpisodes.toMutableList()
+    private var currentEpisodeCount = page.episodeCount
+    private var currentThumbW = page.thumbW
+    private var currentThumbH = page.thumbH
+    private var currentAtlasW = page.atlasW
+    private var currentAtlasH = page.atlasH
+    private var currentAtlasCols = page.atlasCols
+    @Volatile private var thumbReady = true
+
     private var pad = 0f; private var heroH = 0f
     private var titleY = 0f; private var btnY = 0f; private var btnW = 0f; private var btnH = 0f
     private var metaY = 0f; private var synopsisY = 0f
@@ -78,13 +89,13 @@ class SeriesDisplayState(private val page: SeriesDisplayPage) : GameState {
         val availW = rc.w - pad * 2
         gridCols = 4
         cardW = (availW - gridSpacing * (gridCols - 1)) / gridCols
-        thumbCardH = if (page.thumbW > 0f && page.thumbH > 0f) cardW / (page.thumbW / page.thumbH) else 0f
+        thumbCardH = if (currentThumbW > 0f && currentThumbH > 0f) cardW / (currentThumbW / currentThumbH) else 0f
         cardH = thumbCardH + rc.dp(50f)
         layoutDone = true
     }
 
     override fun update(app: App, touches: List<Touch>, actions: List<Action>) {
-        val epCount = page.episodes.size
+        val epCount = currentEpisodes.size
         val hasTabs = page.seasonCount > 1
         for (a in actions) when (a) {
             Action.UP -> when (focusArea) {
@@ -134,54 +145,52 @@ class SeriesDisplayState(private val page: SeriesDisplayPage) : GameState {
         if (loadingSeason || season == selectedSeason) return
         selectedSeason = season
         loadingSeason = true
+        thumbReady = false // stop rendering minicards
         episodeFocus = 0
+
         kotlin.concurrent.thread {
             try {
                 val api = app.api ?: return@thread
-                val seasonData = api.fetchSeason(page.item.id, season)
-                if (seasonData != null) {
-                    val lang = com.janusplus.Lang.current
-                    page.episodes.toMutableList().clear()
-                    val newEps = seasonData.episodes.map { ep ->
-                        SeriesDisplayPage.Episode(ep.episode, ep.title(), ep.durationSec.toInt())
-                    }
-                    val newFull = seasonData.episodes
-                    // Update page data (mutable swap)
-                    val field = page.javaClass.getDeclaredField("episodes")
-                    field.isAccessible = true; field.set(page, newEps)
-                    val fullField = page.javaClass.getDeclaredField("fullEpisodes")
-                    fullField.isAccessible = true; fullField.set(page, newFull)
-                    val countField = page.javaClass.getDeclaredField("episodeCount")
-                    countField.isAccessible = true; countField.set(page, newEps.size)
-                    val seasonField = page.javaClass.getDeclaredField("currentSeason")
-                    seasonField.isAccessible = true; seasonField.set(page, season)
 
-                    // Fetch and upload new thumbnails
-                    val header = api.fetchPageHeader(page.item.id, season)
-                    if (header != null) {
-                        val atlasBytes = api.fetchPageAtlas(page.item.id, season)
-                        if (atlasBytes != null && atlasBytes.isNotEmpty()) {
-                            val bmp = android.graphics.BitmapFactory.decodeByteArray(atlasBytes, 0, atlasBytes.size)
-                            if (bmp != null) {
-                                val twField = page.javaClass.getDeclaredField("thumbW")
-                                twField.isAccessible = true; twField.set(page, header.thumbW.toFloat())
-                                val thField = page.javaClass.getDeclaredField("thumbH")
-                                thField.isAccessible = true; thField.set(page, header.thumbH.toFloat())
-                                val awField = page.javaClass.getDeclaredField("atlasW")
-                                awField.isAccessible = true; awField.set(page, header.atlasW)
-                                val ahField = page.javaClass.getDeclaredField("atlasH")
-                                ahField.isAccessible = true; ahField.set(page, header.atlasH)
-                                val acField = page.javaClass.getDeclaredField("atlasCols")
-                                acField.isAccessible = true; acField.set(page, header.atlasCols)
-                                // Queue upload on GL thread
-                                app.texArray.uploadLayerNow(thumbLayer, bmp)
-                            }
-                        }
+                // Fetch episode data + thumbnails in parallel
+                var seasonData: JanusApi.SeasonData? = null
+                var header: JanusApi.PageHeader? = null
+                var atlasBytes: ByteArray? = null
+                val t1 = Thread { seasonData = api.fetchSeason(page.item.id, season) }.also { it.start() }
+                val t2 = Thread { header = api.fetchPageHeader(page.item.id, season) }.also { it.start() }
+                val t3 = Thread { atlasBytes = api.fetchPageAtlas(page.item.id, season) }.also { it.start() }
+                t1.join(); t2.join(); t3.join()
+
+                val sd = seasonData ?: return@thread
+                currentEpisodes = sd.episodes.map { ep ->
+                    SeriesDisplayPage.Episode(ep.episode, ep.title(), ep.durationSec.toInt())
+                }.toMutableList()
+                currentFullEpisodes = sd.episodes.toMutableList()
+                currentEpisodeCount = currentEpisodes.size
+
+                // Upload new thumbnail atlas
+                val hdr = header
+                val ab = atlasBytes
+                if (hdr != null && ab != null && ab.isNotEmpty()) {
+                    val bmp = android.graphics.BitmapFactory.decodeByteArray(ab, 0, ab.size)
+                    if (bmp != null) {
+                        currentThumbW = hdr.thumbW.toFloat()
+                        currentThumbH = hdr.thumbH.toFloat()
+                        currentAtlasW = hdr.atlasW
+                        currentAtlasH = hdr.atlasH
+                        currentAtlasCols = hdr.atlasCols
+                        app.texArray.uploadLayerNow(thumbLayer, bmp)
                     }
-                    layoutDone = false
+                } else {
+                    currentThumbW = 0f; currentThumbH = 0f
+                    currentAtlasW = 0; currentAtlasH = 0; currentAtlasCols = 0
                 }
+
+                layoutDone = false
+                thumbReady = true // re-enable minicard rendering
             } catch (e: Exception) {
                 android.util.Log.e("Series", "Season switch failed: ${e.message}")
+                thumbReady = true
             } finally {
                 loadingSeason = false
             }
@@ -244,7 +253,7 @@ class SeriesDisplayState(private val page: SeriesDisplayPage) : GameState {
             if (playFocused) rc.border(pad, ht + btnY, btnW, btnH, 6f, 1f, 1f, 1f)
             rc.tappable(pad, ht + btnY, btnW, btnH) { playEpisode(app, page.fullEpisodes.firstOrNull()) }
 
-            drawText(rc, page.bodyAtlas, Lang.s("episodes", page.episodeCount), pad + btnW + rc.dp(16f), ht + btnY + rc.dp(22f), 0.533f, 0.533f, 0.533f)
+            drawText(rc, page.bodyAtlas, Lang.s("episodes", currentEpisodeCount), pad + btnW + rc.dp(16f), ht + btnY + rc.dp(22f), 0.533f, 0.533f, 0.533f)
         }
 
         // Settings button — always visible (fixed position)
@@ -257,28 +266,33 @@ class SeriesDisplayState(private val page: SeriesDisplayPage) : GameState {
             drawText(rc, page.settAtlas, setLabel, setBtnX + (setBtnW - setLabelW) / 2f, setBtnY + rc.dp(24f), 0.733f, 0.525f, 0.988f)
         }
 
-        // Season tabs
+        // Season tabs with names
         if (page.seasonCount > 1) {
-            val tabW = rc.dp(80f); val tabH = rc.dp(32f); val tabGap = rc.dp(8f)
+            val tabH = rc.dp(32f); val tabGap = rc.dp(8f)
             val tabY = ht + gridY - tabH - rc.dp(8f)
             val tabFocused = focusArea == FocusArea.SEASON_TAB
+            var tabX = pad
             for (s in 1..page.seasonCount) {
-                val tabX = pad + (s - 1) * (tabW + tabGap)
+                val seasonInfo = page.seasons.firstOrNull { it.season == s }
+                val name = seasonInfo?.name() ?: ""
+                val label = if (name.isNotEmpty()) "S${String.format("%02d", s)} · $name"
+                            else "S${String.format("%02d", s)}"
+                val lw = page.bodyAtlas.measureText(label)
+                val tabW = lw + rc.dp(24f)
                 val selected = s == selectedSeason
                 if (selected) rc.solid(tabX, tabY, tabW, tabH, 0.733f, 0.525f, 0.988f, 0.9f)
                 else rc.solid(tabX, tabY, tabW, tabH, 0.15f, 0.15f, 0.25f, 0.8f)
-                val label = "S$s"
-                val lw = page.bodyAtlas.measureText(label)
-                drawText(rc, page.bodyAtlas, label, tabX + (tabW - lw) / 2f, tabY + rc.dp(22f), 1f, 1f, 1f)
+                drawText(rc, page.bodyAtlas, label, tabX + rc.dp(12f), tabY + rc.dp(22f), 1f, 1f, 1f)
                 if (tabFocused && s == selectedSeason) rc.border(tabX, tabY, tabW, tabH, rc.dp(3f), 1f, 1f, 1f)
                 val season = s
                 rc.tappable(tabX, tabY, tabW, tabH) { switchSeason(app, season) }
+                tabX += tabW + tabGap
             }
         }
 
         // Episode grid
         val texSize = app.texArray.size.toFloat()
-        for (i in page.episodes.indices) {
+        for (i in currentEpisodes.indices) {
             val col = i % gridCols; val row = i / gridCols
             val x = pad + col * (cardW + gridSpacing)
             val y = ht + gridY + row * (cardH + gridSpacing)
@@ -286,14 +300,11 @@ class SeriesDisplayState(private val page: SeriesDisplayPage) : GameState {
 
 
             var hasThumb = false
-            if (page.thumbBmp != null && page.atlasCols > 0 && page.atlasW > 0 && page.atlasH > 0) {
-                val ac = i % page.atlasCols; val ar = i / page.atlasCols
-                // UVs relative to atlas dimensions (uploadLayerNow scales bitmap to fit texture)
-                val aw = page.atlasW.toFloat(); val ah = page.atlasH.toFloat()
-                // The bitmap was scaled by uploadLayerNow — UV maps to the scaled version
+            if (thumbReady && currentAtlasCols > 0 && currentAtlasW > 0 && currentAtlasH > 0) {
+                val ac = i % currentAtlasCols; val ar = i / currentAtlasCols
+                val aw = currentAtlasW.toFloat(); val ah = currentAtlasH.toFloat()
                 val scale = minOf(texSize / aw, texSize / ah, 1f)
-                val scaledW = aw * scale; val scaledH = ah * scale
-                val tw = page.thumbW * scale; val th = page.thumbH * scale
+                val tw = currentThumbW * scale; val th = currentThumbH * scale
                 val txOrig = ac * tw; val tyOrig = ar * th
                 // Center-crop at screen pixel density
                 val showW = cardW.coerceAtMost(tw)
@@ -310,7 +321,7 @@ class SeriesDisplayState(private val page: SeriesDisplayPage) : GameState {
             }
             if (!hasThumb) rc.solid(x, y, cardW, cardH, rc.panelR, rc.panelG, rc.panelB)
 
-            val ep = page.episodes[i]
+            val ep = currentEpisodes[i]
             drawTextClipped(rc, page.bodyAtlas, "${ep.episode}. ${ep.titleEn}", x + rc.dp(8f), y + thumbCardH + rc.dp(22f), cardW - rc.dp(16f))
             drawText(rc, page.smallAtlas, "${ep.durationSec / 60} min", x + rc.dp(8f), y + thumbCardH + rc.dp(38f), 0.533f, 0.533f, 0.533f)
 
@@ -318,10 +329,9 @@ class SeriesDisplayState(private val page: SeriesDisplayPage) : GameState {
                 rc.border(x, y, cardW, cardH, 6f, 0.733f, 0.525f, 0.988f)
             }
 
-            // Touch tap
             val epCard = ep
             rc.tappable(x, y, cardW, cardH) {
-                playEpisode(app, page.fullEpisodes.firstOrNull { it.episode == epCard.episode })
+                playEpisode(app, currentFullEpisodes.firstOrNull { it.episode == epCard.episode })
             }
         }
 

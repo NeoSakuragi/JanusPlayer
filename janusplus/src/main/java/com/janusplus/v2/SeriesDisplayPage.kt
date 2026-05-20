@@ -16,6 +16,7 @@ data class SeriesDisplayPage(
     val fullEpisodes: List<JanusApi.Episode>,
     val seasonCount: Int = 1,
     val currentSeason: Int = 1,
+    val seasons: List<JanusApi.SeasonInfo> = emptyList(),
 
     // Bitmaps (uploaded to VRAM in display state init, then discarded)
     val coverBmp: android.graphics.Bitmap?,

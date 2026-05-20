@@ -47,15 +47,18 @@ class SeriesLoadingState(private val item: JanusApi.LibraryItem) : GameState {
             var header: JanusApi.PageHeader? = null
             var seasonData: JanusApi.SeasonData? = null
             var atlasBytes: ByteArray? = null
+            var heroBlob: JanusApi.HeroBlob? = null
 
             lines.add("header...")
             val headerThread = Thread { header = api.fetchPageHeader(item.id, 1) }.also { it.start() }
             val seasonThread = Thread { seasonData = api.fetchSeason(item.id, 1) }.also { it.start() }
             val atlasThread = Thread { atlasBytes = api.fetchPageAtlas(item.id, 1) }.also { it.start() }
+            val heroThread = Thread { heroBlob = api.fetchHeroBlob(item.id) }.also { it.start() }
 
             headerThread.join(); lines.add("header ${ms()}ms")
             seasonThread.join(); lines.add("season ${ms()}ms")
-            atlasThread.join(); lines.add("net done ${ms()}ms")
+            atlasThread.join()
+            heroThread.join(); lines.add("net done ${ms()}ms")
             val hdr = header ?: return
 
             val json = JSONObject(hdr.metadataJson)
@@ -107,7 +110,13 @@ class SeriesLoadingState(private val item: JanusApi.LibraryItem) : GameState {
             allTexts.add(Lang.s("episodes", episodeCount))
             allTexts.add("←")
             allTexts.add("▶ ")
-            allTexts.add("0123456789fps")
+            allTexts.add("0123456789fps·▼()")
+            // Season names
+            for (s in heroBlob?.seasons ?: emptyList()) {
+                allTexts.add("S${String.format("%02d", s.season)}")
+                val name = s.name()
+                if (name.isNotEmpty()) allTexts.add(name)
+            }
             for (ep in episodes) {
                 allTexts.add("${ep.episode}. ${ep.titleEn}")
                 allTexts.add("${ep.durationSec / 60} min")
@@ -139,6 +148,7 @@ class SeriesLoadingState(private val item: JanusApi.LibraryItem) : GameState {
                 fullEpisodes = fullEpisodes,
                 seasonCount = item.seasonCount,
                 currentSeason = 1,
+                seasons = heroBlob?.seasons ?: emptyList(),
                 coverBmp = coverBmp,
                 bannerBmp = bannerBmp,
                 bannerW = hdr.bannerW, bannerH = hdr.bannerH,
