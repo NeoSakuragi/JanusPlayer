@@ -234,6 +234,8 @@ class SeriesDisplayState(private val page: SeriesDisplayPage) : GameState {
             rc.bg()
         }
 
+        val isMovie = page.item.type.equals("MOVIE", ignoreCase = true)
+
         // Compact header: ← Title on one row
         val headerY = ht + rc.dp(4f)
         drawText(rc, page.bodyAtlas, "←", pad, headerY + rc.dp(16f), 0.533f, 0.533f, 0.533f)
@@ -242,7 +244,7 @@ class SeriesDisplayState(private val page: SeriesDisplayPage) : GameState {
 
         // Synopsis
         if (page.synopsis.isNotEmpty()) {
-            drawTextClipped(rc, page.bodyAtlas, page.synopsis, pad, ht + synopsisY, rc.w * 0.65f)
+            drawTextClipped(rc, page.bodyAtlas, page.synopsis, pad, ht + synopsisY, if (isMovie) rc.w - pad * 2 else rc.w * 0.65f)
         }
 
         // Play button + episode count
@@ -251,9 +253,14 @@ class SeriesDisplayState(private val page: SeriesDisplayPage) : GameState {
             rc.solid(pad, ht + btnY, btnW, btnH, 0.733f, 0.525f, 0.988f)
             drawText(rc, page.btnAtlas, Lang.s("play"), pad + rc.dp(16f), ht + btnY + rc.dp(26f), 1f, 1f, 1f)
             if (playFocused) rc.border(pad, ht + btnY, btnW, btnH, 6f, 1f, 1f, 1f)
-            rc.tappable(pad, ht + btnY, btnW, btnH) { playEpisode(app, page.fullEpisodes.firstOrNull()) }
+            rc.tappable(pad, ht + btnY, btnW, btnH) { playEpisode(app, currentFullEpisodes.firstOrNull()) }
 
-            drawText(rc, page.bodyAtlas, Lang.s("episodes", currentEpisodeCount), pad + btnW + rc.dp(16f), ht + btnY + rc.dp(22f), 0.533f, 0.533f, 0.533f)
+            if (!isMovie) {
+                drawText(rc, page.bodyAtlas, Lang.s("episodes", currentEpisodeCount), pad + btnW + rc.dp(16f), ht + btnY + rc.dp(22f), 0.533f, 0.533f, 0.533f)
+            } else {
+                val dur = currentFullEpisodes.firstOrNull()?.durationSec?.toInt() ?: 0
+                if (dur > 0) drawText(rc, page.bodyAtlas, "${dur / 60} min", pad + btnW + rc.dp(16f), ht + btnY + rc.dp(22f), 0.533f, 0.533f, 0.533f)
+            }
         }
 
         // Settings button — always visible (fixed position)
@@ -264,6 +271,12 @@ class SeriesDisplayState(private val page: SeriesDisplayPage) : GameState {
             val setLabel = Lang.s("settings")
             val setLabelW = page.settAtlas.measureText(setLabel)
             drawText(rc, page.settAtlas, setLabel, setBtnX + (setBtnW - setLabelW) / 2f, setBtnY + rc.dp(24f), 0.733f, 0.525f, 0.988f)
+        }
+
+        if (isMovie) {
+            // Movie page — just title, synopsis, play button. No episodes/seasons.
+            drawText(rc, page.smallAtlas, "${app.fps}fps", rc.dp(8f), rc.dp(16f), 0.4f, 0.8f, 0.4f)
+            return
         }
 
         // Season tabs with names
