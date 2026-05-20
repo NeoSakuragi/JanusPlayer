@@ -21,6 +21,11 @@ class MainActivity : AppCompatActivity() {
         app = App(this, assets, resources.displayMetrics.density)
         app.coverCache.cacheDir = cacheDir
         app.onMainThread = { runnable -> runOnUiThread(runnable) }
+        val prefs = getSharedPreferences("player_prefs", MODE_PRIVATE)
+        app.einkMode = prefs.getBoolean("eink_mode", false)
+        app.debugTimings = prefs.getBoolean("debug_timings", false)
+        com.janusplus.Lang.current = prefs.getString("language", "ja") ?: "ja"
+        app.ankiDeckName = prefs.getString("anki_deck", "Janus Mining") ?: "Janus Mining"
 
         // GL surface first — everything else deferred
         glView = GLSurfaceView(this)
@@ -245,6 +250,21 @@ class MainActivity : AppCompatActivity() {
         if (::glView.isInitialized) glView.onResume()
         registerReceiver(actionReceiver, android.content.IntentFilter("com.janusplus.ACTION"),
             android.content.Context.RECEIVER_EXPORTED)
+        // Check for library updates in the background
+        val api = app.api
+        if (api != null && app.library.isNotEmpty()) {
+            kotlin.concurrent.thread {
+                try {
+                    val newLib = api.fetchLibrary()
+                    if (newLib.isNotEmpty()) {
+                        app.library = newLib
+                        // Re-fetch covers for any new items
+                        val covers = api.fetchLibraryCovers()
+                        for ((key, bmp) in covers) app.coverCache.uploadFromBitmap(key, bmp)
+                    }
+                } catch (_: Exception) {}
+            }
+        }
     }
     override fun onPause() {
         super.onPause()

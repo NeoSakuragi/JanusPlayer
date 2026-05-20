@@ -47,7 +47,6 @@ class PlayerLoadingState(
             "fonts/KosugiMaru-Regular.ttf"
         )
 
-        // 1. Load prefs
         val p = app.context.getSharedPreferences("player_prefs", android.content.Context.MODE_PRIVATE)
         val fontIdx = p.getInt("font_idx", 0)
         val prefs = PlayerPrefs(
@@ -64,7 +63,7 @@ class PlayerLoadingState(
         )
 
         lines.add("prefs ${ms()}ms")
-        // 2. Fetch subtitles — SuperSRT + SRT in parallel
+
         var superSRT: JanusApi.SuperSRT? = null
         var cues: List<SrtParser.Cue> = emptyList()
 
@@ -88,27 +87,23 @@ class PlayerLoadingState(
 
         superThread.join()
         srtThread?.join()
-        val tSubs = System.currentTimeMillis()
         lines.add("subs ${ms()}ms")
-        android.util.Log.d("PlayerLoad", "subs fetched in ${tSubs - t0}ms superSRT=${superSRT != null} cues=${cues.size}")
+
         val superData = superSRT
         val cueData = cues
 
-        // 3. Collect ALL text for glyph atlas building
         val allSubTexts = mutableListOf<String>()
         if (superData != null) {
             for (cue in superData.cues) {
                 for (w in cue.words) {
-                    allSubTexts.add(w.surface)
-                    allSubTexts.add(w.reading)
+                    allSubTexts.add(w.surface); allSubTexts.add(w.reading)
                     if (w.inflection.isNotEmpty()) allSubTexts.add(w.inflection)
                     for (f in w.furigana) allSubTexts.add(f.reading)
                 }
             }
             for (entry in superData.dict) {
                 allSubTexts.add(entry.term); allSubTexts.add(entry.reading)
-                allSubTexts.addAll(entry.meanings)
-                allSubTexts.add(entry.jlpt)
+                allSubTexts.addAll(entry.meanings); allSubTexts.add(entry.jlpt)
             }
         } else {
             for (cue in cueData) allSubTexts.add(cue.text)
@@ -119,7 +114,6 @@ class PlayerLoadingState(
         allSubTexts.add(ReadingUtils.HIRAGANA)
         allSubTexts.add(ReadingUtils.KATAKANA)
 
-        // 4. Build UI atlases — use selected font for UI too
         val tf = try { android.graphics.Typeface.createFromAsset(app.context.assets, fontAssets[fontIdx.coerceIn(0, fontAssets.size - 1)]) }
                  catch (_: Exception) { app.defaultTypeface }
         val uiTexts = listOf(
@@ -138,33 +132,19 @@ class PlayerLoadingState(
         val uiBasePx = (uiBase * density).toInt()
         val uiAtlas = GlyphAtlas(tf, uiBase * density)
         uiAtlases.add(Triple(uiBasePx, uiAtlas, uiAtlas.build(uiTexts, texW)))
-        // Icon atlas at 36sp for play button (2× base, clean upscale)
         val iconAtlas = GlyphAtlas(tf, 36 * density)
         uiAtlases.add(Triple((36 * density).toInt(), iconAtlas, iconAtlas.build(listOf("▶"), texW)))
 
-        // 5. Build ONE subtitle atlas — furigana + dict use GL scaling from this
         var subAtlas: GlyphAtlas? = null; var subBmp: Bitmap? = null
         if (allSubTexts.isNotEmpty()) {
             val sa = GlyphAtlas(tf, prefs.subFontSize * density)
             subBmp = sa.build(allSubTexts, texW); subAtlas = sa
         }
-        val furiAtlas: GlyphAtlas? = null; val furiBmp: Bitmap? = null
-
-        // 6. No separate dict atlases — dict popup reuses subAtlas with GL scaling
-        val dictAtlases = mutableListOf<Triple<Int, GlyphAtlas, Bitmap>>()
 
         lines.add("glyphs ${ms()}ms")
-        val tAtlas = System.currentTimeMillis()
-        val subGlyphs = subAtlas?.glyphs?.size ?: 0
-        val subPages = 1 + (subAtlas?.extraPages?.size ?: 0)
-        val subBmpH = subBmp?.height ?: 0
-        android.util.Log.d("PlayerLoad", "atlases built in ${tAtlas - tSubs}ms " +
-            "uiGlyphs=${uiAtlas.glyphs.size} subGlyphs=$subGlyphs subPages=$subPages " +
-            "subBmp=${texW}x${subBmpH} totalMem=${(texW * subBmpH * 4) / 1024}KB " +
-            "total=${tAtlas - t0}ms")
 
         page = PlayerPage(item, episode, baseUrl, prefs, cueData, superData,
-            uiAtlases, subAtlas, subBmp, furiAtlas, furiBmp, dictAtlases)
+            uiAtlases, subAtlas, subBmp, null, null, emptyList())
         ready = true
     }
 
@@ -172,22 +152,23 @@ class PlayerLoadingState(
         if (ready) {
             val p = page ?: return
             ready = false
-            app.lastLoadLog = lines.toList()
+            app.lastLoadLog.add("--- player load ---")
+            app.lastLoadLog.addAll(lines)
             app.replace(Screen.PLAYER, PlayerState(p))
         }
         for (a in actions) { if (a == Action.BACK) app.goBack() }
     }
 
     override fun draw(app: App, rc: RC) {
-        rc.solid(0f, 0f, rc.w, rc.h, 0.039f, 0.039f, 0.102f)
+        rc.bg()
         val elapsed = (System.nanoTime() - startTime) / 1_000_000_000f
         rc.spinner(rc.w / 2f, rc.h * 0.3f, elapsed)
         val atlas = debugAtlas ?: return
         val pad = 2f
-        val lineH = atlas.lineHeight + rc.dp(4f)
+        val lineH = atlas.lineHeight + rc.dp(3f)
         val snapshot = lines.toList()
         for ((i, line) in snapshot.withIndex()) {
-            var cx = rc.dp(20f)
+            var cx = rc.dp(16f)
             val y = rc.h * 0.45f + i * lineH
             if (y > rc.h) break
             for (ch in line) {
@@ -196,14 +177,6 @@ class PlayerLoadingState(
                     g.u0, g.v0, g.u1, g.v1, 0.5f, 0.8f, 0.5f, 1f, layer = g.page.toFloat())
                 cx += g.advance
             }
-        }
-        var cx = rc.dp(20f)
-        val ty = rc.h * 0.45f + snapshot.size * lineH
-        for (ch in "${"%.1f".format(elapsed)}s") {
-            val g = atlas.glyphs[ch.code] ?: continue
-            rc.batch.addQuad(cx - pad, ty - g.ascent, g.w, g.h,
-                g.u0, g.v0, g.u1, g.v1, 1f, 1f, 1f, 1f, layer = g.page.toFloat())
-            cx += g.advance
         }
     }
 

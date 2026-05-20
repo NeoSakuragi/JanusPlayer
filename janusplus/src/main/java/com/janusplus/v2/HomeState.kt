@@ -191,14 +191,14 @@ class HomeState : GameState {
 
         val ht = -app.scrollY
 
-        rc.solid(0f, 0f, rc.w, rc.h, 0.039f, 0.039f, 0.102f)
+        rc.bg()
 
         rc.text("Janus+", pad, ht + pad + rc.dp(28f), rc.sp(28), 0.733f, 0.525f, 0.988f)
 
         val setBtnW = rc.dp(80f); val setBtnH = rc.dp(40f)
         val setBtnX = rc.w - pad - setBtnW; val setBtnY = ht + pad
         val settFocused = focusRow == 0
-        rc.solid(setBtnX, setBtnY, setBtnW, setBtnH, 0.102f, 0.102f, 0.180f)
+        rc.solid(setBtnX, setBtnY, setBtnW, setBtnH, rc.panelR, rc.panelG, rc.panelB)
         val setLabel = Lang.s("settings")
         val setLabelW = rc.measureText(setLabel, rc.sp(12))
         rc.text(setLabel, setBtnX + (setBtnW - setLabelW) / 2f, setBtnY + rc.dp(26f), rc.sp(12), 0.733f, 0.525f, 0.988f)
@@ -221,7 +221,7 @@ class HomeState : GameState {
                 val isFocused = rowFocused && i == seriesFocus
 
                 if (!rc.cover("cover_${item.id}", baseX, cardsY, cardW, cardH))
-                    rc.solid(baseX, cardsY, cardW, cardH, 0.102f, 0.102f, 0.180f)
+                    rc.solid(baseX, cardsY, cardW, cardH, rc.panelR, rc.panelG, rc.panelB)
                 rc.textClipped(item.title(), baseX + rc.dp(8f), cardsY + cardH - rc.dp(10f), rc.sp(14), cardW - rc.dp(16f), 1f, 1f, 1f)
                 if (isFocused) rc.border(baseX, cardsY, cardW, cardH, 6f, 0.733f, 0.525f, 0.988f)
 
@@ -245,7 +245,7 @@ class HomeState : GameState {
                 val isFocused = rowFocused && i == movieFocus
 
                 if (!rc.cover("cover_${item.id}", baseX, cardsY, cardW, cardH))
-                    rc.solid(baseX, cardsY, cardW, cardH, 0.102f, 0.102f, 0.180f)
+                    rc.solid(baseX, cardsY, cardW, cardH, rc.panelR, rc.panelG, rc.panelB)
                 rc.textClipped(item.title(), baseX + rc.dp(8f), cardsY + cardH - rc.dp(10f), rc.sp(14), cardW - rc.dp(16f), 1f, 1f, 1f)
                 if (isFocused) rc.border(baseX, cardsY, cardW, cardH, 6f, 0.733f, 0.525f, 0.988f)
 

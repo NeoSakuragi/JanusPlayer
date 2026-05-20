@@ -41,7 +41,9 @@ class SettingsState : GameState {
         allText.add("Checking..."); allText.add("Up to date"); allText.add("Downloading...")
         allText.add("Installing..."); allText.add("Failed")
         allText.add("ON"); allText.add("OFF")
-        allText.add("Debug"); allText.add("Clear cache"); allText.add("cleared files KB")
+        allText.add("Display"); allText.add("E-Ink mode")
+        allText.add("Debug"); allText.add("Show load timings")
+        allText.add("Clear cache"); allText.add("cleared files KB")
         allText.add("Test Anki card"); allText.add("sent"); allText.add("dupe"); allText.add("no ankidroid"); allText.add("no perm")
         allText.add(Lang.s("subtitles")); allText.add(Lang.s("font")); allText.add("Noto Sans JP")
         allText.add(Lang.s("font_size")); allText.add("20px")
@@ -49,7 +51,7 @@ class SettingsState : GameState {
         allText.add(Lang.s("deck")); allText.add("Default")
         allText.add(Lang.s("downloads")); allText.add(Lang.s("downloaded_episodes")); allText.add("0")
         allText.add(Lang.s("about")); allText.add("Version"); allText.add("0.7")
-        allText.add(Lang.s("language")); allText.add(Lang.current.uppercase())
+        allText.add(Lang.s("language")); allText.add("English"); allText.add("Français"); allText.add("日本語")
         allText.add("0123456789fps")
 
         val ts = app.texArray.size
@@ -92,7 +94,7 @@ class SettingsState : GameState {
         for ((size, atlas) in sizedAtlases) rc.atlases[size] = atlas
 
         val scrollY = app.scrollY
-        rc.solid(0f, 0f, rc.w, rc.h, 0.039f, 0.039f, 0.102f)
+        rc.bg()
 
         var y = pad - scrollY
         rowActions.clear()
@@ -108,7 +110,8 @@ class SettingsState : GameState {
 
         y = drawSection(rc, y, Lang.s("server"))
         y = drawRow(rc, y, Lang.s("server_url"), "canneji.duckdns.org")
-        y = drawRow(rc, y, Lang.s("check_update"), updateStatus) {
+        val versionName = try { app.context.packageManager.getPackageInfo(app.context.packageName, 0).versionName ?: "?" } catch (_: Exception) { "?" }
+        y = drawRow(rc, y, Lang.s("check_update"), updateStatus.ifEmpty { "v$versionName" }) {
             checkForUpdate(app)
         }
         y += sectionGap
@@ -119,8 +122,17 @@ class SettingsState : GameState {
         y += sectionGap
 
         y = drawSection(rc, y, "Anki")
-        y = drawRow(rc, y, "AnkiConnect", "http://127.0.0.1:8765")
-        y = drawRow(rc, y, Lang.s("deck"), "Default")
+        y = drawRow(rc, y, Lang.s("deck"), app.ankiDeckName) {
+            cycleAnkiDeck(app)
+        }
+        y += sectionGap
+
+        y = drawSection(rc, y, "Display")
+        y = drawRow(rc, y, "E-Ink mode", if (app.einkMode) "ON" else "OFF") {
+            app.einkMode = !app.einkMode
+            val prefs = app.context.getSharedPreferences("player_prefs", android.content.Context.MODE_PRIVATE)
+            prefs.edit().putBoolean("eink_mode", app.einkMode).apply()
+        }
         y += sectionGap
 
         y = drawSection(rc, y, Lang.s("downloads"))
@@ -128,7 +140,12 @@ class SettingsState : GameState {
         y += sectionGap
 
         y = drawSection(rc, y, "Debug")
-        y = drawRow(rc, y, "Clear cache", cacheStatus) {
+        y = drawRow(rc, y, "Show load timings", if (app.debugTimings) "ON" else "OFF") {
+            app.debugTimings = !app.debugTimings
+            val prefs = app.context.getSharedPreferences("player_prefs", android.content.Context.MODE_PRIVATE)
+            prefs.edit().putBoolean("debug_timings", app.debugTimings).apply()
+        }
+        y = drawRow(rc, y, "Clear local cache", cacheStatus) {
             clearCache(app)
         }
         y = drawRow(rc, y, "Test Anki card", ankiStatus) {
@@ -140,8 +157,14 @@ class SettingsState : GameState {
         y += sectionGap
 
         y = drawSection(rc, y, Lang.s("about"))
-        y = drawRow(rc, y, "Version", "0.17")
-        y = drawRow(rc, y, Lang.s("language"), Lang.current.uppercase())
+        y = drawRow(rc, y, Lang.s("language"), when (Lang.current) {
+            "ja" -> "日本語"; "fr" -> "Français"; else -> "English"
+        }) {
+            Lang.current = when (Lang.current) { "en" -> "fr"; "fr" -> "ja"; else -> "en" }
+            val prefs = app.context.getSharedPreferences("player_prefs", android.content.Context.MODE_PRIVATE)
+            prefs.edit().putString("language", Lang.current).apply()
+            buildAtlases(app)
+        }
 
         rowCount = rowActions.size
 
@@ -247,6 +270,23 @@ class SettingsState : GameState {
                 modelStatus = "${models.size} models"
             } catch (e: Exception) { modelStatus = "err: ${e.message}" }
         }
+    }
+
+    private var ankiDecks = listOf<String>()
+
+    private fun cycleAnkiDeck(app: App) {
+        if (ankiDecks.isEmpty()) {
+            try {
+                val api = com.ichi2.anki.api.AddContentApi(app.context)
+                val decks = api.deckList
+                if (decks != null) ankiDecks = decks.values.sorted()
+            } catch (_: Exception) {}
+        }
+        if (ankiDecks.isEmpty()) return
+        val idx = ankiDecks.indexOf(app.ankiDeckName)
+        app.ankiDeckName = ankiDecks[(idx + 1) % ankiDecks.size]
+        app.context.getSharedPreferences("player_prefs", android.content.Context.MODE_PRIVATE)
+            .edit().putString("anki_deck", app.ankiDeckName).apply()
     }
 
     private fun clearCache(app: App) {

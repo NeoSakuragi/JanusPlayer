@@ -110,10 +110,15 @@ class JanusApi(private val baseUrl: String) {
 
     data class ThumbEntry(val episode: Int, val data: ByteArray)
 
+    var libraryEtag: String? = null
+
     fun fetchLibrary(): List<LibraryItem> {
-        val request = authRequest("$baseUrl/api/library").build()
-        val response = client.newCall(request).execute()
+        val rb = authRequest("$baseUrl/api/library")
+        libraryEtag?.let { rb.header("If-None-Match", it) }
+        val response = client.newCall(rb.build()).execute()
+        if (response.code == 304) return emptyList()
         if (!response.isSuccessful) return emptyList()
+        libraryEtag = response.header("ETag")
         val json = JSONObject(response.body?.string() ?: return emptyList())
         val items = json.getJSONArray("items")
         return (0 until items.length()).map { i ->
@@ -129,6 +134,17 @@ class JanusApi(private val baseUrl: String) {
                 posterPath = obj.optString("poster_path", ""),
             )
         }
+    }
+
+    fun hasLibraryChanged(): Boolean {
+        if (libraryEtag == null) return true
+        try {
+            val rb = authRequest("$baseUrl/api/library")
+            rb.header("If-None-Match", libraryEtag!!)
+            val response = client.newCall(rb.build()).execute()
+            response.close()
+            return response.code != 304
+        } catch (_: Exception) { return false }
     }
 
     private fun parseLocales(obj: JSONObject?): Map<String, Locale> {
@@ -368,10 +384,11 @@ class JanusApi(private val baseUrl: String) {
     data class SuperSRT(val version: Int, val dict: List<DictEntry>, val cues: List<SuperCue>)
 
     fun fetchSuperSRT(itemId: String, season: Int, episode: Int): SuperSRT? {
-        val request = authRequest("$baseUrl/api/super-srt/$itemId/$season/$episode").build()
-        val response = try { client.newCall(request).execute() } catch (_: Exception) { return null }
-        if (!response.isSuccessful) return null
-        val obj = JSONObject(response.body?.string() ?: return null)
+        val cache = cacheDir?.let { java.io.File(it, "ssrt/${itemId}_s${season}e${episode}.json") }
+        val etagFile = cacheDir?.let { java.io.File(it, "ssrt/${itemId}_s${season}e${episode}.etag") }
+        val body = fetchCached("$baseUrl/api/super-srt/$itemId/$season/$episode", cache, etagFile)
+            ?: return null
+        val obj = JSONObject(String(body, Charsets.UTF_8))
 
         val dictArr = obj.getJSONArray("dict")
         val dict = (0 until dictArr.length()).map { i ->

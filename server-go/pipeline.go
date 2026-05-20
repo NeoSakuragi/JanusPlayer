@@ -1118,7 +1118,7 @@ const (
 )
 
 type tmdbEpisodeData struct {
-	titleEn, synopsisEn, synopsisFr, synopsisJa, stillPath string
+	titleEn, titleJa, titleFr, synopsisEn, synopsisFr, synopsisJa, stillPath string
 }
 
 type tmdbMovieData struct {

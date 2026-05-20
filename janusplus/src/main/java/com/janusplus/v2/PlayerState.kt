@@ -2,6 +2,7 @@ package com.janusplus.v2
 
 import android.opengl.GLES30
 import com.janusplus.MineQueue
+import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import androidx.media3.common.MediaItem
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.source.ProgressiveMediaSource
@@ -131,9 +132,10 @@ class PlayerState(private val page: PlayerPage) : GameState {
     @Volatile var isBuffering = true
     private var appRef: App? = null
     @Volatile private var alive = true
-    @Volatile private var mineToast = ""
-    private var mineToastTime = 0f
     private var mineBtnRect = floatArrayOf(0f, 0f, 0f, 0f)
+    private var ankiCheckWord = ""
+    private var ankiCheckResult = 0 // 0=unchecked, 1=checking, 2=not in anki, 3=already in anki, 4=mining, 5=failed
+    @Volatile private var mineStatus = "" // live status shown on button
 
     private fun savePrefs() {
         val app = appRef ?: return
@@ -467,27 +469,17 @@ class PlayerState(private val page: PlayerPage) : GameState {
         if (m and Layer.CUE != 0 && currentCueText.isNotEmpty() && subAtlas != null) drawCueLayer(rc)
         else if (m and Layer.CUE == 0 || currentCueText.isEmpty()) { subtitleRect = floatArrayOf(0f, 0f, 0f, 0f); charBoxes = emptyList() }
 
-        if (m and Layer.DICT != 0 && mode == Mode.PAUSED && hlStart >= 0) drawDictPopup(rc) else { dictPopupVisible = false; mineBtnRect = floatArrayOf(0f, 0f, 0f, 0f) }
+        if (m and Layer.DICT != 0 && mode == Mode.PAUSED && hlStart >= 0) drawDictPopup(rc) else {
+            dictPopupVisible = false; mineBtnRect = floatArrayOf(0f, 0f, 0f, 0f)
+            ankiCheckWord = ""; ankiCheckResult = 0
+        }
 
         if (m and Layer.SETTINGS != 0 && mode == Mode.SETTINGS) drawSettingsPanel(rc)
-
-        // Mine toast
-        if (mineToastTime > 0) {
-            mineToastTime -= 0.016f
-            val alpha = mineToastTime.coerceIn(0f, 1f)
-            uiText(rc, mineToast, rc.w / 2f - rc.dp(40f), rc.dp(50f), 14, 0.733f, 0.525f, 0.988f, alpha)
-        }
 
         if (m and Layer.FPS != 0) {
             val blitMs = app.blitThread?.lastBlitMs ?: 0f
             uiText(rc, "${app.fps}fps  blit:${"%.1f".format(blitMs)}", rc.dp(8f), rc.dp(16f), 10, 0.4f, 0.8f, 0.4f)
-            val log = app.lastLoadLog
-            if (log.isNotEmpty()) {
-                val lh = uiHeight(rc, 10) + rc.dp(2f)
-                for ((i, line) in log.withIndex()) {
-                    uiText(rc, line, rc.dp(8f), rc.dp(30f) + i * lh, 10, 0.4f, 0.7f, 0.4f)
-                }
-            }
+            // Debug overlay handled by App.onDrawFrame
         }
     }
 
@@ -678,6 +670,45 @@ class PlayerState(private val page: PlayerPage) : GameState {
         if (span.dictIdx < 0 || span.dictIdx >= dict.size) return
         val entry = dict[span.dictIdx]
 
+        // Async AnkiDroid check — trigger when word changes
+        if (ankiCheckWord != entry.term) {
+            ankiCheckWord = entry.term
+            ankiCheckResult = 1 // checking
+            val app = appRef
+            val term = entry.term
+            kotlin.concurrent.thread {
+                try {
+                    val client = app?.ankiClient ?: run { ankiCheckResult = 2; return@thread }
+                    if (!client.isAvailable() || !client.hasPermission()) { ankiCheckResult = 2; return@thread }
+                    val api = com.ichi2.anki.api.AddContentApi(client.context)
+                    val models = api.getModelList(1) ?: run { ankiCheckResult = 2; return@thread }
+                    val modelId = models.entries.firstOrNull { it.value == "Immersion Sentences" }?.key
+                    if (modelId == null) { ankiCheckResult = 2; return@thread }
+                    val dupes = api.findDuplicateNotes(modelId, term)
+                    if (dupes == null || dupes.isEmpty()) { ankiCheckResult = 2; return@thread }
+                    // Check if any dupe is in the Immersion deck
+                    val decks = api.deckList
+                    val immersionDeckId = decks?.entries?.firstOrNull { it.value == app.ankiDeckName }?.key
+                    if (immersionDeckId == null) { ankiCheckResult = 2; return@thread }
+                    var found = false
+                    val cr = client.context.contentResolver
+                    for (dupe in dupes) {
+                        val noteId = dupe.key
+                        val cardUri = android.net.Uri.parse("content://com.ichi2.anki.flashcards/notes/$noteId/cards")
+                        val cursor = cr.query(cardUri, arrayOf("deckId"), null, null, null)
+                        if (cursor != null) {
+                            while (cursor.moveToNext()) {
+                                if (cursor.getLong(0) == immersionDeckId) { found = true; break }
+                            }
+                            cursor.close()
+                        }
+                        if (found) break
+                    }
+                    ankiCheckResult = if (found) 3 else 2
+                } catch (_: Exception) { ankiCheckResult = 2 }
+            }
+        }
+
         val popupW = rc.dp(300f).coerceAtMost(rc.w * 0.8f)
         val popupX = (rc.w - popupW) / 2f
         val padP = rc.dp(16f)
@@ -719,11 +750,20 @@ class PlayerState(private val page: PlayerPage) : GameState {
         val mineBtnW = rc.dp(40f); val mineBtnH = scaledH(half) + rc.dp(6f)
         val mineBtnX = popupX + popupW - mineBtnW - rc.dp(6f)
         val mineBtnY = cy + (termBlockH - mineBtnH) / 2f
-        rc.solid(mineBtnX, mineBtnY, mineBtnW, mineBtnH, 0.733f, 0.525f, 0.988f, 0.9f)
-        val mineLabel = "+"
-        val mineLabelW = rc.measureText(mineLabel, sz) * half
-        rc.textScaled(mineLabel, mineBtnX + (mineBtnW - mineLabelW) / 2f, mineBtnY + scaledH(half) + rc.dp(1f), sz, half, 1f, 1f, 1f)
-        mineBtnRect = floatArrayOf(mineBtnX, mineBtnY, mineBtnW, mineBtnH)
+        val label: String; val bgR: Float; val bgG: Float; val bgB: Float; val tR: Float; val tG: Float; val tB: Float
+        when (ankiCheckResult) {
+            1 -> { label = ".."; bgR = 0.2f; bgG = 0.2f; bgB = 0.3f; tR = 0.6f; tG = 0.6f; tB = 0.6f } // checking
+            3 -> { label = "ok"; bgR = 0.15f; bgG = 0.4f; bgB = 0.15f; tR = 0.5f; tG = 0.9f; tB = 0.5f } // in anki
+            4 -> { label = mineStatus.ifEmpty { ".." }; bgR = 0.3f; bgG = 0.3f; bgB = 0.1f; tR = 1f; tG = 0.9f; tB = 0.3f } // mining
+            5 -> { label = "!"; bgR = 0.5f; bgG = 0.1f; bgB = 0.1f; tR = 1f; tG = 0.3f; tB = 0.3f } // failed
+            else -> { label = "+"; bgR = 0.733f; bgG = 0.525f; bgB = 0.988f; tR = 1f; tG = 1f; tB = 1f } // available
+        }
+        rc.solid(mineBtnX, mineBtnY, mineBtnW, mineBtnH, bgR, bgG, bgB, 0.9f)
+        val lw = rc.measureText(label, sz) * half
+        rc.textScaled(label, mineBtnX + (mineBtnW - lw) / 2f, mineBtnY + scaledH(half) + rc.dp(1f), sz, half, tR, tG, tB)
+        // Only tappable if available (2) or failed (5, retry)
+        mineBtnRect = if (ankiCheckResult == 2 || ankiCheckResult == 5) floatArrayOf(mineBtnX, mineBtnY, mineBtnW, mineBtnH)
+                      else floatArrayOf(0f, 0f, 0f, 0f)
 
         // Furigana per-kanji — same positioning as cue layer
         if (hasFuri) {
@@ -907,13 +947,18 @@ class PlayerState(private val page: PlayerPage) : GameState {
     }
 
     private fun mineCurrentWord() {
-        val app = appRef ?: run { android.util.Log.d("Mine", "no appRef"); return }
-        val span = wordSpans.getOrNull(cursorIdx) ?: run { android.util.Log.d("Mine", "no span at cursor=$cursorIdx spans=${wordSpans.size}"); return }
-        val dict = superSRT?.dict ?: run { android.util.Log.d("Mine", "no superSRT dict"); return }
-        if (span.dictIdx < 0 || span.dictIdx >= dict.size) { android.util.Log.d("Mine", "bad dictIdx=${span.dictIdx} dict.size=${dict.size}"); return }
+        val app = appRef ?: return
+        val span = wordSpans.getOrNull(cursorIdx) ?: return
+        val dict = superSRT?.dict ?: return
+        if (span.dictIdx < 0 || span.dictIdx >= dict.size) return
         val entry = dict[span.dictIdx]
-        val cue = findCueAtPosition(positionMs) ?: run { android.util.Log.d("Mine", "no cue at pos=$positionMs"); return }
-        android.util.Log.d("Mine", "mining: ${entry.term} cue=${cue.text}")
+        val cue = findCueAtPosition(positionMs) ?: return
+
+        if (ankiCheckResult == 4) return // already mining
+        ankiCheckResult = 4 // mining in progress
+        mineStatus = "..."
+
+        fun mlog(msg: String) { app.lastLoadLog.add("mine: $msg"); android.util.Log.d("Mine", msg) }
 
         val meanings = entry.meanings.joinToString("; ")
         val reading = if (span.furigana.isNotEmpty()) {
@@ -929,19 +974,105 @@ class PlayerState(private val page: PlayerPage) : GameState {
             sb.toString()
         } else entry.reading.ifEmpty { entry.term }
 
-        val req = MineQueue.MineRequest(
-            itemId = page.item.id, season = page.episode.season, episode = page.episode.episode,
-            wordIndex = span.dictIdx,
-            startMs = cue.startMs.toDouble(), endMs = cue.endMs.toDouble(),
-            screenshotMs = positionMs.toDouble(),
-            expression = entry.term, reading = reading, meaning = meanings,
-            sentence = cue.text, jlpt = entry.jlpt,
-            source = "${page.item.title()} E${page.episode.episode}",
-        )
+        val expression = entry.term
+        val sentence = cue.text
+        val jlpt = entry.jlpt
+        val startMs = cue.startMs.toDouble()
+        val endMs = cue.endMs.toDouble()
+        val baseUrl = page.baseUrl
+        val token = app.api?.token ?: ""
 
-        app.mineQueue.enqueue(req)
-        mineToast = "⛏ ${entry.term}"
-        mineToastTime = 2f
+        kotlin.concurrent.thread {
+            try {
+                // Step 1: Resolve media from server
+                mlog("resolving $expression...")
+                mineStatus = "server"
+                val json = org.json.JSONObject().apply {
+                    put("item_id", page.item.id); put("season", page.episode.season)
+                    put("episode", page.episode.episode)
+                    put("start_ms", startMs); put("end_ms", endMs)
+                }
+                val body = okhttp3.RequestBody.create(
+                    "application/json".toMediaTypeOrNull(), json.toString())
+                val req = okhttp3.Request.Builder()
+                    .url("$baseUrl/api/card-resolve")
+                    .header("Authorization", "Bearer $token")
+                    .post(body).build()
+                val resp = okhttp3.OkHttpClient.Builder()
+                    .connectTimeout(10, java.util.concurrent.TimeUnit.SECONDS)
+                    .readTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
+                    .build().newCall(req).execute()
+                if (!resp.isSuccessful) { mlog("server ${resp.code}"); ankiCheckResult = 5; mineStatus = "!"; return@thread }
+                val bytes = resp.body?.bytes() ?: run { mlog("empty response"); ankiCheckResult = 5; mineStatus = "!"; return@thread }
+
+                // Parse blob
+                var off = 0
+                fun readInt(): Int {
+                    val v = (bytes[off].toInt() and 0xFF) or ((bytes[off+1].toInt() and 0xFF) shl 8) or
+                            ((bytes[off+2].toInt() and 0xFF) shl 16) or ((bytes[off+3].toInt() and 0xFF) shl 24)
+                    off += 4; return v
+                }
+                val metaLen = readInt(); off += metaLen
+                val audioLen = readInt()
+                val audioData = if (audioLen > 0) bytes.copyOfRange(off, off + audioLen) else null; off += audioLen
+                val imageLen = readInt()
+                val imageData = if (imageLen > 0) bytes.copyOfRange(off, off + imageLen) else null
+
+                mlog("audio=${audioLen}B img=${imageLen}B")
+                mineStatus = "anki"
+
+                // Step 2: Attach media
+                val ankiApi = com.ichi2.anki.api.AddContentApi(app.context)
+                val models = ankiApi.getModelList(1) ?: run { mlog("no models"); ankiCheckResult = 5; mineStatus = "!"; return@thread }
+                val modelId = models.entries.firstOrNull { it.value == "Immersion Sentences" }?.key
+                    ?: run { mlog("no Immersion Sentences model"); ankiCheckResult = 5; mineStatus = "!"; return@thread }
+                val decks = ankiApi.deckList ?: run { mlog("no decks"); ankiCheckResult = 5; mineStatus = "!"; return@thread }
+                val deckId = decks.entries.firstOrNull { it.value == app.ankiDeckName }?.key
+                    ?: ankiApi.addNewDeck(app.ankiDeckName)
+                    ?: run { mlog("can't create deck"); ankiCheckResult = 5; mineStatus = "!"; return@thread }
+
+                var screenshotRef = ""
+                var audioRef = ""
+                val ts = System.currentTimeMillis()
+
+                if (imageData != null) {
+                    val f = java.io.File(app.context.cacheDir, "mine_$ts.jpg")
+                    f.writeBytes(imageData)
+                    val uri = androidx.core.content.FileProvider.getUriForFile(app.context, "${app.context.packageName}.fileprovider", f)
+                    app.context.grantUriPermission("com.ichi2.anki", uri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    screenshotRef = ankiApi.addMediaFromUri(uri, "janus_$ts.jpg", "image") ?: ""
+                    f.delete()
+                }
+                if (audioData != null) {
+                    val f = java.io.File(app.context.cacheDir, "mine_$ts.mp3")
+                    f.writeBytes(audioData)
+                    val uri = androidx.core.content.FileProvider.getUriForFile(app.context, "${app.context.packageName}.fileprovider", f)
+                    app.context.grantUriPermission("com.ichi2.anki", uri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    audioRef = ankiApi.addMediaFromUri(uri, "janus_$ts.mp3", "audio") ?: ""
+                    f.delete()
+                }
+
+                // Step 3: Create card
+                val sentenceNoWord = sentence.replace(expression, "___")
+                val source = "${page.item.title()} E${page.episode.episode}"
+                val cardFields = arrayOf(
+                    expression, meanings, "", sentence, sentenceNoWord,
+                    reading, expression, screenshotRef, audioRef,
+                    "janus $jlpt".trim(), "", "", ""
+                )
+                val noteId = ankiApi.addNote(modelId, deckId, cardFields, setOf("janus"))
+                if (noteId == null || noteId <= 0) { mlog("addNote failed: $noteId"); ankiCheckResult = 5; mineStatus = "!"; return@thread }
+
+                mlog("card $expression id=$noteId")
+                ankiCheckResult = 3
+                mineStatus = ""
+
+            } catch (e: Exception) {
+                mlog("err: ${e.message}")
+                ankiCheckResult = 5
+                mineStatus = "!"
+            }
+        }
     }
 
     private fun findCueAtPosition(posMs: Long): SrtParser.Cue? {
@@ -1002,20 +1133,20 @@ class PlayerState(private val page: PlayerPage) : GameState {
             rc.text("▶", centerX - tw / 2f, rc.h / 2f + rc.textHeight(iconSize) / 3f, iconSize, 1f, 1f, 1f, 0.8f)
         }
 
-        uiText(rc, "${page.episode.episode}. ${page.episode.title()}", pad, rc.dp(32f), 16, 1f, 1f, 1f)
+        uiText(rc, "${page.episode.episode}. ${page.episode.title()}", pad, rc.dp(40f), 18, 1f, 1f, 1f)
 
         val backFocused = pausedFocus == PausedFocus.TOP_ROW && topRowFocus == 0
         uiText(rc, "←", pad, rc.dp(60f), 22, if (backFocused) 1f else 0.8f, if (backFocused) 1f else 0.8f, if (backFocused) 1f else 0.8f)
         backBtnRect = floatArrayOf(0f, 0f, rc.dp(80f), rc.dp(80f))
         if (backFocused) rc.border(0f, 0f, rc.dp(80f), rc.dp(80f), rc.dp(3f), 0.733f, 0.525f, 0.988f)
 
-        val setBtnW = rc.dp(80f); val setBtnH = rc.dp(36f)
+        val setBtnW = rc.dp(120f); val setBtnH = rc.dp(48f)
         val setBtnX = rc.w - pad - setBtnW; val setBtnY = rc.dp(12f)
         val settFocused = pausedFocus == PausedFocus.TOP_ROW && topRowFocus == 1
         rc.solid(setBtnX, setBtnY, setBtnW, setBtnH, 0.102f, 0.102f, 0.180f)
         val setLabel = Lang.s("settings")
         val setLabelW = uiMeasure(rc, setLabel, 12)
-        uiText(rc, setLabel, setBtnX + (setBtnW - setLabelW) / 2f, setBtnY + rc.dp(24f), 12, 0.733f, 0.525f, 0.988f)
+        uiText(rc, setLabel, setBtnX + (setBtnW - setLabelW) / 2f, setBtnY + rc.dp(32f), 16, 0.733f, 0.525f, 0.988f)
         settingsBtnRect = floatArrayOf(setBtnX, setBtnY, setBtnW, setBtnH)
         if (settFocused) rc.border(setBtnX, setBtnY, setBtnW, setBtnH, rc.dp(3f), 0.733f, 0.525f, 0.988f)
 

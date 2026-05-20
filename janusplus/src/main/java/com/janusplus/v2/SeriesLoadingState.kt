@@ -157,14 +157,15 @@ class SeriesLoadingState(private val item: JanusApi.LibraryItem) : GameState {
         if (ready) {
             val p = page ?: return
             ready = false
-            app.lastLoadLog = lines.toList()
+            app.lastLoadLog.add("--- series load ---")
+            app.lastLoadLog.addAll(lines)
             app.replace(Screen.SERIES, SeriesDisplayState(p))
         }
         for (a in actions) { if (a == Action.BACK) app.goBack() }
     }
 
     override fun draw(app: App, rc: RC) {
-        rc.solid(0f, 0f, rc.w, rc.h, 0.039f, 0.039f, 0.102f)
+        rc.bg()
         val elapsed = (System.nanoTime() - startTime) / 1_000_000_000f
         rc.spinner(rc.w / 2f, rc.h * 0.3f, elapsed)
         val atlas = debugAtlas ?: return

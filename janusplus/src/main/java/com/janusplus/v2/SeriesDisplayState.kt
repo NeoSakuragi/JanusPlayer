@@ -144,7 +144,7 @@ class SeriesDisplayState(private val page: SeriesDisplayPage) : GameState {
             rc.batch.addQuad(0f, 0f, rc.w, rc.h, cu0, cv0, cu1f, cv1f,
                 0.15f, 0.15f, 0.15f, 1f, layer = -2f)
         } else {
-            rc.solid(0f, 0f, rc.w, rc.h, 0.039f, 0.039f, 0.102f)
+            rc.bg()
         }
 
         // Hero section — only draw if on screen
@@ -170,7 +170,7 @@ class SeriesDisplayState(private val page: SeriesDisplayPage) : GameState {
         val setBtnW = rc.dp(80f); val setBtnH = rc.dp(36f)
         val setBtnX = rc.w - pad - setBtnW; val setBtnY = ht + rc.dp(12f)
         if (setBtnY + setBtnH > 0) {
-            rc.solid(setBtnX, setBtnY, setBtnW, setBtnH, 0.102f, 0.102f, 0.180f)
+            rc.solid(setBtnX, setBtnY, setBtnW, setBtnH, rc.panelR, rc.panelG, rc.panelB)
             val setLabel = Lang.s("settings")
             val setLabelW = page.settAtlas.measureText(setLabel)
             drawText(rc, page.settAtlas, setLabel, setBtnX + (setBtnW - setLabelW) / 2f, setBtnY + rc.dp(24f), 0.733f, 0.525f, 0.988f)
@@ -208,7 +208,7 @@ class SeriesDisplayState(private val page: SeriesDisplayPage) : GameState {
                     showW, showH, u0, v0, u1, v1, layer = thumbLayer.toFloat())
                 hasThumb = true
             }
-            if (!hasThumb) rc.solid(x, y, cardW, cardH, 0.102f, 0.102f, 0.180f)
+            if (!hasThumb) rc.solid(x, y, cardW, cardH, rc.panelR, rc.panelG, rc.panelB)
 
             val ep = page.episodes[i]
             drawTextClipped(rc, page.bodyAtlas, "${ep.episode}. ${ep.titleEn}", x + rc.dp(8f), y + thumbCardH + rc.dp(22f), cardW - rc.dp(16f))
@@ -226,13 +226,7 @@ class SeriesDisplayState(private val page: SeriesDisplayPage) : GameState {
         }
 
         drawText(rc, page.smallAtlas, "${app.fps}fps", rc.dp(8f), rc.dp(16f), 0.4f, 0.8f, 0.4f)
-        val log = app.lastLoadLog
-        if (log.isNotEmpty()) {
-            val lh = page.smallAtlas.lineHeight + rc.dp(2f)
-            for ((i, line) in log.withIndex()) {
-                drawText(rc, page.smallAtlas, line, rc.dp(8f), rc.dp(30f) + i * lh, 0.4f, 0.7f, 0.4f)
-            }
-        }
+        // Debug overlay handled by App.onDrawFrame
     }
 
     private val glyphPad = 2f

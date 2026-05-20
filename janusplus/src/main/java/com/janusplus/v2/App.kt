@@ -68,6 +68,11 @@ class RC(
     val panelR get() = if (eink) 0.9f else 0.102f
     val panelG get() = if (eink) 0.9f else 0.102f
     val panelB get() = if (eink) 0.88f else 0.180f
+    val bgR get() = if (eink) 0.95f else 0.039f
+    val bgG get() = if (eink) 0.95f else 0.039f
+    val bgB get() = if (eink) 0.93f else 0.102f
+
+    fun bg() { solid(0f, 0f, w, h, bgR, bgG, bgB) }
 
     var whiteLayer = TextureArray.LAYER_UI.toFloat()
 
@@ -219,6 +224,16 @@ class App(val context: Context, private val assets: android.content.res.AssetMan
     var blitThread: VideoBlitThread? = null
     var einkMode = false
     var isTV = false
+    var debugTimings = false
+    var ankiDeckName = "Janus Mining"
+    private var debugAtlas: GlyphAtlas? = null
+
+    fun rebuildDebugAtlas() {
+        val da = GlyphAtlas(defaultTypeface, 10f * density)
+        uploadGlyphAtlas(da, da.build(listOf(
+            "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789ms%.:| -_=+/()[]{}"), texArray.size))
+        debugAtlas = da
+    }
     val mineQueue = MineQueue(context)
     val ankiClient = AnkiDroidClient(context)
 
@@ -231,7 +246,7 @@ class App(val context: Context, private val assets: android.content.res.AssetMan
             "select" -> actionQueue.add(Action.SELECT)
         }
     }
-    @Volatile var lastLoadLog: List<String> = emptyList()
+    val lastLoadLog = mutableListOf<String>()
     var defaultTypeface: android.graphics.Typeface = android.graphics.Typeface.DEFAULT
 
     var whiteU = 0f; private set
@@ -378,7 +393,8 @@ class App(val context: Context, private val assets: android.content.res.AssetMan
         swapIntervalFrames = 0
         android.opengl.EGL14.eglSwapInterval(android.opengl.EGL14.eglGetCurrentDisplay(), 1)
 
-        GLES30.glClearColor(0.039f, 0.039f, 0.102f, 1f)
+        if (einkMode) GLES30.glClearColor(0.95f, 0.95f, 0.93f, 1f)
+        else GLES30.glClearColor(0.039f, 0.039f, 0.102f, 1f)
         GLES30.glEnable(GLES30.GL_BLEND)
         GLES30.glBlendFunc(GLES30.GL_SRC_ALPHA, GLES30.GL_ONE_MINUS_SRC_ALPHA)
 
@@ -406,6 +422,8 @@ class App(val context: Context, private val assets: android.content.res.AssetMan
         texArray.uploadLayerNow(TextureArray.LAYER_UI, white)
         white.recycle()
         whiteU = 1f / texArray.size
+
+        rebuildDebugAtlas()
         whiteV = 1f / texArray.size
 
         etc2Array = CompressedTextureArray(4096, 4)
@@ -443,6 +461,7 @@ class App(val context: Context, private val assets: android.content.res.AssetMan
         // GL context recreated — all VRAM gone. Re-init current state.
         android.util.Log.d("App", "onSurfaceCreated: reinitGL on ${currentState.javaClass.simpleName}")
         currentState.reinitGL(this)
+        rebuildDebugAtlas()
 
         // Re-fetch covers since GPU texture was destroyed
         val curApi = api
@@ -485,6 +504,8 @@ class App(val context: Context, private val assets: android.content.res.AssetMan
             currentScreen = screen
             currentState = state
             currentState.init(this)
+            rebuildDebugAtlas()
+            lastLoadLog.add("nav: ${currentScreen.name}")
         }
 
         val repl = pendingReplace
@@ -495,6 +516,7 @@ class App(val context: Context, private val assets: android.content.res.AssetMan
             currentScreen = repl.first
             currentState = repl.second
             currentState.init(this)
+            rebuildDebugAtlas()
         }
 
         val touches = mutableListOf<Touch>()
@@ -543,6 +565,24 @@ class App(val context: Context, private val assets: android.content.res.AssetMan
         rc.whiteU = whiteU; rc.whiteV = whiteV
         rc.whiteLayer = TextureArray.LAYER_UI.toFloat()
         currentState.draw(this, rc)
+
+        // Debug overlay — always renders last, on top of everything
+        if (debugTimings && lastLoadLog.isNotEmpty() && debugAtlas != null) {
+            val atlas = debugAtlas!!
+            val pad = 2f
+            val lineH = atlas.lineHeight + density * 2f
+            val snapshot = lastLoadLog.takeLast(15) // last 15 lines
+            for ((i, line) in snapshot.withIndex()) {
+                var cx = density * 8f
+                val y = density * 16f + i * lineH
+                for (ch in line) {
+                    val g = atlas.glyphs[ch.code] ?: continue
+                    rc.batch.addQuad(cx - pad, y - g.ascent, g.w, g.h,
+                        g.u0, g.v0, g.u1, g.v1, 0.4f, 0.8f, 0.4f, 0.7f, layer = g.page.toFloat())
+                    cx += g.advance
+                }
+            }
+        }
 
         val flushT0 = System.nanoTime()
         batch.flush()
