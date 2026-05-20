@@ -133,14 +133,6 @@ class MainActivity : AppCompatActivity() {
                 android.util.Log.d("Startup", "login attempt=$attempt ${System.currentTimeMillis() - tLogin}ms")
                 if (result != null) {
                     app.api = api
-                    app.mineQueue.baseUrl = "https://canneji.duckdns.org/janus"
-                    app.mineQueue.token = api.token ?: ""
-                    app.mineQueue.ankiClient = app.ankiClient
-                    app.mineQueue.load()
-                    // Debug: list AnkiDroid models
-                    if (app.ankiClient.isAvailable() && app.ankiClient.hasPermission()) {
-                        app.ankiClient.listModels()
-                    }
                     val tLib = System.currentTimeMillis()
                     val library = api.fetchLibrary()
                     android.util.Log.d("Startup", "fetchLibrary ${System.currentTimeMillis() - tLib}ms items=${library.size}")

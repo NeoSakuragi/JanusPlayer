@@ -94,8 +94,8 @@ class MineTestState : GameState {
                 if (deckId == null) deckId = ankiApi.addNewDeck(deckName)
                 if (deckId == null) { log("FAIL: can't create deck"); return@thread }
                 val models = ankiApi.getModelList(1) ?: run { log("FAIL: can't list models"); return@thread }
-                val modelId = models.entries.firstOrNull { it.value == "Immersion Sentences" }?.key
-                if (modelId == null) { log("FAIL: Immersion Sentences not found"); return@thread }
+                val modelId = models.entries.firstOrNull { it.value == AnkiDroidClient.MODEL_NAME }?.key
+                if (modelId == null) { log("FAIL: ${AnkiDroidClient.MODEL_NAME} not found"); return@thread }
                 val fields = ankiApi.getFieldList(modelId)
                 log("2. OK deck=$deckId model=$modelId fields=${fields?.size}")
 
@@ -225,19 +225,50 @@ class MineTestState : GameState {
                 if (screenshotRef.isEmpty()) { log("FAIL: screenshot attach"); failCount++; continue }
                 if (audioRef.isEmpty()) { log("FAIL: audio attach"); failCount++; continue }
 
-                // Create card
+                // Build sentenceFurigana from cue words
+                val cueObj = cues.getJSONObject(foundCueIdx)
+                val cueWords = cueObj.getJSONArray("w")
+                val sentenceFurigana = buildString {
+                    for (wi in 0 until cueWords.length()) {
+                        val w = cueWords.getJSONObject(wi)
+                        val surface = w.getString("s")
+                        val furis = w.optJSONArray("f")
+                        if (furis != null && furis.length() > 0) {
+                            var lastIdx = 0
+                            for (fi in 0 until furis.length()) {
+                                val f = furis.getJSONArray(fi)
+                                val charIdx = f.getInt(0)
+                                val furiReading = f.getString(1)
+                                if (charIdx > lastIdx && charIdx <= surface.length) append(surface.substring(lastIdx, charIdx))
+                                val end = (charIdx + 1).coerceAtMost(surface.length)
+                                append(surface.substring(charIdx, end))
+                                append("[").append(furiReading).append("]")
+                                lastIdx = end
+                            }
+                            if (lastIdx < surface.length) append(surface.substring(lastIdx))
+                        } else {
+                            append(surface)
+                        }
+                    }
+                }
+
+                // Create card — Janus+ Immersion field order:
+                // Expression, Reading, Meaning, Sentence, SentenceFurigana,
+                // SentenceNoWord, Screenshot, Audio, Source, JLPT
                 val sentenceNoWord = sentence.replace(expression, "___")
+                val source = "Saint Seiya E${tw.episode}"
                 val cardFields = arrayOf(
-                    expression, meaning, "", sentence, sentenceNoWord,
-                    reading, expression, screenshotRef, audioRef,
-                    "janus-test $jlpt".trim(), "", "", ""
+                    expression, reading, meaning, sentence, sentenceFurigana,
+                    sentenceNoWord, screenshotRef, audioRef,
+                    source, jlpt,
                 )
                 val noteId = ankiApi.addNote(modelId, deckId, cardFields, setOf("janus-test"))
                 if (noteId == null || noteId <= 0) { log("FAIL: addNote=$noteId"); failCount++; continue }
 
                 // Verify required fields
-                val required = mapOf("Front" to expression, "Back" to meaning,
-                    "Sentence" to sentence, "Reading" to reading, "Screenshot" to screenshotRef, "Audio" to audioRef)
+                val required = mapOf("Expression" to expression, "Reading" to reading,
+                    "Meaning" to meaning, "Sentence" to sentence,
+                    "Screenshot" to screenshotRef, "Audio" to audioRef)
                 var fieldOk = true
                 for ((name, value) in required) {
                     if (value.isEmpty()) { log("FAIL: $name empty"); fieldOk = false }

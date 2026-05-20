@@ -13,7 +13,6 @@ import com.janusplus.CompressedTextureArray
 import com.janusplus.AnkiDroidClient
 import com.janusplus.CoverCache
 import com.janusplus.GlyphAtlas
-import com.janusplus.MineQueue
 import com.janusplus.QuadBatch
 import com.janusplus.ShaderProgram
 import com.janusplus.TextureArray
@@ -234,7 +233,6 @@ class App(val context: Context, private val assets: android.content.res.AssetMan
             "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789ms%.:| -_=+/()[]{}"), texArray.size))
         debugAtlas = da
     }
-    val mineQueue = MineQueue(context)
     val ankiClient = AnkiDroidClient(context)
 
     fun triggerAction(name: String) {

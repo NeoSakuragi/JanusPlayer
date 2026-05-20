@@ -33,13 +33,6 @@
             </intent-filter>
         </activity>
 
-        <activity
-            android:name=".v2.WebPlayerActivity"
-            android:exported="true"
-            android:configChanges="orientation|screenSize|keyboardHidden"
-            android:screenOrientation="landscape"
-            android:hardwareAccelerated="true" />
-
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.fileprovider"

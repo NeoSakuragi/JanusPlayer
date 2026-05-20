@@ -2,7 +2,6 @@ package com.janusplus.v2
 
 import android.opengl.GLES30
 import com.janusplus.AnkiDroidClient
-import com.janusplus.MineQueue
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import androidx.media3.common.MediaItem
 import androidx.media3.datasource.DefaultHttpDataSource
@@ -768,7 +767,6 @@ class PlayerState(private val page: PlayerPage) : GameState {
 
         // Furigana per-kanji — same positioning as cue layer
         if (hasFuri) {
-            var charX = termX
             for (furi in span.furigana) {
                 if (furi.charIdx >= entry.term.length) continue
                 val prefix = entry.term.substring(0, furi.charIdx)
