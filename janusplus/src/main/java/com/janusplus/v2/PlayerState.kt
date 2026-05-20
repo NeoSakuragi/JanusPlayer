@@ -113,6 +113,7 @@ class PlayerState(private val page: PlayerPage) : GameState {
     private var draggingSliderIdx = -1
 
     var condensedMode = false
+    var playbackSpeed = 1.0f
     private var selectedAudioIdx = 0
     private var selectedSubLang = "ja"
 
@@ -825,6 +826,13 @@ class PlayerState(private val page: PlayerPage) : GameState {
 
     // ── Settings Panel ──
 
+    private fun applyPlaybackSpeed() {
+        appRef?.onMainThread?.invoke(Runnable {
+            appRef?.exoPlayer?.setPlaybackParameters(
+                androidx.media3.common.PlaybackParameters(playbackSpeed))
+        })
+    }
+
     private fun openSettings() { mode = Mode.SETTINGS; settingsFocus = 0; buildSettingsRows() }
 
     private fun buildSettingsRows() {
@@ -856,6 +864,9 @@ class PlayerState(private val page: PlayerPage) : GameState {
         rows.add(SettingsRow("Font", fontNames[currentFontIdx], "font") { cycleFont(); savePrefs() })
         rows.add(SettingsRow("Font Size", "${subFontSize}sp", "size") { cycleFontSize(); savePrefs() })
         rows.add(SettingsRow("Condensed", if (condensedMode) "ON" else "OFF", "cond") { condensedMode = !condensedMode; savePrefs() })
+        rows.add(SettingsRow("Speed", "%.1fx".format(playbackSpeed), "speed",
+            isSlider = true, sliderRange = 0.5f to 2.0f, sliderValue = playbackSpeed,
+            onSlide = { playbackSpeed = (Math.round(it * 10) / 10f); applyPlaybackSpeed() }))
         rows.add(SettingsRow("DF (Furigana)", "%.1f".format(deltaFurigana), "DF",
             isSlider = true, sliderRange = 0.3f to 1.5f, sliderValue = deltaFurigana, onSlide = { deltaFurigana = it; savePrefs() }))
         rows.add(SettingsRow("DR (Row Space)", "%.1f".format(deltaRow), "DR",
