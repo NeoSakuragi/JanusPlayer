@@ -37,6 +37,7 @@ interface GameState {
     fun update(app: App, touches: List<Touch>, actions: List<Action>)
     fun draw(app: App, rc: RC)
     fun cleanup(app: App)
+    fun reinitGL(app: App) { init(app) }
 }
 
 class RC(
@@ -439,12 +440,9 @@ class App(val context: Context, private val assets: android.content.res.AssetMan
             }
         }
 
-        // GL context recreated — all VRAM gone. Recreate state from nav intent.
-        currentState.cleanup(this)
-        val (screen, state) = createState(currentNav)
-        currentScreen = screen
-        currentState = state
-        currentState.init(this)
+        // GL context recreated — all VRAM gone. Re-init current state.
+        android.util.Log.d("App", "onSurfaceCreated: reinitGL on ${currentState.javaClass.simpleName}")
+        currentState.reinitGL(this)
 
         // Re-fetch covers since GPU texture was destroyed
         val curApi = api

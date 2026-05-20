@@ -1102,6 +1102,65 @@ class PlayerState(private val page: PlayerPage) : GameState {
         }
     }
 
+    override fun reinitGL(app: App) {
+        android.util.Log.d("Player", "reinitGL called")
+        appRef = app
+        app.einkMode = einkMode
+
+        // Rebuild glyph atlases from existing data (no network)
+        val tf = try { android.graphics.Typeface.createFromAsset(app.context.assets, fontAssets[currentFontIdx]) }
+                 catch (_: Exception) { app.defaultTypeface }
+        val d = app.density
+        val texW = app.texArray.size
+
+        // UI atlases
+        val uiTexts = listOf(
+            "${page.episode.episode}. ${page.episode.title()}",
+            "←", "▶", "⏮", "⏭", "●", Lang.s("settings"),
+            "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz",
+            "0123456789:.%()/-+sp ",
+            "Audio Subtitle Reading Mode Font Size Condensed Theme Debug Boxes",
+            "DF DR DS DY Furigana Row Space Letter Y Offset E-Ink Dark",
+            "PRO ADVANCED INTERMEDIATE NOVICE ON OFF Track Japanese",
+            "Noto Sans Serif Shippori Klee One",
+        )
+        val uiAtlas = GlyphAtlas(tf, uiBaseSp * d)
+        app.uploadGlyphAtlas(uiAtlas, uiAtlas.build(uiTexts, texW))
+        uiAtlases[(uiBaseSp * d).toInt()] = uiAtlas
+        val iconAtlas = GlyphAtlas(tf, 36 * d)
+        app.uploadGlyphAtlas(iconAtlas, iconAtlas.build(listOf("▶"), texW))
+        uiAtlases[(36 * d).toInt()] = iconAtlas
+
+        // Subtitle atlas
+        subGlyphLayer = -1
+        rebuildSubtitleAtlases()
+
+        // Reconnect ExoPlayer to the new Surface and re-prepare at current position
+        val newSurface = app.videoSurface.surface
+        val savedPos = positionMs
+        val wasPlaying = isPlaying
+        if (newSurface != null) {
+            app.onMainThread?.invoke(Runnable {
+                val p = app.exoPlayer ?: return@Runnable
+                p.setVideoSurface(newSurface)
+                if (p.playbackState == androidx.media3.common.Player.STATE_IDLE) {
+                    // ExoPlayer stopped due to surface loss — re-prepare
+                    val api = app.api ?: return@Runnable
+                    val videoUrl = "${page.baseUrl}/api/video/${page.item.id}/${page.episode.filename}"
+                    val token = api.token ?: ""
+                    val dsf = DefaultHttpDataSource.Factory()
+                        .setDefaultRequestProperties(mapOf("Authorization" to "Bearer $token"))
+                    val source = ProgressiveMediaSource.Factory(dsf)
+                        .createMediaSource(MediaItem.fromUri(videoUrl))
+                    p.setMediaSource(source)
+                    p.prepare()
+                    p.seekTo(savedPos)
+                    p.playWhenReady = wasPlaying
+                }
+            })
+        }
+    }
+
     override fun cleanup(app: App) {
         alive = false
         app.onMainThread?.invoke(Runnable {
