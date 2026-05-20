@@ -1135,30 +1135,8 @@ class PlayerState(private val page: PlayerPage) : GameState {
         subGlyphLayer = -1
         rebuildSubtitleAtlases()
 
-        // Reconnect ExoPlayer to the new Surface and re-prepare at current position
-        val newSurface = app.videoSurface.surface
-        val savedPos = positionMs
-        val wasPlaying = isPlaying
-        if (newSurface != null) {
-            app.onMainThread?.invoke(Runnable {
-                val p = app.exoPlayer ?: return@Runnable
-                p.setVideoSurface(newSurface)
-                if (p.playbackState == androidx.media3.common.Player.STATE_IDLE) {
-                    // ExoPlayer stopped due to surface loss — re-prepare
-                    val api = app.api ?: return@Runnable
-                    val videoUrl = "${page.baseUrl}/api/video/${page.item.id}/${page.episode.filename}"
-                    val token = api.token ?: ""
-                    val dsf = DefaultHttpDataSource.Factory()
-                        .setDefaultRequestProperties(mapOf("Authorization" to "Bearer $token"))
-                    val source = ProgressiveMediaSource.Factory(dsf)
-                        .createMediaSource(MediaItem.fromUri(videoUrl))
-                    p.setMediaSource(source)
-                    p.prepare()
-                    p.seekTo(savedPos)
-                    p.playWhenReady = wasPlaying
-                }
-            })
-        }
+        // No ExoPlayer reconnection needed — the Surface/SurfaceTexture survived GL context loss
+        // ExoPlayer is still rendering to the same SurfaceTexture, which was detached+reattached
     }
 
     override fun cleanup(app: App) {

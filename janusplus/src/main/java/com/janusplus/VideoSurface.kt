@@ -24,6 +24,7 @@ class VideoSurface {
     var frameReady = false; private set
 
     fun initGL() {
+        // Create new OES texture
         val ids = IntArray(1)
         GLES30.glGenTextures(1, ids, 0)
         oesTextureId = ids[0]
@@ -33,9 +34,18 @@ class VideoSurface {
         GLES30.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES30.GL_TEXTURE_WRAP_S, GLES30.GL_CLAMP_TO_EDGE)
         GLES30.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES30.GL_TEXTURE_WRAP_T, GLES30.GL_CLAMP_TO_EDGE)
 
-        surfaceTexture = SurfaceTexture(oesTextureId)
-        surfaceTexture!!.setOnFrameAvailableListener { newFrame.set(true) }
-        surface = Surface(surfaceTexture!!)
+        if (surfaceTexture == null) {
+            // First init — create SurfaceTexture + Surface
+            surfaceTexture = SurfaceTexture(oesTextureId)
+            surfaceTexture!!.setOnFrameAvailableListener { newFrame.set(true) }
+            surface = Surface(surfaceTexture!!)
+        } else {
+            // GL context recreated — reattach existing SurfaceTexture to new texture
+            surfaceTexture!!.attachToGLContext(oesTextureId)
+        }
+
+        // Reset FBO so it gets recreated
+        fbo = 0; fboWidth = 0; fboHeight = 0
     }
 
     var fbo = 0; private set
@@ -75,6 +85,12 @@ class VideoSurface {
             return true
         }
         return false
+    }
+
+    fun detachFromGL() {
+        // Call before GL context is destroyed — detach SurfaceTexture so it survives
+        try { surfaceTexture?.detachFromGLContext() } catch (_: Exception) {}
+        oesTextureId = 0
     }
 
     fun bindOes() {

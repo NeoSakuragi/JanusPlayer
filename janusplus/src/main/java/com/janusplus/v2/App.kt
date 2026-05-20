@@ -420,9 +420,9 @@ class App(val context: Context, private val assets: android.content.res.AssetMan
         thumbAtlas.layerIndex = texArray.nextThumbLayer()
         thumbAtlas.invalidate()
 
-        videoSurface.initGL()
-
         blitThread?.stop()
+        videoSurface.detachFromGL()
+        videoSurface.initGL()
         val eglDisplay = android.opengl.EGL14.eglGetCurrentDisplay()
         val eglContext = android.opengl.EGL14.eglGetCurrentContext()
         val eglConfigs = arrayOfNulls<android.opengl.EGLConfig>(1)
