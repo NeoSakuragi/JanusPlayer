@@ -9,6 +9,7 @@ import android.view.KeyEvent
 enum class Action {
     UP, DOWN, LEFT, RIGHT, SELECT, BACK,
     PLAY_PAUSE, MENU, REWIND, FORWARD,
+    MINE,
 }
 
 object Input {

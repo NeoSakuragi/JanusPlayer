@@ -1,6 +1,7 @@
 package com.janusplus.v2
 
 import android.opengl.GLES30
+import com.janusplus.MineQueue
 import androidx.media3.common.MediaItem
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.source.ProgressiveMediaSource
@@ -130,6 +131,9 @@ class PlayerState(private val page: PlayerPage) : GameState {
     @Volatile var isBuffering = true
     private var appRef: App? = null
     @Volatile private var alive = true
+    @Volatile private var mineToast = ""
+    private var mineToastTime = 0f
+    private var mineBtnRect = floatArrayOf(0f, 0f, 0f, 0f)
 
     private fun savePrefs() {
         val app = appRef ?: return
@@ -354,6 +358,7 @@ class PlayerState(private val page: PlayerPage) : GameState {
                 Mode.PAUSED -> { hlStart = -1; hlEnd = -1; mode = Mode.PLAYING; play() }
                 Mode.PLAYING -> { cleanup(app); app.goBack() }
             }
+            Action.MINE -> mineCurrentWord()
         }
     }
 
@@ -389,6 +394,7 @@ class PlayerState(private val page: PlayerPage) : GameState {
     private fun handleTap(app: App, x: Float, y: Float) {
         when (mode) {
             Mode.PAUSED -> {
+                if (dictPopupVisible && mineBtnRect[2] > 0 && aabbHit(x, y, mineBtnRect)) { mineCurrentWord(); return }
                 if (dictPopupVisible && aabbHit(x, y, dictPopupRect)) return
                 if (aabbHit(x, y, backBtnRect)) { cleanup(app); app.goBack(); return }
                 if (aabbHit(x, y, settingsBtnRect)) { openSettings(); return }
@@ -461,9 +467,16 @@ class PlayerState(private val page: PlayerPage) : GameState {
         if (m and Layer.CUE != 0 && currentCueText.isNotEmpty() && subAtlas != null) drawCueLayer(rc)
         else if (m and Layer.CUE == 0 || currentCueText.isEmpty()) { subtitleRect = floatArrayOf(0f, 0f, 0f, 0f); charBoxes = emptyList() }
 
-        if (m and Layer.DICT != 0 && mode == Mode.PAUSED && hlStart >= 0) drawDictPopup(rc) else dictPopupVisible = false
+        if (m and Layer.DICT != 0 && mode == Mode.PAUSED && hlStart >= 0) drawDictPopup(rc) else { dictPopupVisible = false; mineBtnRect = floatArrayOf(0f, 0f, 0f, 0f) }
 
         if (m and Layer.SETTINGS != 0 && mode == Mode.SETTINGS) drawSettingsPanel(rc)
+
+        // Mine toast
+        if (mineToastTime > 0) {
+            mineToastTime -= 0.016f
+            val alpha = mineToastTime.coerceIn(0f, 1f)
+            uiText(rc, mineToast, rc.w / 2f - rc.dp(40f), rc.dp(50f), 14, 0.733f, 0.525f, 0.988f, alpha)
+        }
 
         if (m and Layer.FPS != 0) {
             val blitMs = app.blitThread?.lastBlitMs ?: 0f
@@ -702,6 +715,16 @@ class PlayerState(private val page: PlayerPage) : GameState {
         val termY = cy + termBlockH
         rc.text(entry.term, termX, termY, sz, 1f, 1f, 1f)
 
+        // Mine button — top right
+        val mineBtnW = rc.dp(40f); val mineBtnH = scaledH(half) + rc.dp(6f)
+        val mineBtnX = popupX + popupW - mineBtnW - rc.dp(6f)
+        val mineBtnY = cy + (termBlockH - mineBtnH) / 2f
+        rc.solid(mineBtnX, mineBtnY, mineBtnW, mineBtnH, 0.733f, 0.525f, 0.988f, 0.9f)
+        val mineLabel = "+"
+        val mineLabelW = rc.measureText(mineLabel, sz) * half
+        rc.textScaled(mineLabel, mineBtnX + (mineBtnW - mineLabelW) / 2f, mineBtnY + scaledH(half) + rc.dp(1f), sz, half, 1f, 1f, 1f)
+        mineBtnRect = floatArrayOf(mineBtnX, mineBtnY, mineBtnW, mineBtnH)
+
         // Furigana per-kanji — same positioning as cue layer
         if (hasFuri) {
             var charX = termX
@@ -881,6 +904,51 @@ class PlayerState(private val page: PlayerPage) : GameState {
     private fun cycleFont() {
         currentFontIdx = (currentFontIdx + 1) % fontNames.size
         rebuildSubtitleAtlases()
+    }
+
+    private fun mineCurrentWord() {
+        val app = appRef ?: run { android.util.Log.d("Mine", "no appRef"); return }
+        val span = wordSpans.getOrNull(cursorIdx) ?: run { android.util.Log.d("Mine", "no span at cursor=$cursorIdx spans=${wordSpans.size}"); return }
+        val dict = superSRT?.dict ?: run { android.util.Log.d("Mine", "no superSRT dict"); return }
+        if (span.dictIdx < 0 || span.dictIdx >= dict.size) { android.util.Log.d("Mine", "bad dictIdx=${span.dictIdx} dict.size=${dict.size}"); return }
+        val entry = dict[span.dictIdx]
+        val cue = findCueAtPosition(positionMs) ?: run { android.util.Log.d("Mine", "no cue at pos=$positionMs"); return }
+        android.util.Log.d("Mine", "mining: ${entry.term} cue=${cue.text}")
+
+        val meanings = entry.meanings.joinToString("; ")
+        val reading = if (span.furigana.isNotEmpty()) {
+            val sb = StringBuilder()
+            var lastIdx = 0
+            for (f in span.furigana.sortedBy { it.charIdx }) {
+                if (f.charIdx > lastIdx) sb.append(entry.term.substring(lastIdx, f.charIdx))
+                val ch = entry.term.substring(f.charIdx, (f.charIdx + 1).coerceAtMost(entry.term.length))
+                sb.append("$ch[${f.reading}]")
+                lastIdx = f.charIdx + 1
+            }
+            if (lastIdx < entry.term.length) sb.append(entry.term.substring(lastIdx))
+            sb.toString()
+        } else entry.reading.ifEmpty { entry.term }
+
+        val req = MineQueue.MineRequest(
+            itemId = page.item.id, season = page.episode.season, episode = page.episode.episode,
+            wordIndex = span.dictIdx,
+            startMs = cue.startMs.toDouble(), endMs = cue.endMs.toDouble(),
+            screenshotMs = positionMs.toDouble(),
+            expression = entry.term, reading = reading, meaning = meanings,
+            sentence = cue.text, jlpt = entry.jlpt,
+            source = "${page.item.title()} E${page.episode.episode}",
+        )
+
+        app.mineQueue.enqueue(req)
+        mineToast = "⛏ ${entry.term}"
+        mineToastTime = 2f
+    }
+
+    private fun findCueAtPosition(posMs: Long): SrtParser.Cue? {
+        for (cue in cues) {
+            if (posMs >= cue.startMs && posMs <= cue.endMs) return cue
+        }
+        return null
     }
 
     private var subGlyphLayer = -1

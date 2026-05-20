@@ -10,8 +10,10 @@ import android.view.MotionEvent
 import android.view.VelocityTracker
 import android.widget.OverScroller
 import com.janusplus.CompressedTextureArray
+import com.janusplus.AnkiDroidClient
 import com.janusplus.CoverCache
 import com.janusplus.GlyphAtlas
+import com.janusplus.MineQueue
 import com.janusplus.QuadBatch
 import com.janusplus.ShaderProgram
 import com.janusplus.TextureArray
@@ -216,6 +218,18 @@ class App(val context: Context, private val assets: android.content.res.AssetMan
     var blitThread: VideoBlitThread? = null
     var einkMode = false
     var isTV = false
+    val mineQueue = MineQueue(context)
+    val ankiClient = AnkiDroidClient(context)
+
+    fun triggerAction(name: String) {
+        when (name) {
+            "mine" -> actionQueue.add(Action.MINE)
+            "next_sub" -> actionQueue.add(Action.RIGHT)
+            "prev_sub" -> actionQueue.add(Action.LEFT)
+            "pause" -> actionQueue.add(Action.PLAY_PAUSE)
+            "select" -> actionQueue.add(Action.SELECT)
+        }
+    }
     @Volatile var lastLoadLog: List<String> = emptyList()
     var defaultTypeface: android.graphics.Typeface = android.graphics.Typeface.DEFAULT
 

@@ -12,44 +12,35 @@ import androidx.core.content.FileProvider
 import com.ichi2.anki.api.AddContentApi
 import java.io.File
 
-class AnkiDroidClient(private val context: Context) {
+class AnkiDroidClient(val context: Context) {
 
     private val api = AddContentApi(context)
 
     companion object {
         private const val TAG = "AnkiDroid"
-        private const val DECK_NAME = "Janus Mining"
-        private const val MODEL_NAME = "Janus Japanese"
-        private val FIELDS = arrayOf(
-            "Expression", "Reading", "Meaning", "Sentence",
-            "Screenshot", "Audio", "Source", "JLPT"
-        )
-        private val CARD_NAMES = arrayOf("Recognition")
-        private val QFMT = arrayOf("""
-            <div class="expression">{{Expression}}</div>
-            <div class="sentence">{{Sentence}}</div>
-            {{Screenshot}}
-        """.trimIndent())
-        private val AFMT = arrayOf("""
-            {{FrontSide}}<hr id=answer>
-            <div class="reading">{{furigana:Reading}}</div>
-            <div class="meaning">{{Meaning}}</div>
-            <div class="jlpt">{{JLPT}}</div>
-            {{Audio}}
-        """.trimIndent())
-        private val CSS = """
-            .card { font-family: "Noto Sans JP", "Yu Gothic", sans-serif; text-align: center; background: #1a1a2e; color: #eee; }
-            .expression { font-size: 48px; margin: 20px 0; }
-            .reading { font-size: 32px; color: #aaa; }
-            .meaning { font-size: 22px; margin-top: 12px; }
-            .sentence { font-size: 18px; color: #ccc; margin-top: 16px; }
-            .jlpt { font-size: 14px; color: #bb86fc; margin-top: 8px; }
-            img { max-width: 100%; border-radius: 8px; margin-top: 12px; }
-        """.trimIndent()
+        private const val DECK_NAME = "Immersion"
+        private const val MODEL_NAME = "Immersion Sentences"
+        // Fields: Front, Back, Add Reverse, Sentence, Sentence No Word, Reading,
+        //         Kanji, Screenshot, Audio, tags, chatgpt, qwen-translate, qwen-nuance
         const val PERMISSION_REQUEST_CODE = 9001
     }
 
     fun isAvailable(): Boolean = AddContentApi.getAnkiDroidPackageName(context) != null
+
+    fun listModels(): Map<Long, String> {
+        val all = api.getModelList(1) ?: return emptyMap()
+        for ((id, name) in all) {
+            Log.d(TAG, "model: id=$id name=\"$name\"")
+            // Get field names for this model
+            try {
+                val fields = api.getFieldList(id)
+                if (fields != null) {
+                    Log.d(TAG, "  fields: ${fields.joinToString(", ")}")
+                }
+            } catch (_: Exception) {}
+        }
+        return all
+    }
 
     fun hasPermission(): Boolean = ContextCompat.checkSelfPermission(
         context, AddContentApi.READ_WRITE_PERMISSION
@@ -68,9 +59,9 @@ class AnkiDroidClient(private val context: Context) {
     }
 
     private fun getOrCreateModel(): Long? {
-        val models = api.getModelList(FIELDS.size) ?: return null
+        val models = api.getModelList(1) ?: return null
         for ((id, name) in models) { if (name == MODEL_NAME) return id }
-        return api.addNewCustomModel(MODEL_NAME, FIELDS, CARD_NAMES, QFMT, AFMT, CSS, null, null)
+        return null
     }
 
     data class CardInfo(
@@ -114,15 +105,24 @@ class AnkiDroidClient(private val context: Context) {
             }
         }
 
+        // Immersion Sentences fields:
+        // Front, Back, Add Reverse, Sentence, Sentence No Word,
+        // Reading, Kanji, Screenshot, Audio, tags, chatgpt, qwen-translate, qwen-nuance
+        val sentenceNoWord = card.sentence.replace(card.expression, "___")
         val fields = arrayOf(
-            card.expression,
-            card.reading,
-            card.meaning,
-            card.sentence,
-            screenshotRef,
-            audioRef,
-            card.source,
-            card.jlpt,
+            card.expression,                       // Front
+            card.meaning,                          // Back
+            "",                                    // Add Reverse
+            card.sentence,                         // Sentence
+            sentenceNoWord,                        // Sentence No Word
+            card.reading,                          // Reading
+            card.expression,                       // Kanji
+            screenshotRef,                         // Screenshot
+            audioRef,                              // Audio
+            "janus ${card.jlpt}".trim(),          // tags
+            "",                                    // chatgpt
+            "",                                    // qwen-translate
+            "",                                    // qwen-nuance
         )
 
         val tags = mutableSetOf("janus")

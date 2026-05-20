@@ -63,6 +63,9 @@ func main() {
 	// Supercharged SRT
 	mux.HandleFunc("/api/super-srt/", handleSuperSRT)
 
+	// Card building (Anki mining)
+	mux.HandleFunc("/api/card-resolve", handleCardResolve)
+
 	// Stream by episode ID
 	mux.HandleFunc("/api/stream/", handleStream)
 

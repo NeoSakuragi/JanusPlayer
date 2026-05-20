@@ -91,6 +91,10 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
+        // ADB actions: --es action "mine|next_sub|prev_sub|pause"
+        val action = intent.getStringExtra("action")
+        if (action != null) { app.triggerAction(action); return }
+
         val testMode = intent.getStringExtra("test")
         if (testMode == "glyphs") {
             app.transition(Screen.HOME, GlyphTestState())
@@ -98,6 +102,9 @@ class MainActivity : AppCompatActivity() {
         }
         if (testMode == "dpad") {
             kotlin.concurrent.thread { DpadTestState.runFromThread(app) }
+        }
+        if (testMode == "mine") {
+            kotlin.concurrent.thread { MineTestState.runFromAdb(app) }
         }
         if (testMode == "player") {
             kotlin.concurrent.thread { PlayerLayerTest.runFromThread(app) }
@@ -120,6 +127,14 @@ class MainActivity : AppCompatActivity() {
                 android.util.Log.d("Startup", "login attempt=$attempt ${System.currentTimeMillis() - tLogin}ms")
                 if (result != null) {
                     app.api = api
+                    app.mineQueue.baseUrl = "https://canneji.duckdns.org/janus"
+                    app.mineQueue.token = api.token ?: ""
+                    app.mineQueue.ankiClient = app.ankiClient
+                    app.mineQueue.load()
+                    // Debug: list AnkiDroid models
+                    if (app.ankiClient.isAvailable() && app.ankiClient.hasPermission()) {
+                        app.ankiClient.listModels()
+                    }
                     val tLib = System.currentTimeMillis()
                     val library = api.fetchLibrary()
                     android.util.Log.d("Startup", "fetchLibrary ${System.currentTimeMillis() - tLib}ms items=${library.size}")
@@ -208,13 +223,33 @@ class MainActivity : AppCompatActivity() {
     }
 
 
+    override fun onNewIntent(intent: android.content.Intent) {
+        super.onNewIntent(intent)
+        intent.getStringExtra("action")?.let { app.triggerAction(it) }
+    }
+
     @Suppress("DEPRECATION")
     override fun onBackPressed() {
         app.keyQueue.add(android.view.KeyEvent.KEYCODE_BACK)
     }
 
-    override fun onResume() { super.onResume(); if (::glView.isInitialized) glView.onResume() }
-    override fun onPause() { super.onPause(); if (::glView.isInitialized) glView.onPause() }
+    private val actionReceiver = object : android.content.BroadcastReceiver() {
+        override fun onReceive(ctx: android.content.Context, intent: android.content.Intent) {
+            intent.getStringExtra("action")?.let { app.triggerAction(it) }
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (::glView.isInitialized) glView.onResume()
+        registerReceiver(actionReceiver, android.content.IntentFilter("com.janusplus.ACTION"),
+            android.content.Context.RECEIVER_EXPORTED)
+    }
+    override fun onPause() {
+        super.onPause()
+        if (::glView.isInitialized) glView.onPause()
+        try { unregisterReceiver(actionReceiver) } catch (_: Exception) {}
+    }
     override fun onDestroy() {
         app.exoPlayer?.release(); app.exoPlayer = null
         super.onDestroy()

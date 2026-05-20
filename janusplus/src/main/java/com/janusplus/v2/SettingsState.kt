@@ -21,6 +21,7 @@ class SettingsState : GameState {
     @Volatile private var updateStatus = ""
     @Volatile private var cacheStatus = ""
     @Volatile private var ankiStatus = ""
+    @Volatile private var modelStatus = ""
 
     override fun init(app: App) {
         app.scrollY = 0f; focusIdx = 0; density = app.density
@@ -133,6 +134,9 @@ class SettingsState : GameState {
         y = drawRow(rc, y, "Test Anki card", ankiStatus) {
             testAnkiCard(app)
         }
+        y = drawRow(rc, y, "List models", modelStatus) {
+            listAnkiModels(app)
+        }
         y += sectionGap
 
         y = drawSection(rc, y, Lang.s("about"))
@@ -230,6 +234,18 @@ class SettingsState : GameState {
             }
         } catch (e: Exception) {
             ankiStatus = "err: ${e.message}"
+        }
+    }
+
+    private fun listAnkiModels(app: App) {
+        val client = AnkiDroidClient(app.context)
+        if (!client.isAvailable()) { modelStatus = "no ankidroid"; return }
+        if (!client.hasPermission()) { modelStatus = "no perm"; return }
+        kotlin.concurrent.thread {
+            try {
+                val models = client.listModels()
+                modelStatus = "${models.size} models"
+            } catch (e: Exception) { modelStatus = "err: ${e.message}" }
         }
     }
 
