@@ -114,6 +114,7 @@ class PlayerState(private val page: PlayerPage) : GameState {
 
     var condensedMode = false
     var playbackSpeed = 1.0f
+    private var lastCondensedSpeed = 1f
     private var selectedAudioIdx = 0
     private var selectedSubLang = "ja"
 
@@ -211,6 +212,33 @@ class PlayerState(private val page: PlayerPage) : GameState {
                     if (format != null && videoWidth == 0) {
                         videoWidth = format.width; videoHeight = format.height
                     }
+                    // Condensed mode: speed up between subtitles
+                    if (condensedMode && player.isPlaying && mode == Mode.PLAYING) {
+                        val pos = player.currentPosition
+                        val midSub = currentCue != null && pos >= (currentCue?.startMs ?: 0) && pos <= (currentCue?.endMs ?: 0)
+                        val prev = cues.lastOrNull { it.endMs <= pos }
+                        val next = cues.firstOrNull { it.startMs > pos }
+                        val deltaBefore = if (prev != null) pos - prev.endMs else Long.MAX_VALUE
+                        val deltaAfter = if (next != null) next.startMs - pos else Long.MAX_VALUE
+
+                        val speed = when {
+                            midSub || deltaBefore < 500 -> 1f
+                            deltaAfter > 10000          -> 16f
+                            deltaAfter > 3000           -> 8f
+                            deltaAfter > 900            -> 2f
+                            else                        -> 1f
+                        }
+                        if (speed != lastCondensedSpeed) {
+                            player.setPlaybackParameters(androidx.media3.common.PlaybackParameters(speed))
+                            player.volume = if (speed > 1f) 0f else 1f
+                            lastCondensedSpeed = speed
+                        }
+                    } else if (lastCondensedSpeed != 1f && !condensedMode) {
+                        player.setPlaybackParameters(androidx.media3.common.PlaybackParameters(playbackSpeed))
+                        player.volume = 1f
+                        lastCondensedSpeed = 1f
+                    }
+
                     handler.postDelayed(this, if (isBuffering) 50 else 200)
                 }
             }
