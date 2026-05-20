@@ -18,9 +18,11 @@ class SeriesDisplayState(private val page: SeriesDisplayPage) : GameState {
     private var layoutDone = false
     private var screenW = 0f; private var screenH = 0f
 
-    enum class FocusArea { PLAY_BUTTON, EPISODE_GRID }
+    enum class FocusArea { PLAY_BUTTON, SEASON_TAB, EPISODE_GRID }
     private var focusArea = FocusArea.PLAY_BUTTON
     private var episodeFocus = 0
+    private var selectedSeason = 1
+    @Volatile private var loadingSeason = false
 
     override fun init(app: App) {
         if (thumbLayer < 0) thumbLayer = app.texArray.nextThumbLayer()
@@ -71,7 +73,7 @@ class SeriesDisplayState(private val page: SeriesDisplayPage) : GameState {
         btnY = synopsisY + synH + rc.dp(4f); btnW = rc.dp(160f); btnH = rc.dp(38f)
         metaY = btnY; // metadata next to button
         heroH = btnY + btnH + rc.dp(8f)
-        gridY = heroH
+        gridY = if (page.seasonCount > 1) heroH + rc.dp(40f) else heroH
         gridSpacing = rc.dp(10f)
         val availW = rc.w - pad * 2
         gridCols = 4
@@ -83,25 +85,41 @@ class SeriesDisplayState(private val page: SeriesDisplayPage) : GameState {
 
     override fun update(app: App, touches: List<Touch>, actions: List<Action>) {
         val epCount = page.episodes.size
+        val hasTabs = page.seasonCount > 1
         for (a in actions) when (a) {
             Action.UP -> when (focusArea) {
                 FocusArea.PLAY_BUTTON -> {}
+                FocusArea.SEASON_TAB -> { focusArea = FocusArea.PLAY_BUTTON; app.smoothScrollTo(0f) }
                 FocusArea.EPISODE_GRID -> {
                     if (episodeFocus >= gridCols) { episodeFocus -= gridCols; scrollIntoView(app) }
+                    else if (hasTabs) { focusArea = FocusArea.SEASON_TAB }
                     else { focusArea = FocusArea.PLAY_BUTTON; app.smoothScrollTo(0f) }
                 }
             }
             Action.DOWN -> when (focusArea) {
-                FocusArea.PLAY_BUTTON -> { if (epCount > 0) { focusArea = FocusArea.EPISODE_GRID; episodeFocus = 0; scrollIntoView(app) } }
+                FocusArea.PLAY_BUTTON -> {
+                    if (hasTabs) { focusArea = FocusArea.SEASON_TAB }
+                    else if (epCount > 0) { focusArea = FocusArea.EPISODE_GRID; episodeFocus = 0; scrollIntoView(app) }
+                }
+                FocusArea.SEASON_TAB -> { if (epCount > 0) { focusArea = FocusArea.EPISODE_GRID; episodeFocus = 0; scrollIntoView(app) } }
                 FocusArea.EPISODE_GRID -> {
                     if (episodeFocus + gridCols < epCount) { episodeFocus += gridCols; scrollIntoView(app) }
                     else if (episodeFocus < epCount - 1) { episodeFocus = epCount - 1; scrollIntoView(app) }
                 }
             }
-            Action.LEFT -> { if (focusArea == FocusArea.EPISODE_GRID && episodeFocus > 0) { episodeFocus--; scrollIntoView(app) } }
-            Action.RIGHT -> { if (focusArea == FocusArea.EPISODE_GRID && episodeFocus < epCount - 1) { episodeFocus++; scrollIntoView(app) } }
+            Action.LEFT -> when (focusArea) {
+                FocusArea.SEASON_TAB -> { if (selectedSeason > 1) switchSeason(app, selectedSeason - 1) }
+                FocusArea.EPISODE_GRID -> { if (episodeFocus > 0) { episodeFocus--; scrollIntoView(app) } }
+                else -> {}
+            }
+            Action.RIGHT -> when (focusArea) {
+                FocusArea.SEASON_TAB -> { if (selectedSeason < page.seasonCount) switchSeason(app, selectedSeason + 1) }
+                FocusArea.EPISODE_GRID -> { if (episodeFocus < epCount - 1) { episodeFocus++; scrollIntoView(app) } }
+                else -> {}
+            }
             Action.SELECT -> when (focusArea) {
                 FocusArea.PLAY_BUTTON -> playEpisode(app, page.fullEpisodes.firstOrNull())
+                FocusArea.SEASON_TAB -> {} // already switched on LEFT/RIGHT
                 FocusArea.EPISODE_GRID -> {
                     val epCard = page.episodes.getOrNull(episodeFocus) ?: return
                     playEpisode(app, page.fullEpisodes.firstOrNull { it.episode == epCard.episode })
@@ -109,6 +127,64 @@ class SeriesDisplayState(private val page: SeriesDisplayPage) : GameState {
             }
             Action.BACK -> app.goBack()
             else -> {}
+        }
+    }
+
+    private fun switchSeason(app: App, season: Int) {
+        if (loadingSeason || season == selectedSeason) return
+        selectedSeason = season
+        loadingSeason = true
+        episodeFocus = 0
+        kotlin.concurrent.thread {
+            try {
+                val api = app.api ?: return@thread
+                val seasonData = api.fetchSeason(page.item.id, season)
+                if (seasonData != null) {
+                    val lang = com.janusplus.Lang.current
+                    page.episodes.toMutableList().clear()
+                    val newEps = seasonData.episodes.map { ep ->
+                        SeriesDisplayPage.Episode(ep.episode, ep.title(), ep.durationSec.toInt())
+                    }
+                    val newFull = seasonData.episodes
+                    // Update page data (mutable swap)
+                    val field = page.javaClass.getDeclaredField("episodes")
+                    field.isAccessible = true; field.set(page, newEps)
+                    val fullField = page.javaClass.getDeclaredField("fullEpisodes")
+                    fullField.isAccessible = true; fullField.set(page, newFull)
+                    val countField = page.javaClass.getDeclaredField("episodeCount")
+                    countField.isAccessible = true; countField.set(page, newEps.size)
+                    val seasonField = page.javaClass.getDeclaredField("currentSeason")
+                    seasonField.isAccessible = true; seasonField.set(page, season)
+
+                    // Fetch and upload new thumbnails
+                    val header = api.fetchPageHeader(page.item.id, season)
+                    if (header != null) {
+                        val atlasBytes = api.fetchPageAtlas(page.item.id, season)
+                        if (atlasBytes != null && atlasBytes.isNotEmpty()) {
+                            val bmp = android.graphics.BitmapFactory.decodeByteArray(atlasBytes, 0, atlasBytes.size)
+                            if (bmp != null) {
+                                val twField = page.javaClass.getDeclaredField("thumbW")
+                                twField.isAccessible = true; twField.set(page, header.thumbW.toFloat())
+                                val thField = page.javaClass.getDeclaredField("thumbH")
+                                thField.isAccessible = true; thField.set(page, header.thumbH.toFloat())
+                                val awField = page.javaClass.getDeclaredField("atlasW")
+                                awField.isAccessible = true; awField.set(page, header.atlasW)
+                                val ahField = page.javaClass.getDeclaredField("atlasH")
+                                ahField.isAccessible = true; ahField.set(page, header.atlasH)
+                                val acField = page.javaClass.getDeclaredField("atlasCols")
+                                acField.isAccessible = true; acField.set(page, header.atlasCols)
+                                // Queue upload on GL thread
+                                app.texArray.uploadLayerNow(thumbLayer, bmp)
+                            }
+                        }
+                    }
+                    layoutDone = false
+                }
+            } catch (e: Exception) {
+                android.util.Log.e("Series", "Season switch failed: ${e.message}")
+            } finally {
+                loadingSeason = false
+            }
         }
     }
 
@@ -179,6 +255,25 @@ class SeriesDisplayState(private val page: SeriesDisplayPage) : GameState {
             val setLabel = Lang.s("settings")
             val setLabelW = page.settAtlas.measureText(setLabel)
             drawText(rc, page.settAtlas, setLabel, setBtnX + (setBtnW - setLabelW) / 2f, setBtnY + rc.dp(24f), 0.733f, 0.525f, 0.988f)
+        }
+
+        // Season tabs
+        if (page.seasonCount > 1) {
+            val tabW = rc.dp(80f); val tabH = rc.dp(32f); val tabGap = rc.dp(8f)
+            val tabY = ht + gridY - tabH - rc.dp(8f)
+            val tabFocused = focusArea == FocusArea.SEASON_TAB
+            for (s in 1..page.seasonCount) {
+                val tabX = pad + (s - 1) * (tabW + tabGap)
+                val selected = s == selectedSeason
+                if (selected) rc.solid(tabX, tabY, tabW, tabH, 0.733f, 0.525f, 0.988f, 0.9f)
+                else rc.solid(tabX, tabY, tabW, tabH, 0.15f, 0.15f, 0.25f, 0.8f)
+                val label = "S$s"
+                val lw = page.bodyAtlas.measureText(label)
+                drawText(rc, page.bodyAtlas, label, tabX + (tabW - lw) / 2f, tabY + rc.dp(22f), 1f, 1f, 1f)
+                if (tabFocused && s == selectedSeason) rc.border(tabX, tabY, tabW, tabH, rc.dp(3f), 1f, 1f, 1f)
+                val season = s
+                rc.tappable(tabX, tabY, tabW, tabH) { switchSeason(app, season) }
+            }
         }
 
         // Episode grid

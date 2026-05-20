@@ -137,6 +137,8 @@ class SeriesLoadingState(private val item: JanusApi.LibraryItem) : GameState {
                 episodeCount = episodeCount,
                 episodes = episodes,
                 fullEpisodes = fullEpisodes,
+                seasonCount = item.seasonCount,
+                currentSeason = 1,
                 coverBmp = coverBmp,
                 bannerBmp = bannerBmp,
                 bannerW = hdr.bannerW, bannerH = hdr.bannerH,
