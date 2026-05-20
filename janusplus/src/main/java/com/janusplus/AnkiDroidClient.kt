@@ -18,10 +18,111 @@ class AnkiDroidClient(val context: Context) {
 
     companion object {
         private const val TAG = "AnkiDroid"
-        private const val DECK_NAME = "Immersion"
-        private const val MODEL_NAME = "Immersion Sentences"
-        // Fields: Front, Back, Add Reverse, Sentence, Sentence No Word, Reading,
-        //         Kanji, Screenshot, Audio, tags, chatgpt, qwen-translate, qwen-nuance
+        const val DEFAULT_DECK = "Janus Mining"
+        const val MODEL_NAME = "Janus+ Immersion"
+        val FIELDS = arrayOf(
+            "Expression", "Reading", "Meaning", "Sentence", "SentenceFurigana",
+            "SentenceNoWord", "Screenshot", "Audio", "Source", "JLPT"
+        )
+        private val CARD_NAMES = arrayOf("Recognition")
+        private val QFMT = arrayOf("""
+<div class="image-wrapper">{{Screenshot}}</div>
+
+<div class="reading">{{furigana:Reading}}</div>
+<div class="meaning">{{Meaning}}</div>
+
+<hr>
+
+<div id="sentence" class="sentence"></div>
+<div id="source_sentence">{{furigana:SentenceFurigana}}</div>
+
+<div class="source">{{Source}}</div>
+<div class="jlpt">{{JLPT}}</div>
+
+<script>
+var raw = document.getElementById("source_sentence").innerHTML;
+var clean = raw.replace(/<br\s*\/?>/gi, '');
+document.getElementById("sentence").innerHTML = clean;
+</script>
+        """.trimIndent())
+        private val AFMT = arrayOf("""
+{{FrontSide}}
+
+{{Audio}}
+
+<style>
+.image-wrapper, .meaning {
+  visibility: visible;
+}
+</style>
+        """.trimIndent())
+        private val CSS = """
+@font-face { font-family: "KleeOne"; src: url("_KleeOne-Regular.ttf"); }
+
+.card {
+  font-size: 20px;
+  text-align: center;
+}
+
+#source_sentence { display: none; }
+
+.card, div, html {
+  margin: 0;
+  padding: 0;
+  font-family: "KleeOne", "Noto Sans JP", serif !important;
+}
+
+.image-wrapper {
+  visibility: hidden;
+  margin: 0;
+  padding: 0;
+}
+
+.image-wrapper img {
+  max-height: 29vh;
+}
+
+hr {
+  display: block !important;
+  border: none !important;
+  border-top: 1px solid #888 !important;
+  margin: 5px auto !important;
+  width: 95% !important;
+}
+
+.reading {
+  font-size: 70px;
+  min-height: 80px;
+  display: block;
+}
+
+.meaning {
+  visibility: hidden;
+  font-size: 24px;
+  min-height: 40px;
+  display: block;
+}
+
+.sentence {
+  font-size: 32px;
+  text-align: left;
+}
+
+.source {
+  font-size: 13px;
+  color: #888;
+  margin-top: 10px;
+}
+
+.jlpt {
+  font-size: 14px;
+  color: #bb86fc;
+}
+
+rt {
+  visibility: visible;
+}
+        """.trimIndent()
         const val PERMISSION_REQUEST_CODE = 9001
     }
 
@@ -52,16 +153,21 @@ class AnkiDroidClient(val context: Context) {
         )
     }
 
-    private fun getOrCreateDeck(): Long? {
+    fun getOrCreateDeck(deckName: String = DEFAULT_DECK): Long? {
         val decks = api.deckList ?: return null
-        for ((id, name) in decks) { if (name == DECK_NAME) return id }
-        return api.addNewDeck(DECK_NAME)
+        for ((id, name) in decks) { if (name == deckName) return id }
+        return api.addNewDeck(deckName)
+    }
+
+    fun getDeckId(deckName: String): Long? {
+        val decks = api.deckList ?: return null
+        return decks.entries.firstOrNull { it.value == deckName }?.key
     }
 
     private fun getOrCreateModel(): Long? {
         val models = api.getModelList(1) ?: return null
         for ((id, name) in models) { if (name == MODEL_NAME) return id }
-        return null
+        return api.addNewCustomModel(MODEL_NAME, FIELDS, CARD_NAMES, QFMT, AFMT, CSS, null, null)
     }
 
     data class CardInfo(
@@ -69,17 +175,18 @@ class AnkiDroidClient(val context: Context) {
         val reading: String,
         val meaning: String,
         val sentence: String,
+        val sentenceFurigana: String = "",
         val source: String,
         val jlpt: String = "",
         val screenshotFile: File? = null,
         val audioFile: File? = null,
     )
 
-    fun addCard(card: CardInfo): Result {
+    fun addCard(card: CardInfo, deckName: String = DEFAULT_DECK): Result {
         if (!isAvailable()) return Result.NotInstalled
         if (!hasPermission()) return Result.NoPermission
 
-        val deckId = getOrCreateDeck() ?: return Result.Error("Failed to create deck")
+        val deckId = getOrCreateDeck(deckName) ?: return Result.Error("Failed to create deck")
         val modelId = getOrCreateModel() ?: return Result.Error("Failed to create model")
 
         var screenshotRef = ""
@@ -105,24 +212,21 @@ class AnkiDroidClient(val context: Context) {
             }
         }
 
-        // Immersion Sentences fields:
-        // Front, Back, Add Reverse, Sentence, Sentence No Word,
-        // Reading, Kanji, Screenshot, Audio, tags, chatgpt, qwen-translate, qwen-nuance
+        // Janus+ Immersion fields:
+        // Expression, Reading, Meaning, Sentence, SentenceFurigana,
+        // SentenceNoWord, Screenshot, Audio, Source, JLPT
         val sentenceNoWord = card.sentence.replace(card.expression, "___")
         val fields = arrayOf(
-            card.expression,                       // Front
-            card.meaning,                          // Back
-            "",                                    // Add Reverse
-            card.sentence,                         // Sentence
-            sentenceNoWord,                        // Sentence No Word
-            card.reading,                          // Reading
-            card.expression,                       // Kanji
-            screenshotRef,                         // Screenshot
-            audioRef,                              // Audio
-            "janus ${card.jlpt}".trim(),          // tags
-            "",                                    // chatgpt
-            "",                                    // qwen-translate
-            "",                                    // qwen-nuance
+            card.expression,
+            card.reading,
+            card.meaning,
+            card.sentence,
+            card.sentenceFurigana.ifEmpty { card.sentence },
+            sentenceNoWord,
+            screenshotRef,
+            audioRef,
+            card.source,
+            card.jlpt,
         )
 
         val tags = mutableSetOf("janus")

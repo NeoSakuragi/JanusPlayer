@@ -10,6 +10,42 @@ object ReadingUtils {
     const val HIRAGANA = "ぁあぃいぅうぇえぉおかがきぎくぐけげこごさざしじすずせぜそぞただちぢっつづてでとどなにぬねのはばぱひびぴふぶぷへべぺほぼぽまみむめもゃやゅゆょよらりるれろゎわゐゑをんゔゕゖ"
     const val KATAKANA = "ァアィイゥウェエォオカガキギクグケゲコゴサザシジスズセゼソゾタダチヂッツヅテデトドナニヌネノハバパヒビピフブプヘベペホボポマミムメモャヤュユョヨラリルレロヮワヰヱヲンヴヵヶ"
 
+    /**
+     * Build Anki furigana string from a term and its furigana spans.
+     * Input: term="食べる", furigana=[(0,"た")]
+     * Output: "食[た]べる"
+     */
+    fun buildFuriganaReading(term: String, furigana: List<com.janusplus.JanusApi.FuriganaSpan>): String {
+        if (furigana.isEmpty()) return term
+        val sb = StringBuilder()
+        var lastIdx = 0
+        for (f in furigana.sortedBy { it.charIdx }) {
+            if (f.charIdx > lastIdx && f.charIdx <= term.length) sb.append(term.substring(lastIdx, f.charIdx))
+            val end = (f.charIdx + 1).coerceAtMost(term.length)
+            sb.append(term.substring(f.charIdx, end))
+            sb.append("[").append(f.reading).append("]")
+            lastIdx = end
+        }
+        if (lastIdx < term.length) sb.append(term.substring(lastIdx))
+        return sb.toString()
+    }
+
+    /**
+     * Build a full sentence with furigana from SuperSRT cue words.
+     * Each word's furigana is annotated in kanji[reading] format.
+     */
+    fun buildFuriganaSentence(words: List<com.janusplus.JanusApi.SuperWord>): String {
+        val sb = StringBuilder()
+        for (w in words) {
+            if (w.furigana.isNotEmpty()) {
+                sb.append(buildFuriganaReading(w.surface, w.furigana))
+            } else {
+                sb.append(w.surface)
+            }
+        }
+        return sb.toString()
+    }
+
     fun kata2hira(text: String): String = buildString {
         for (c in text) {
             if (c in 'ァ'..'ヶ') append(c - 0x60)

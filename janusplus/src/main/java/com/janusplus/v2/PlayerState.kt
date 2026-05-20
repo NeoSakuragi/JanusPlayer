@@ -1,6 +1,7 @@
 package com.janusplus.v2
 
 import android.opengl.GLES30
+import com.janusplus.AnkiDroidClient
 import com.janusplus.MineQueue
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import androidx.media3.common.MediaItem
@@ -682,7 +683,7 @@ class PlayerState(private val page: PlayerPage) : GameState {
                     if (!client.isAvailable() || !client.hasPermission()) { ankiCheckResult = 2; return@thread }
                     val api = com.ichi2.anki.api.AddContentApi(client.context)
                     val models = api.getModelList(1) ?: run { ankiCheckResult = 2; return@thread }
-                    val modelId = models.entries.firstOrNull { it.value == "Immersion Sentences" }?.key
+                    val modelId = models.entries.firstOrNull { it.value == AnkiDroidClient.MODEL_NAME }?.key
                     if (modelId == null) { ankiCheckResult = 2; return@thread }
                     val dupes = api.findDuplicateNotes(modelId, term)
                     if (dupes == null || dupes.isEmpty()) { ankiCheckResult = 2; return@thread }
@@ -961,22 +962,15 @@ class PlayerState(private val page: PlayerPage) : GameState {
         fun mlog(msg: String) { app.lastLoadLog.add("mine: $msg"); android.util.Log.d("Mine", msg) }
 
         val meanings = entry.meanings.joinToString("; ")
-        val reading = if (span.furigana.isNotEmpty()) {
-            val sb = StringBuilder()
-            var lastIdx = 0
-            for (f in span.furigana.sortedBy { it.charIdx }) {
-                if (f.charIdx > lastIdx) sb.append(entry.term.substring(lastIdx, f.charIdx))
-                val ch = entry.term.substring(f.charIdx, (f.charIdx + 1).coerceAtMost(entry.term.length))
-                sb.append("$ch[${f.reading}]")
-                lastIdx = f.charIdx + 1
-            }
-            if (lastIdx < entry.term.length) sb.append(entry.term.substring(lastIdx))
-            sb.toString()
-        } else entry.reading.ifEmpty { entry.term }
+        val reading = ReadingUtils.buildFuriganaReading(entry.term, span.furigana)
+            .ifEmpty { entry.reading.ifEmpty { entry.term } }
 
         val expression = entry.term
         val sentence = cue.text
         val jlpt = entry.jlpt
+
+        val superCue = superCues.firstOrNull { it.startMs.toLong() == cue.startMs }
+        val sentenceFurigana = if (superCue != null) ReadingUtils.buildFuriganaSentence(superCue.words) else sentence
         val startMs = cue.startMs.toDouble()
         val endMs = cue.endMs.toDouble()
         val baseUrl = page.baseUrl
@@ -1021,49 +1015,36 @@ class PlayerState(private val page: PlayerPage) : GameState {
                 mlog("audio=${audioLen}B img=${imageLen}B")
                 mineStatus = "anki"
 
-                // Step 2: Attach media
-                val ankiApi = com.ichi2.anki.api.AddContentApi(app.context)
-                val models = ankiApi.getModelList(1) ?: run { mlog("no models"); ankiCheckResult = 5; mineStatus = "!"; return@thread }
-                val modelId = models.entries.firstOrNull { it.value == "Immersion Sentences" }?.key
-                    ?: run { mlog("no Immersion Sentences model"); ankiCheckResult = 5; mineStatus = "!"; return@thread }
-                val decks = ankiApi.deckList ?: run { mlog("no decks"); ankiCheckResult = 5; mineStatus = "!"; return@thread }
-                val deckId = decks.entries.firstOrNull { it.value == app.ankiDeckName }?.key
-                    ?: ankiApi.addNewDeck(app.ankiDeckName)
-                    ?: run { mlog("can't create deck"); ankiCheckResult = 5; mineStatus = "!"; return@thread }
-
-                var screenshotRef = ""
-                var audioRef = ""
+                // Step 2: Create card via AnkiDroidClient
+                mineStatus = "anki"
                 val ts = System.currentTimeMillis()
-
+                var imgFile: java.io.File? = null
+                var audioFile: java.io.File? = null
                 if (imageData != null) {
-                    val f = java.io.File(app.context.cacheDir, "mine_$ts.jpg")
-                    f.writeBytes(imageData)
-                    val uri = androidx.core.content.FileProvider.getUriForFile(app.context, "${app.context.packageName}.fileprovider", f)
-                    app.context.grantUriPermission("com.ichi2.anki", uri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                    screenshotRef = ankiApi.addMediaFromUri(uri, "janus_$ts.jpg", "image") ?: ""
-                    f.delete()
+                    imgFile = java.io.File(app.context.cacheDir, "mine_$ts.jpg")
+                    imgFile.writeBytes(imageData)
                 }
                 if (audioData != null) {
-                    val f = java.io.File(app.context.cacheDir, "mine_$ts.mp3")
-                    f.writeBytes(audioData)
-                    val uri = androidx.core.content.FileProvider.getUriForFile(app.context, "${app.context.packageName}.fileprovider", f)
-                    app.context.grantUriPermission("com.ichi2.anki", uri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                    audioRef = ankiApi.addMediaFromUri(uri, "janus_$ts.mp3", "audio") ?: ""
-                    f.delete()
+                    audioFile = java.io.File(app.context.cacheDir, "mine_$ts.mp3")
+                    audioFile.writeBytes(audioData)
                 }
 
-                // Step 3: Create card
-                val sentenceNoWord = sentence.replace(expression, "___")
                 val source = "${page.item.title()} E${page.episode.episode}"
-                val cardFields = arrayOf(
-                    expression, meanings, "", sentence, sentenceNoWord,
-                    reading, expression, screenshotRef, audioRef,
-                    "janus $jlpt".trim(), "", "", ""
+                val cardInfo = AnkiDroidClient.CardInfo(
+                    expression = expression, reading = reading, meaning = meanings,
+                    sentence = sentence, sentenceFurigana = sentenceFurigana,
+                    source = source, jlpt = jlpt,
+                    screenshotFile = imgFile, audioFile = audioFile,
                 )
-                val noteId = ankiApi.addNote(modelId, deckId, cardFields, setOf("janus"))
-                if (noteId == null || noteId <= 0) { mlog("addNote failed: $noteId"); ankiCheckResult = 5; mineStatus = "!"; return@thread }
+                val result = app.ankiClient.addCard(cardInfo, app.ankiDeckName)
+                imgFile?.delete()
+                audioFile?.delete()
 
-                mlog("card $expression id=$noteId")
+                when (result) {
+                    is AnkiDroidClient.Result.Success -> mlog("card $expression id=${result.noteId}")
+                    is AnkiDroidClient.Result.Duplicate -> mlog("dupe $expression")
+                    else -> { mlog("anki failed: $result"); ankiCheckResult = 5; mineStatus = "!"; return@thread }
+                }
                 ankiCheckResult = 3
                 mineStatus = ""
 
