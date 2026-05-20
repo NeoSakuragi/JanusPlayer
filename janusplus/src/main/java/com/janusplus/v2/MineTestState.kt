@@ -33,12 +33,18 @@ class MineTestState : GameState {
 
         thread {
             try {
-                // Test input — only what a user would provide
-                val itemId = "saint-seiya"
-                val season = 1
-                val episode = 1
-                val targetWord = "俺"
                 val baseUrl = "https://canneji.duckdns.org/janus"
+                data class TestWord(val label: String, val itemId: String, val season: Int, val episode: Int, val word: String)
+                val testWords = listOf(
+                    TestWord("basic",           "saint-seiya", 1, 1,  "俺"),
+                    TestWord("inflected_verb",  "saint-seiya", 1, 1,  "吹っ飛ばされたくなかったら"),  // ← 吹っ飛ぶ passive+desid+neg+cond
+                    TestWord("inflected_adj",   "saint-seiya", 1, 1,  "強くっ"),                    // ← 強い contracted ku-form
+                    TestWord("2kanji",          "saint-seiya", 1, 1,  "邪悪"),                      // じゃあく "wicked"
+                    TestWord("4kanji_ateji",    "saint-seiya", 1, 1,  "黄金聖衣"),                  // ゴールドクロス "Gold Cloth"
+                    TestWord("ateji",           "saint-seiya", 1, 1,  "小宇宙"),                    // コスモ "Cosmo"
+                    TestWord("character",       "saint-seiya", 1, 1,  "星矢"),                      // セイヤ "Seiya"
+                    TestWord("attack",          "saint-seiya", 1, 1,  "流星拳"),                    // りゅうせいけん "Meteor Fist"
+                )
 
                 // Step 0: Prerequisites
                 log("0. checking prerequisites...")
@@ -70,16 +76,45 @@ class MineTestState : GameState {
                 }
                 log("1. OK deleted $deleted old test notes")
 
-                // Step 2: Fetch SuperSRT
-                log("2. fetching super-srt $itemId s${season}e${episode}...")
-                val ssrtJson = fetchSuperSRT(baseUrl, api.token ?: "", itemId, season, episode)
-                if (ssrtJson == null) { log("FAIL: super-srt returned null"); return@thread }
+                // Cache SuperSRT per episode
+                val ssrtCache = HashMap<String, JSONObject>()
+                fun getSuperSRT(iid: String, s: Int, e: Int): JSONObject? {
+                    val key = "$iid/$s/$e"
+                    ssrtCache[key]?.let { return it }
+                    val result = fetchSuperSRT(baseUrl, api.token ?: "", iid, s, e) ?: return null
+                    ssrtCache[key] = result
+                    return result
+                }
+
+                // Prepare Anki deck + model once
+                val ankiApi = com.ichi2.anki.api.AddContentApi(app.context)
+                val deckName = "Janus-TestHarness"
+                val decks = ankiApi.deckList ?: run { log("FAIL: can't list decks"); return@thread }
+                var deckId = decks.entries.firstOrNull { it.value == deckName }?.key
+                if (deckId == null) deckId = ankiApi.addNewDeck(deckName)
+                if (deckId == null) { log("FAIL: can't create deck"); return@thread }
+                val models = ankiApi.getModelList(1) ?: run { log("FAIL: can't list models"); return@thread }
+                val modelId = models.entries.firstOrNull { it.value == "Immersion Sentences" }?.key
+                if (modelId == null) { log("FAIL: Immersion Sentences not found"); return@thread }
+                val fields = ankiApi.getFieldList(modelId)
+                log("2. OK deck=$deckId model=$modelId fields=${fields?.size}")
+
+                var passCount = 0
+                var failCount = 0
+
+                for ((ti, tw) in testWords.withIndex()) {
+                val testNum = ti + 1
+                log("")
+                log("--- [$testNum/${testWords.size}] ${tw.label}: ${tw.word} ---")
+
+                // Fetch SuperSRT
+                val ssrtJson = getSuperSRT(tw.itemId, tw.season, tw.episode)
+                if (ssrtJson == null) { log("FAIL: super-srt null"); failCount++; continue }
                 val cues = ssrtJson.getJSONArray("cues")
                 val dict = ssrtJson.getJSONArray("dict")
-                log("2. OK ${cues.length()} cues, ${dict.length()} dict entries")
 
-                // Step 3: Find the word in the cues
-                log("3. looking up '$targetWord' in cues...")
+                // Find word in cues
+                val targetWord = tw.word
                 var foundCueIdx = -1
                 var foundWordIdx = -1
                 var startMs = 0.0
@@ -105,7 +140,7 @@ class MineTestState : GameState {
                     }
                     if (foundCueIdx == ci) sentence = sb.toString()
                 }
-                if (foundCueIdx < 0) { log("FAIL: word '$targetWord' not found in any cue"); return@thread }
+                if (foundCueIdx < 0) { log("FAIL: '$targetWord' not found"); failCount++; continue }
                 log("3. OK cue=$foundCueIdx word=$foundWordIdx start=${startMs.toLong()}ms")
                 log("3. sentence=$sentence")
 
@@ -127,8 +162,8 @@ class MineTestState : GameState {
                         for (i in 0 until meanings.length()) parts.add(meanings.getString(i))
                         meaning = parts.joinToString("; ")
                     }
-                    if (expression.isEmpty()) { log("FAIL: dict entry has no expression"); return@thread }
-                    if (meaning.isEmpty()) { log("FAIL: dict entry has no meaning"); return@thread }
+                    if (expression.isEmpty()) { log("FAIL: no expression"); failCount++; continue }
+                    if (meaning.isEmpty()) { log("FAIL: no meaning"); failCount++; continue }
 
                     // Build furigana reading from word data: [[charIdx, reading], ...]
                     val cue = cues.getJSONObject(foundCueIdx)
@@ -152,43 +187,25 @@ class MineTestState : GameState {
                         if (lastIdx < expression.length) fr.append(expression.substring(lastIdx))
                         reading = fr.toString()
                     }
-                    if (reading.isEmpty()) { log("FAIL: no reading"); return@thread }
+                    if (reading.isEmpty()) { log("FAIL: no reading"); failCount++; continue }
                     log("4. OK expr=$expression reading=$reading jlpt=$jlpt")
                     log("4. meaning=$meaning")
                 } else {
-                    log("FAIL: no dict entry for '$targetWord' (dictIdx=$dictIdx)")
-                    return@thread
+                    log("FAIL: no dict entry (dictIdx=$dictIdx)")
+                    failCount++; continue
                 }
 
-                // Step 5: Resolve media from server
-                log("5. resolving media from server...")
-                val media = resolveMedia(baseUrl, api.token ?: "", itemId, season, episode, startMs, endMs)
-                if (media == null) { log("FAIL: server returned null"); return@thread }
-                if (media.first.isEmpty()) { log("FAIL: no audio"); return@thread }
-                if (media.second.isEmpty()) { log("FAIL: no image"); return@thread }
-                log("5. OK audio=${media.first.size}B img=${media.second.size}B")
+                // Resolve media from server
+                val media = resolveMedia(baseUrl, api.token ?: "", tw.itemId, tw.season, tw.episode, startMs, endMs)
+                if (media == null) { log("FAIL: server null"); failCount++; continue }
+                if (media.first.isEmpty()) { log("FAIL: no audio"); failCount++; continue }
+                if (media.second.isEmpty()) { log("FAIL: no image"); failCount++; continue }
+                log("media: audio=${media.first.size}B img=${media.second.size}B")
 
-                // Step 6: Prepare Anki deck + model
-                log("6. preparing anki...")
-                val ankiApi = com.ichi2.anki.api.AddContentApi(app.context)
-                val deckName = "Janus-TestHarness"
-                val decks = ankiApi.deckList ?: run { log("FAIL: can't list decks"); return@thread }
-                var deckId = decks.entries.firstOrNull { it.value == deckName }?.key
-                if (deckId == null) deckId = ankiApi.addNewDeck(deckName)
-                if (deckId == null) { log("FAIL: can't create deck"); return@thread }
-
-                val models = ankiApi.getModelList(1) ?: run { log("FAIL: can't list models"); return@thread }
-                val modelId = models.entries.firstOrNull { it.value == "Immersion Sentences" }?.key
-                if (modelId == null) { log("FAIL: Immersion Sentences model not found"); return@thread }
-                val fields = ankiApi.getFieldList(modelId)
-                log("6. OK deck=$deckId model=$modelId fields=${fields?.size}")
-
-                // Step 7: Attach media
-                log("7. attaching media...")
+                // Attach media
                 var screenshotRef = ""
                 var audioRef = ""
                 val ts = System.currentTimeMillis()
-
                 val imgFile = java.io.File(app.context.cacheDir, "mine_test_$ts.jpg")
                 imgFile.writeBytes(media.second)
                 val imgUri = androidx.core.content.FileProvider.getUriForFile(
@@ -197,7 +214,6 @@ class MineTestState : GameState {
                     android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
                 screenshotRef = ankiApi.addMediaFromUri(imgUri, "janus_$ts.jpg", "image") ?: ""
                 imgFile.delete()
-
                 val audioFile = java.io.File(app.context.cacheDir, "mine_test_$ts.mp3")
                 audioFile.writeBytes(media.first)
                 val audioUri = androidx.core.content.FileProvider.getUriForFile(
@@ -206,49 +222,55 @@ class MineTestState : GameState {
                     android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
                 audioRef = ankiApi.addMediaFromUri(audioUri, "janus_$ts.mp3", "audio") ?: ""
                 audioFile.delete()
+                if (screenshotRef.isEmpty()) { log("FAIL: screenshot attach"); failCount++; continue }
+                if (audioRef.isEmpty()) { log("FAIL: audio attach"); failCount++; continue }
 
-                if (screenshotRef.isEmpty()) { log("FAIL: screenshot attach failed"); return@thread }
-                if (audioRef.isEmpty()) { log("FAIL: audio attach failed"); return@thread }
-                log("7. imgRef=$screenshotRef")
-                log("7. audioRef=$audioRef")
-                log("7. OK screenshot + audio attached")
-
-                // Step 8: Create card
-                log("8. creating card...")
+                // Create card
                 val sentenceNoWord = sentence.replace(expression, "___")
-                val source = "$itemId s${season}e${episode}"
-                // Immersion Sentences fields:
-                // Front, Back, Add Reverse, Sentence, Sentence No Word, Reading,
-                // Kanji, Screenshot, Audio, tags, chatgpt, qwen-translate, qwen-nuance
                 val cardFields = arrayOf(
                     expression, meaning, "", sentence, sentenceNoWord,
                     reading, expression, screenshotRef, audioRef,
-                    "janus $jlpt".trim(), "", "", ""
+                    "janus-test $jlpt".trim(), "", "", ""
                 )
                 val noteId = ankiApi.addNote(modelId, deckId, cardFields, setOf("janus-test"))
-                if (noteId == null || noteId <= 0) { log("FAIL: addNote returned $noteId"); return@thread }
-                log("8. OK noteId=$noteId")
+                if (noteId == null || noteId <= 0) { log("FAIL: addNote=$noteId"); failCount++; continue }
 
-                // Step 9: Verify all required fields
-                log("9. verifying fields...")
-                val required = mapOf(
-                    "Front" to expression, "Back" to meaning,
-                    "Sentence" to sentence, "Reading" to reading,
-                    "Kanji" to expression, "Screenshot" to screenshotRef, "Audio" to audioRef
-                )
-                var allOk = true
+                // Verify required fields
+                val required = mapOf("Front" to expression, "Back" to meaning,
+                    "Sentence" to sentence, "Reading" to reading, "Screenshot" to screenshotRef, "Audio" to audioRef)
+                var fieldOk = true
                 for ((name, value) in required) {
-                    if (value.isEmpty()) { log("FAIL: $name is empty"); allOk = false }
+                    if (value.isEmpty()) { log("FAIL: $name empty"); fieldOk = false }
                 }
-                if (allOk) log("9. OK all fields filled")
+                if (fieldOk) {
+                    log("OK $expression [$reading] noteId=$noteId")
+                    passCount++
+                } else failCount++
 
-                // Step 10: Sync
-                log("10. triggering sync...")
-                app.onMainThread?.invoke {
-                    app.context.sendBroadcast(android.content.Intent("com.ichi2.anki.DO_SYNC"))
-                }
-                log("10. OK")
-                log("=== ALL PASSED ===")
+                } // end for loop
+
+                // Summary + sync
+                log("")
+                log("=== $passCount/${testWords.size} passed, $failCount failed ===")
+                if (failCount == 0) {
+                    log("sync 1/2 cards...")
+                    Thread.sleep(2000)
+                    app.onMainThread?.invoke {
+                        app.context.startActivity(
+                            android.content.Intent("com.ichi2.anki.DO_SYNC")
+                                .setPackage("com.ichi2.anki")
+                                .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK))
+                    }
+                    Thread.sleep(8000)
+                    log("sync 2/2 media...")
+                    app.onMainThread?.invoke {
+                        app.context.startActivity(
+                            android.content.Intent("com.ichi2.anki.DO_SYNC")
+                                .setPackage("com.ichi2.anki")
+                                .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK))
+                    }
+                    log("=== ALL PASSED ===")
+                } else log("=== SOME FAILED ===")
 
             } catch (e: Exception) {
                 log("EXCEPTION: ${e.message}")
