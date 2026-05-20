@@ -115,6 +115,14 @@ class PlayerState(private val page: PlayerPage) : GameState {
     var condensedMode = false
     var playbackSpeed = 1.0f
     private var lastCondensedSpeed = 1f
+
+    // Opening/ending skip
+    private var openingMs = 0L
+    private var endingMs = 0L
+    private var showSkipIntro = false
+    private var showEndingCountdown = false
+    private var endingCountdown = 5
+    private var endingCancelled = false
     private var selectedAudioIdx = 0
     private var selectedSubLang = "ja"
 
@@ -184,6 +192,18 @@ class PlayerState(private val page: PlayerPage) : GameState {
             subAtlas = page.subAtlas
         }
 
+        // Fetch season settings for opening/ending skip
+        kotlin.concurrent.thread {
+            try {
+                val api = app.api ?: return@thread
+                val settings = api.fetchSeasonSettings(page.item.id, page.episode.season)
+                if (settings != null) {
+                    openingMs = (settings.first * 1000).toLong()
+                    endingMs = (settings.second * 1000).toLong()
+                }
+            } catch (_: Exception) {}
+        }
+
         // Start video playback
         val api = app.api ?: return
         val videoUrl = "${page.baseUrl}/api/video/${page.item.id}/${page.episode.filename}"
@@ -212,6 +232,16 @@ class PlayerState(private val page: PlayerPage) : GameState {
                     if (format != null && videoWidth == 0) {
                         videoWidth = format.width; videoHeight = format.height
                     }
+                    // Skip intro / ending countdown
+                    val pos = player.currentPosition
+                    showSkipIntro = openingMs > 0 && pos < openingMs && pos > 1000
+                    val inEnding = endingMs > 0 && player.duration > 0 && pos >= player.duration - endingMs
+                    if (inEnding && !endingCancelled) {
+                        if (!showEndingCountdown) { showEndingCountdown = true; endingCountdown = 3 }
+                        endingCountdown = ((player.duration - pos) / 1000).toInt().coerceIn(0, 3)
+                        if (endingCountdown <= 0) { showEndingCountdown = false; playNextEpisode(app) }
+                    } else if (!inEnding) { showEndingCountdown = false; endingCancelled = false }
+
                     // Condensed mode: speed up between subtitles
                     if (condensedMode && player.isPlaying && mode == Mode.PLAYING) {
                         val pos = player.currentPosition
@@ -503,6 +533,36 @@ class PlayerState(private val page: PlayerPage) : GameState {
         if (m and Layer.VIDEO != 0) {
             if (firstFrameReceived) drawVideoQuad(app, rc)
             else rc.solid(0f, 0f, rc.w, rc.h, 0f, 0f, 0f)
+        }
+
+        // Skip Intro button
+        if (showSkipIntro && mode == Mode.PLAYING) {
+            val skipW = rc.dp(160f); val skipH = rc.dp(44f)
+            val skipX = rc.w - pad - skipW; val skipY = rc.h - rc.dp(100f)
+            rc.solid(skipX, skipY, skipW, skipH, 0.2f, 0.2f, 0.3f, 0.85f)
+            val label = "SKIP INTRO >>"
+            val lw = uiMeasure(rc, label, 14)
+            uiText(rc, label, skipX + (skipW - lw) / 2f, skipY + rc.dp(28f), 14, 1f, 1f, 1f)
+            rc.tappable(skipX, skipY, skipW, skipH) {
+                appRef?.onMainThread?.invoke(Runnable { appRef?.exoPlayer?.seekTo(openingMs) })
+            }
+        }
+
+        // Next Episode countdown
+        if (showEndingCountdown && !endingCancelled) {
+            val cW = rc.dp(280f); val cH = rc.dp(48f)
+            val cX = (rc.w - cW) / 2f; val cY = rc.h - rc.dp(100f)
+            rc.solid(cX, cY, cW, cH, 0.1f, 0.1f, 0.2f, 0.9f)
+            val label = "Next Episode in ${endingCountdown}s"
+            val lw = uiMeasure(rc, label, 14)
+            uiText(rc, label, cX + rc.dp(16f), cY + rc.dp(30f), 14, 1f, 1f, 1f)
+            // Cancel button
+            val cancelW = rc.dp(80f)
+            val cancelX = cX + cW - cancelW - rc.dp(8f); val cancelY = cY + rc.dp(8f)
+            rc.solid(cancelX, cancelY, cancelW, cH - rc.dp(16f), 0.5f, 0.1f, 0.1f, 0.8f)
+            val clw = uiMeasure(rc, "CANCEL", 12)
+            uiText(rc, "CANCEL", cancelX + (cancelW - clw) / 2f, cancelY + rc.dp(20f), 12, 1f, 1f, 1f)
+            rc.tappable(cancelX, cancelY, cancelW, cH - rc.dp(16f)) { endingCancelled = true }
         }
 
         if (m and Layer.SPINNER != 0 && (isBuffering || !firstFrameReceived)) {
@@ -1344,7 +1404,7 @@ class PlayerState(private val page: PlayerPage) : GameState {
             "←", "▶", "⏮", "⏭", "●", Lang.s("settings"),
             "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz",
             "0123456789:.%()/-+sp <>x",
-            "Audio Subtitle Reading Mode Font Size Speed Condensed Theme Debug Boxes Next",
+            "Audio Subtitle Reading Mode Font Size Speed Condensed Theme Debug Boxes Next SKIP INTRO CANCEL Episode in",
             "DF DR DS DY Furigana Row Space Letter Y Offset E-Ink Dark",
             "PRO ADVANCED INTERMEDIATE NOVICE ON OFF Track Japanese",
             "Noto Sans Serif Shippori Klee One",

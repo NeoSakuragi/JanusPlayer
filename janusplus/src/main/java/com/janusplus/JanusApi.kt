@@ -259,6 +259,14 @@ class JanusApi(private val baseUrl: String) {
         )
     }
 
+    fun fetchSeasonSettings(itemId: String, seasonNum: Int): Pair<Double, Double>? {
+        val request = authRequest("$baseUrl/api/season-settings/$itemId/$seasonNum").build()
+        val response = try { client.newCall(request).execute() } catch (_: Exception) { return null }
+        if (!response.isSuccessful) return null
+        val obj = org.json.JSONObject(response.body?.string() ?: return null)
+        return Pair(obj.optDouble("opening_sec", 0.0), obj.optDouble("ending_sec", 0.0))
+    }
+
     fun fetchSeasonBlob(itemId: String, seasonNum: Int): SeasonData? {
         val request = authRequest("$baseUrl/api/blob/$itemId/season/$seasonNum").build()
         val response = try { client.newCall(request).execute() } catch (_: Exception) { return null }
