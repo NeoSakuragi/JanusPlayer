@@ -25,6 +25,7 @@ class MainActivity : AppCompatActivity() {
         // GL surface first — everything else deferred
         glView = GLSurfaceView(this)
         glView.setEGLContextClientVersion(3)
+        glView.preserveEGLContextOnPause = true
         glView.setRenderer(app)
         glView.renderMode = GLSurfaceView.RENDERMODE_CONTINUOUSLY
         glView.isFocusable = true

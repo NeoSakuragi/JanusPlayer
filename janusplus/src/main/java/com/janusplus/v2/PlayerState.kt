@@ -1135,8 +1135,7 @@ class PlayerState(private val page: PlayerPage) : GameState {
         subGlyphLayer = -1
         rebuildSubtitleAtlases()
 
-        // No ExoPlayer reconnection needed — the Surface/SurfaceTexture survived GL context loss
-        // ExoPlayer is still rendering to the same SurfaceTexture, which was detached+reattached
+        // Context preserved — ExoPlayer keeps rendering to the same Surface
     }
 
     override fun cleanup(app: App) {

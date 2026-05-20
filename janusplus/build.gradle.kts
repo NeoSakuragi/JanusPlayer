@@ -11,8 +11,8 @@ android {
         applicationId = "com.janusplus"
         minSdk = 26
         targetSdk = 34
-        versionCode = 23
-        versionName = "0.23"
+        versionCode = 26
+        versionName = "0.26"
     }
 
     buildTypes {
