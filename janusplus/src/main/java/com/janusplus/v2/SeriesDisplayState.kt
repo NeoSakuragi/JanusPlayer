@@ -63,14 +63,16 @@ class SeriesDisplayState(private val page: SeriesDisplayPage) : GameState {
 
     private fun computeLayout(rc: RC) {
         screenW = rc.w; screenH = rc.h
-        pad = rc.dp(32f); heroH = rc.dp(400f)
-        titleY = heroH - rc.dp(120f)
-        btnY = titleY + rc.dp(40f); btnW = rc.dp(200f); btnH = rc.dp(44f)
-        metaY = btnY + btnH + rc.dp(14f)
-        synopsisY = metaY + rc.dp(22f)
+        pad = rc.dp(24f)
+        // Compact layout: back+title row → synopsis → play button → grid
+        titleY = rc.dp(28f)
+        synopsisY = titleY + rc.dp(8f)
         val synH = page.bodyAtlas.lineHeight * 2 * 1.3f
-        gridY = synopsisY + synH
-        gridSpacing = rc.dp(12f)
+        btnY = synopsisY + synH + rc.dp(4f); btnW = rc.dp(160f); btnH = rc.dp(38f)
+        metaY = btnY; // metadata next to button
+        heroH = btnY + btnH + rc.dp(8f)
+        gridY = heroH
+        gridSpacing = rc.dp(10f)
         val availW = rc.w - pad * 2
         gridCols = 4
         cardW = (availW - gridSpacing * (gridCols - 1)) / gridCols
@@ -147,23 +149,26 @@ class SeriesDisplayState(private val page: SeriesDisplayPage) : GameState {
             rc.bg()
         }
 
-        // Hero section — only draw if on screen
-        if (ht + heroH > 0) {
-            drawText(rc, page.titleAtlas, page.title, pad, ht + titleY, 1f, 1f, 1f)
-            drawText(rc, page.titleAtlas, "←", pad, ht + titleY - rc.dp(30f), 0.533f, 0.533f, 0.533f)
-            rc.tappable(0f, ht + titleY - rc.dp(50f), rc.dp(60f), rc.dp(60f)) { app.goBack() }
+        // Compact header: ← Title on one row
+        val headerY = ht + rc.dp(4f)
+        drawText(rc, page.bodyAtlas, "←", pad, headerY + rc.dp(16f), 0.533f, 0.533f, 0.533f)
+        rc.tappable(0f, headerY, rc.dp(50f), rc.dp(30f)) { app.goBack() }
+        drawText(rc, page.titleAtlas, page.title, pad + rc.dp(24f), headerY + rc.dp(20f), 1f, 1f, 1f)
 
+        // Synopsis
+        if (page.synopsis.isNotEmpty()) {
+            drawTextClipped(rc, page.bodyAtlas, page.synopsis, pad, ht + synopsisY, rc.w * 0.65f)
+        }
+
+        // Play button + episode count
+        if (ht + heroH > 0) {
             val playFocused = focusArea == FocusArea.PLAY_BUTTON
             rc.solid(pad, ht + btnY, btnW, btnH, 0.733f, 0.525f, 0.988f)
-            drawText(rc, page.btnAtlas, Lang.s("play"), pad + rc.dp(20f), ht + btnY + rc.dp(30f), 1f, 1f, 1f)
+            drawText(rc, page.btnAtlas, Lang.s("play"), pad + rc.dp(16f), ht + btnY + rc.dp(26f), 1f, 1f, 1f)
             if (playFocused) rc.border(pad, ht + btnY, btnW, btnH, 6f, 1f, 1f, 1f)
             rc.tappable(pad, ht + btnY, btnW, btnH) { playEpisode(app, page.fullEpisodes.firstOrNull()) }
 
-            drawText(rc, page.bodyAtlas, Lang.s("episodes", page.episodeCount), pad, ht + metaY, 0.533f, 0.533f, 0.533f)
-
-            if (page.synopsis.isNotEmpty()) {
-                drawTextClipped(rc, page.bodyAtlas, page.synopsis, pad, ht + synopsisY, rc.w * 0.55f)
-            }
+            drawText(rc, page.bodyAtlas, Lang.s("episodes", page.episodeCount), pad + btnW + rc.dp(16f), ht + btnY + rc.dp(22f), 0.533f, 0.533f, 0.533f)
         }
 
         // Settings button — always visible (fixed position)
