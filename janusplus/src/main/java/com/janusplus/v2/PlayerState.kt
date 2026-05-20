@@ -1163,22 +1163,22 @@ class PlayerState(private val page: PlayerPage) : GameState {
 
     private fun drawCueButtons(rc: RC) {
         val alpha = if (mode == Mode.PAUSED) 1f else 0.4f
-        val btnW = rc.dp(44f); val btnH = rc.dp(36f)
+        val btnW = rc.dp(88f); val btnH = rc.dp(72f)
         val x = pad
-        val y = rc.dp(60f) // below title + back arrow
+        val y = rc.dp(80f)
 
         // ⏮ prev cue
         rc.solid(x, y, btnW, btnH, 0.13f, 0.13f, 0.2f, alpha * 0.8f)
         val sz = rc.sp(uiBaseSp)
         val pw = rc.measureText("<<", sz)
-        uiText(rc, "<<", x + (btnW - pw) / 2f, y + rc.dp(24f), uiBaseSp, 1f, 1f, 1f, alpha)
+        uiText(rc, "<<", x + (btnW - pw) / 2f, y + btnH / 2f + rc.dp(8f), uiBaseSp, 1f, 1f, 1f, alpha)
         prevCueBtnRect = floatArrayOf(x, y, btnW, btnH)
 
         // ⏭ next cue
         val nx = x + btnW + rc.dp(8f)
         rc.solid(nx, y, btnW, btnH, 0.13f, 0.13f, 0.2f, alpha * 0.8f)
         val nw = rc.measureText(">>", sz)
-        uiText(rc, ">>", nx + (btnW - nw) / 2f, y + rc.dp(24f), uiBaseSp, 1f, 1f, 1f, alpha)
+        uiText(rc, ">>", nx + (btnW - nw) / 2f, y + btnH / 2f + rc.dp(8f), uiBaseSp, 1f, 1f, 1f, alpha)
         nextCueBtnRect = floatArrayOf(nx, y, btnW, btnH)
     }
 
