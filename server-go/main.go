@@ -73,6 +73,9 @@ func main() {
 	mux.HandleFunc("/api/settings", handleUserSettings)
 	mux.HandleFunc("/api/season-settings/", handleSeasonSettings)
 
+	// Watch progress
+	mux.HandleFunc("/api/progress/", handleProgress)
+
 	// Debug
 	mux.HandleFunc("/api/debug/events", handleDebugEvents)
 
@@ -155,6 +158,14 @@ var migrations = []struct {
 		PRIMARY KEY (item_id, season)
 	)`},
 	{"003_poster_path", `ALTER TABLE items ADD COLUMN poster_path TEXT DEFAULT ''`},
+	{"004_skip_settings", `CREATE TABLE IF NOT EXISTS skip_settings (
+		item_id TEXT NOT NULL,
+		season INTEGER,
+		episode INTEGER,
+		opening_sec REAL DEFAULT 0,
+		ending_sec REAL DEFAULT 0,
+		UNIQUE(item_id, season, episode)
+	)`},
 }
 
 func runMigrations() {
@@ -579,6 +590,9 @@ func handleSeason(w http.ResponseWriter, itemID string, seasonNum int) {
 
 			subTracks := querySubtitles(itemID, season, episode)
 
+			var posMs, durMs, updAt int64
+			db.QueryRow("SELECT position_ms, duration_ms, updated_at FROM watch_progress WHERE series_id=? AND episode_num=?", itemID, episode).Scan(&posMs, &durMs, &updAt)
+			openSec, endSec := resolveSkip(itemID, season, episode)
 			episodes = append(episodes, map[string]any{
 				"season": season, "episode": episode, "filename": filename,
 				"duration_sec": durSec, "title_en": titleEn,
@@ -586,7 +600,8 @@ func handleSeason(w http.ResponseWriter, itemID string, seasonNum int) {
 				"thumb": thumb,
 				"subtitles":          subTracks,
 				"locales":            queryEpisodeLocales(itemID, season, episode),
-				"watch_progress_sec": 0, "completed": false,
+				"watch_progress_ms": posMs, "watch_duration_ms": durMs, "watch_updated_at": updAt,
+				"opening_sec": openSec, "ending_sec": endSec,
 			})
 		}
 
@@ -613,6 +628,9 @@ func queryEpisode(itemID string, season, episode int) map[string]any {
 
 	subTracks := querySubtitles(itemID, s, ep)
 
+	var posMs, durMs, updAt int64
+	db.QueryRow("SELECT position_ms, duration_ms, updated_at FROM watch_progress WHERE series_id=? AND episode_num=?", itemID, ep).Scan(&posMs, &durMs, &updAt)
+	openSec, endSec := resolveSkip(itemID, s, ep)
 	return map[string]any{
 		"season": s, "episode": ep, "filename": filename,
 		"duration_sec": durSec, "title_en": titleEn,
@@ -620,7 +638,8 @@ func queryEpisode(itemID string, season, episode int) map[string]any {
 		"thumb": thumb,
 		"subtitles":          subTracks,
 		"locales":            queryEpisodeLocales(itemID, s, ep),
-		"watch_progress_sec": 0, "completed": false,
+		"watch_progress_ms": posMs, "watch_duration_ms": durMs, "watch_updated_at": updAt,
+		"opening_sec": openSec, "ending_sec": endSec,
 	}
 }
 
@@ -637,6 +656,25 @@ func querySubtitles(itemID string, season, episode int) []map[string]any {
 		subRows.Close()
 	}
 	return subTracks
+}
+
+// resolveSkip returns opening/ending for an episode using 3-level cascade:
+// episode override → season override → series default
+func resolveSkip(itemID string, season, episode int) (float64, float64) {
+	var opening, ending float64
+	err := db.QueryRow(`SELECT opening_sec, ending_sec FROM skip_settings
+		WHERE item_id=? AND season=? AND episode=?`, itemID, season, episode).Scan(&opening, &ending)
+	if err == nil {
+		return opening, ending
+	}
+	err = db.QueryRow(`SELECT opening_sec, ending_sec FROM skip_settings
+		WHERE item_id=? AND season=? AND episode IS NULL`, itemID, season).Scan(&opening, &ending)
+	if err == nil {
+		return opening, ending
+	}
+	db.QueryRow(`SELECT opening_sec, ending_sec FROM skip_settings
+		WHERE item_id=? AND season IS NULL AND episode IS NULL`, itemID).Scan(&opening, &ending)
+	return opening, ending
 }
 
 func queryItemLocales(itemID string) map[string]map[string]string {
@@ -1051,16 +1089,22 @@ func handleUserSettings(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, settings)
 }
 
-// GET/PUT /api/season-settings/{itemId}/{season}
+// GET/PUT /api/season-settings/{itemId}/{season}[/{episode}]
+// PUT sets skip at the given scope (series if season=0, season if no episode, episode if both)
+// GET resolves using episode→season→series cascade
 func handleSeasonSettings(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, "/api/season-settings/")
 	parts := strings.Split(path, "/")
-	if len(parts) != 2 {
+	if len(parts) < 2 {
 		http.Error(w, "not found", 404)
 		return
 	}
 	itemID := parts[0]
 	season := atoi(parts[1])
+	episode := -1
+	if len(parts) >= 3 {
+		episode = atoi(parts[2])
+	}
 
 	if r.Method == "PUT" || r.Method == "POST" {
 		var req struct {
@@ -1071,22 +1115,99 @@ func handleSeasonSettings(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), 400)
 			return
 		}
-		db.Exec("INSERT OR REPLACE INTO season_settings (item_id, season, opening_sec, ending_sec) VALUES (?,?,?,?)",
-			itemID, season, req.OpeningSec, req.EndingSec)
+		if episode >= 0 {
+			db.Exec("INSERT INTO skip_settings (item_id, season, episode, opening_sec, ending_sec) VALUES (?,?,?,?,?) ON CONFLICT(item_id, season, episode) DO UPDATE SET opening_sec=excluded.opening_sec, ending_sec=excluded.ending_sec",
+				itemID, season, episode, req.OpeningSec, req.EndingSec)
+		} else if season > 0 {
+			db.Exec("INSERT INTO skip_settings (item_id, season, episode, opening_sec, ending_sec) VALUES (?,?,NULL,?,?) ON CONFLICT(item_id, season, episode) DO UPDATE SET opening_sec=excluded.opening_sec, ending_sec=excluded.ending_sec",
+				itemID, season, req.OpeningSec, req.EndingSec)
+		} else {
+			db.Exec("INSERT INTO skip_settings (item_id, season, episode, opening_sec, ending_sec) VALUES (?,NULL,NULL,?,?) ON CONFLICT(item_id, season, episode) DO UPDATE SET opening_sec=excluded.opening_sec, ending_sec=excluded.ending_sec",
+				itemID, req.OpeningSec, req.EndingSec)
+		}
 		clearCache()
 		writeJSON(w, map[string]any{"ok": true})
 		return
 	}
 
-	var openingSec, endingSec float64
-	db.QueryRow("SELECT opening_sec, ending_sec FROM season_settings WHERE item_id=? AND season=?", itemID, season).
-		Scan(&openingSec, &endingSec)
-	writeJSON(w, map[string]any{
-		"item_id":     itemID,
-		"season":      season,
-		"opening_sec": openingSec,
-		"ending_sec":  endingSec,
-	})
+	if episode >= 0 {
+		o, e := resolveSkip(itemID, season, episode)
+		writeJSON(w, map[string]any{"item_id": itemID, "season": season, "episode": episode, "opening_sec": o, "ending_sec": e})
+	} else if season > 0 {
+		o, e := resolveSkip(itemID, season, 0)
+		writeJSON(w, map[string]any{"item_id": itemID, "season": season, "opening_sec": o, "ending_sec": e})
+	} else {
+		var o, e float64
+		db.QueryRow("SELECT opening_sec, ending_sec FROM skip_settings WHERE item_id=? AND season IS NULL AND episode IS NULL", itemID).Scan(&o, &e)
+		writeJSON(w, map[string]any{"item_id": itemID, "opening_sec": o, "ending_sec": e})
+	}
+}
+
+func handleProgress(w http.ResponseWriter, r *http.Request) {
+	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/api/progress/"), "/")
+	if len(parts) < 1 || parts[0] == "" {
+		http.Error(w, "missing item_id", 400)
+		return
+	}
+	itemID := parts[0]
+
+	if r.Method == "GET" {
+		rows, err := db.Query("SELECT episode_num, position_ms, duration_ms, updated_at FROM watch_progress WHERE series_id=?", itemID)
+		if err != nil {
+			writeJSON(w, map[string]any{"episodes": []any{}})
+			return
+		}
+		defer rows.Close()
+		eps := []map[string]any{}
+		var resumeEp int
+		var resumePos int64
+		var resumeUpdated int64
+		for rows.Next() {
+			var ep int
+			var pos, dur, updatedAt int64
+			rows.Scan(&ep, &pos, &dur, &updatedAt)
+			eps = append(eps, map[string]any{"episode": ep, "position_ms": pos, "duration_ms": dur, "updated_at": updatedAt})
+			// Resume = most recently viewed, not completed (< 95%)
+			if dur > 0 && pos > 0 {
+				frac := float64(pos) / float64(dur)
+				if frac < 0.95 && updatedAt > resumeUpdated {
+					resumeEp = ep
+					resumePos = pos
+					resumeUpdated = updatedAt
+				}
+			}
+		}
+		result := map[string]any{"item_id": itemID, "episodes": eps}
+		if resumeEp > 0 {
+			result["resume"] = map[string]any{"episode": resumeEp, "position_ms": resumePos}
+		}
+		writeJSON(w, result)
+		return
+	}
+
+	if r.Method == "POST" {
+		var body struct {
+			Episode    int   `json:"episode"`
+			PositionMs int64 `json:"position_ms"`
+			DurationMs int64 `json:"duration_ms"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, "bad json", 400)
+			return
+		}
+		_, err := db.Exec(`INSERT INTO watch_progress (series_id, episode_num, position_ms, duration_ms)
+			VALUES (?,?,?,?) ON CONFLICT(series_id, episode_num) DO UPDATE SET
+			position_ms=excluded.position_ms, duration_ms=excluded.duration_ms, updated_at=strftime('%s','now')`,
+			itemID, body.Episode, body.PositionMs, body.DurationMs)
+		if err != nil {
+			http.Error(w, err.Error(), 500)
+			return
+		}
+		writeJSON(w, map[string]any{"ok": true})
+		return
+	}
+
+	http.Error(w, "method not allowed", 405)
 }
 
 func handleDebugEvents(w http.ResponseWriter, r *http.Request) {

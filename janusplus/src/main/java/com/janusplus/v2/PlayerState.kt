@@ -149,6 +149,15 @@ class PlayerState(private val page: PlayerPage) : GameState {
     private var useTouchNav = true // hide cue buttons when D-pad detected
     private var nextEpBtnRect = floatArrayOf(0f, 0f, 0f, 0f)
 
+    private fun saveProgress() {
+        val app = appRef ?: return
+        val pos = positionMs; val dur = durationMs
+        if (pos <= 0 || dur <= 0) return
+        val api = app.api ?: return
+        val id = page.item.id; val ep = page.episode.episode
+        kotlin.concurrent.thread { api.saveProgress(id, ep, pos, dur) }
+    }
+
     private fun savePrefs() {
         val app = appRef ?: return
         app.context.getSharedPreferences("player_prefs", android.content.Context.MODE_PRIVATE).edit()
@@ -192,17 +201,9 @@ class PlayerState(private val page: PlayerPage) : GameState {
             subAtlas = page.subAtlas
         }
 
-        // Fetch season settings for opening/ending skip
-        kotlin.concurrent.thread {
-            try {
-                val api = app.api ?: return@thread
-                val settings = api.fetchSeasonSettings(page.item.id, page.episode.season)
-                if (settings != null) {
-                    openingMs = (settings.first * 1000).toLong()
-                    endingMs = (settings.second * 1000).toLong()
-                }
-            } catch (_: Exception) {}
-        }
+        // Opening/ending skip — resolved server-side, embedded in episode data
+        openingMs = (page.episode.openingSec * 1000).toLong()
+        endingMs = (page.episode.endingSec * 1000).toLong()
 
         // Start video playback
         val api = app.api ?: return
@@ -218,6 +219,8 @@ class PlayerState(private val page: PlayerPage) : GameState {
             player.setVideoSurface(app.videoSurface.surface)
             player.setMediaSource(source)
             player.prepare()
+            val resumeMs = page.episode.watchProgressMs
+            if (resumeMs > 1000) player.seekTo(resumeMs)
             player.playWhenReady = true
 
             val handler = android.os.Handler(android.os.Looper.getMainLooper())
@@ -232,6 +235,9 @@ class PlayerState(private val page: PlayerPage) : GameState {
                     if (format != null && videoWidth == 0) {
                         videoWidth = format.width; videoHeight = format.height
                     }
+                    // Save progress every ~30 seconds
+                    if (player.currentPosition % 30000 < 250) saveProgress()
+
                     // Skip intro / ending countdown
                     val pos = player.currentPosition
                     showSkipIntro = openingMs > 0 && pos < openingMs && pos > 1000
@@ -1424,6 +1430,7 @@ class PlayerState(private val page: PlayerPage) : GameState {
     }
 
     override fun cleanup(app: App) {
+        saveProgress()
         alive = false
         app.onMainThread?.invoke(Runnable {
             app.exoPlayer?.stop(); app.exoPlayer?.clearMediaItems(); app.exoPlayer?.setVideoSurface(null)

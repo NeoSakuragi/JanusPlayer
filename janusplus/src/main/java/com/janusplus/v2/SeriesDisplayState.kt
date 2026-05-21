@@ -29,6 +29,23 @@ class SeriesDisplayState(private val page: SeriesDisplayPage) : GameState {
     private var layoutDone = false
     private var screenW = 0f; private var screenH = 0f
 
+    private var progressCache = HashMap<Int, Float>() // episode → 0.0-1.0
+    private var resumeEpisode: JanusApi.Episode? = null
+
+    private fun loadProgress(app: App) {
+        val api = app.api ?: return
+        kotlin.concurrent.thread {
+            val resp = api.fetchProgress(page.item.id)
+            progressCache.clear()
+            for (wp in resp.episodes) {
+                if (wp.durationMs > 0) progressCache[wp.episode] = (wp.positionMs.toFloat() / wp.durationMs).coerceIn(0f, 1f)
+            }
+            resumeEpisode = if (resp.resume != null)
+                currentFullEpisodes.firstOrNull { it.episode == resp.resume.episode }
+            else null
+        }
+    }
+
     enum class FocusArea { PLAY_BUTTON, SEASON_TAB, EPISODE_GRID }
     private var focusArea = FocusArea.PLAY_BUTTON
     private var episodeFocus = 0
@@ -72,17 +89,23 @@ class SeriesDisplayState(private val page: SeriesDisplayPage) : GameState {
         app.uploadGlyphAtlas(page.btnAtlas, page.btnBmp)
         app.uploadGlyphAtlas(page.smallAtlas, page.smallBmp)
         app.uploadGlyphAtlas(page.settAtlas, page.settBmp)
+        loadProgress(app)
     }
+
+    private var barH = 0f
+    private var barBtnH = 0f
+    private var barBtnW = 0f
 
     private fun computeLayout(rc: RC) {
         screenW = rc.w; screenH = rc.h
-        pad = rc.dp(24f)
-        // Compact layout: back+title row → synopsis → play button → grid
-        titleY = rc.dp(28f)
-        synopsisY = titleY + rc.dp(8f)
+        pad = rc.dp(16f)
+        barBtnH = rc.dp(32f)
+        barBtnW = rc.dp(70f)
+        barH = rc.dp(8f) + barBtnH + rc.dp(8f) // top padding + button + bottom padding
+        synopsisY = barH + rc.dp(4f)
         val synH = page.bodyAtlas.lineHeight * 2 * 1.3f
         btnY = synopsisY + synH + rc.dp(4f); btnW = rc.dp(160f); btnH = rc.dp(38f)
-        metaY = btnY; // metadata next to button
+        metaY = btnY
         heroH = btnY + btnH + rc.dp(8f)
         gridY = if (page.seasonCount > 1) heroH + rc.dp(40f) else heroH
         gridSpacing = rc.dp(10f)
@@ -187,7 +210,8 @@ class SeriesDisplayState(private val page: SeriesDisplayPage) : GameState {
                 }
 
                 layoutDone = false
-                thumbReady = true // re-enable minicard rendering
+                thumbReady = true
+                loadProgress(app)
             } catch (e: Exception) {
                 android.util.Log.e("Series", "Season switch failed: ${e.message}")
                 thumbReady = true
@@ -236,11 +260,31 @@ class SeriesDisplayState(private val page: SeriesDisplayPage) : GameState {
 
         val isMovie = page.item.type.equals("MOVIE", ignoreCase = true)
 
-        // Compact header: ← Title on one row
-        val headerY = ht + rc.dp(4f)
-        drawText(rc, page.bodyAtlas, "←", pad, headerY + rc.dp(16f), 0.533f, 0.533f, 0.533f)
-        rc.tappable(0f, headerY, rc.dp(50f), rc.dp(30f)) { app.goBack() }
-        drawText(rc, page.titleAtlas, page.title, pad + rc.dp(24f), headerY + rc.dp(20f), 1f, 1f, 1f)
+        // ── Top bar: [← Back] Title ... [Settings] ──
+        val barTop = ht + rc.dp(8f)
+        val btnTextY = barTop + rc.dp(22f)
+
+        // Back button (pill, same style as settings)
+        val backLabel = "←"
+        val backLabelW = page.settAtlas.measureText(backLabel)
+        val backBtnW = backLabelW + rc.dp(24f)
+        rc.solid(pad, barTop, backBtnW, barBtnH, rc.panelR, rc.panelG, rc.panelB)
+        drawText(rc, page.settAtlas, backLabel, pad + (backBtnW - backLabelW) / 2f, btnTextY, 0.733f, 0.525f, 0.988f)
+        rc.tappable(pad, barTop, backBtnW, barBtnH) { app.goBack() }
+
+        // Settings button (pill, right side)
+        val setLabel = Lang.s("settings")
+        val setLabelW = page.settAtlas.measureText(setLabel)
+        val setBtnW = setLabelW + rc.dp(24f)
+        val setBtnX = rc.w - pad - setBtnW
+        rc.solid(setBtnX, barTop, setBtnW, barBtnH, rc.panelR, rc.panelG, rc.panelB)
+        drawText(rc, page.settAtlas, setLabel, setBtnX + (setBtnW - setLabelW) / 2f, btnTextY, 0.733f, 0.525f, 0.988f)
+        rc.tappable(setBtnX, barTop, setBtnW, barBtnH) { app.navigate(App.Nav.Settings) }
+
+        // Title between back and settings
+        val titleX = pad + backBtnW + rc.dp(12f)
+        val titleMaxW = setBtnX - titleX - rc.dp(12f)
+        drawTextClipped(rc, page.titleAtlas, page.title, titleX, barTop + rc.dp(22f), titleMaxW)
 
         // Synopsis
         if (page.synopsis.isNotEmpty()) {
@@ -250,10 +294,14 @@ class SeriesDisplayState(private val page: SeriesDisplayPage) : GameState {
         // Play button + episode count
         if (ht + heroH > 0) {
             val playFocused = focusArea == FocusArea.PLAY_BUTTON
+            val hasResume = resumeEpisode != null
+            val playLabel = if (hasResume) Lang.s("resume") else Lang.s("play")
             rc.solid(pad, ht + btnY, btnW, btnH, 0.733f, 0.525f, 0.988f)
-            drawText(rc, page.btnAtlas, Lang.s("play"), pad + rc.dp(16f), ht + btnY + rc.dp(26f), 1f, 1f, 1f)
+            drawText(rc, page.btnAtlas, playLabel, pad + rc.dp(16f), ht + btnY + rc.dp(26f), 1f, 1f, 1f)
             if (playFocused) rc.border(pad, ht + btnY, btnW, btnH, 6f, 1f, 1f, 1f)
-            rc.tappable(pad, ht + btnY, btnW, btnH) { playEpisode(app, currentFullEpisodes.firstOrNull()) }
+            rc.tappable(pad, ht + btnY, btnW, btnH) {
+                playEpisode(app, if (hasResume) resumeEpisode!! else currentFullEpisodes.firstOrNull())
+            }
 
             if (!isMovie) {
                 drawText(rc, page.bodyAtlas, Lang.s("episodes", currentEpisodeCount), pad + btnW + rc.dp(16f), ht + btnY + rc.dp(22f), 0.533f, 0.533f, 0.533f)
@@ -261,16 +309,6 @@ class SeriesDisplayState(private val page: SeriesDisplayPage) : GameState {
                 val dur = currentFullEpisodes.firstOrNull()?.durationSec?.toInt() ?: 0
                 if (dur > 0) drawText(rc, page.bodyAtlas, "${dur / 60} min", pad + btnW + rc.dp(16f), ht + btnY + rc.dp(22f), 0.533f, 0.533f, 0.533f)
             }
-        }
-
-        // Settings button — always visible (fixed position)
-        val setBtnW = rc.dp(80f); val setBtnH = rc.dp(36f)
-        val setBtnX = rc.w - pad - setBtnW; val setBtnY = ht + rc.dp(12f)
-        if (setBtnY + setBtnH > 0) {
-            rc.solid(setBtnX, setBtnY, setBtnW, setBtnH, rc.panelR, rc.panelG, rc.panelB)
-            val setLabel = Lang.s("settings")
-            val setLabelW = page.settAtlas.measureText(setLabel)
-            drawText(rc, page.settAtlas, setLabel, setBtnX + (setBtnW - setLabelW) / 2f, setBtnY + rc.dp(24f), 0.733f, 0.525f, 0.988f)
         }
 
         if (isMovie) {
@@ -337,6 +375,14 @@ class SeriesDisplayState(private val page: SeriesDisplayPage) : GameState {
             val ep = currentEpisodes[i]
             drawTextClipped(rc, page.bodyAtlas, "${ep.episode}. ${ep.titleEn}", x + rc.dp(8f), y + thumbCardH + rc.dp(22f), cardW - rc.dp(16f))
             drawText(rc, page.smallAtlas, "${ep.durationSec / 60} min", x + rc.dp(8f), y + thumbCardH + rc.dp(38f), 0.533f, 0.533f, 0.533f)
+
+            val prog = progressCache[ep.episode]
+            if (prog != null && prog > 0f) {
+                val barH = rc.dp(3f)
+                val barY = y + thumbCardH - barH
+                rc.solid(x, barY, cardW, barH, 0.2f, 0.2f, 0.2f, 0.6f)
+                rc.solid(x, barY, cardW * prog, barH, 0.733f, 0.525f, 0.988f)
+            }
 
             if (focusArea == FocusArea.EPISODE_GRID && i == episodeFocus) {
                 rc.border(x, y, cardW, cardH, 6f, 0.733f, 0.525f, 0.988f)

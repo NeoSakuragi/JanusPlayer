@@ -76,7 +76,9 @@ class JanusApi(private val baseUrl: String) {
 
     data class Episode(
         val season: Int, val episode: Int, val filename: String,
-        val durationSec: Double, val watchProgressSec: Double, val completed: Boolean,
+        val durationSec: Double, val watchProgressMs: Long, val watchDurationMs: Long,
+        val watchUpdatedAt: Long = 0,
+        val openingSec: Double = 0.0, val endingSec: Double = 0.0,
         val titleEn: String, val synopsisEn: String, val synopsisJa: String, val synopsisFr: String,
         val thumb: String?, val subtitles: List<SubTrack>,
         val locales: Map<String, Locale> = emptyMap(),
@@ -86,6 +88,10 @@ class JanusApi(private val baseUrl: String) {
             val lang = Lang.current
             locales[lang]?.title?.takeIf { it.isNotEmpty() }?.let { return it }
             return titleEn
+        }
+        fun progressFraction(): Float {
+            if (watchDurationMs <= 0) return 0f
+            return (watchProgressMs.toFloat() / watchDurationMs).coerceIn(0f, 1f)
         }
     }
 
@@ -259,15 +265,7 @@ class JanusApi(private val baseUrl: String) {
         )
     }
 
-    fun fetchSeasonSettings(itemId: String, seasonNum: Int): Pair<Double, Double>? {
-        val request = authRequest("$baseUrl/api/season-settings/$itemId/$seasonNum").build()
-        val response = try { client.newCall(request).execute() } catch (_: Exception) { return null }
-        if (!response.isSuccessful) return null
-        val obj = org.json.JSONObject(response.body?.string() ?: return null)
-        return Pair(obj.optDouble("opening_sec", 0.0), obj.optDouble("ending_sec", 0.0))
-    }
-
-    fun fetchSeasonBlob(itemId: String, seasonNum: Int): SeasonData? {
+fun fetchSeasonBlob(itemId: String, seasonNum: Int): SeasonData? {
         val request = authRequest("$baseUrl/api/blob/$itemId/season/$seasonNum").build()
         val response = try { client.newCall(request).execute() } catch (_: Exception) { return null }
         if (!response.isSuccessful) return null
@@ -431,11 +429,44 @@ class JanusApi(private val baseUrl: String) {
         ((bytes[off + 2].toInt() and 0xFF) shl 16) or
         ((bytes[off + 3].toInt() and 0xFF) shl 24)
 
+    data class WatchProgress(val episode: Int, val positionMs: Long, val durationMs: Long)
+    data class ResumeInfo(val episode: Int, val positionMs: Long)
+    data class ProgressResponse(val episodes: List<WatchProgress>, val resume: ResumeInfo?)
+
+    fun fetchProgress(itemId: String): ProgressResponse {
+        val request = authRequest("$baseUrl/api/progress/$itemId").build()
+        val response = try { client.newCall(request).execute() } catch (_: Exception) { return ProgressResponse(emptyList(), null) }
+        if (!response.isSuccessful) return ProgressResponse(emptyList(), null)
+        val obj = JSONObject(response.body?.string() ?: return ProgressResponse(emptyList(), null))
+        val eps = obj.optJSONArray("episodes") ?: return ProgressResponse(emptyList(), null)
+        val list = (0 until eps.length()).map { i ->
+            val e = eps.getJSONObject(i)
+            WatchProgress(e.getInt("episode"), e.getLong("position_ms"), e.getLong("duration_ms"))
+        }
+        val resumeObj = obj.optJSONObject("resume")
+        val resume = if (resumeObj != null) ResumeInfo(resumeObj.getInt("episode"), resumeObj.getLong("position_ms")) else null
+        return ProgressResponse(list, resume)
+    }
+
+    fun saveProgress(itemId: String, episode: Int, positionMs: Long, durationMs: Long) {
+        val body = JSONObject()
+            .put("episode", episode)
+            .put("position_ms", positionMs)
+            .put("duration_ms", durationMs).toString()
+        val request = authRequest("$baseUrl/api/progress/$itemId")
+            .post(body.toRequestBody("application/json".toMediaTypeOrNull()))
+            .build()
+        try { client.newCall(request).execute().close() } catch (_: Exception) {}
+    }
+
     private fun parseEpisode(obj: JSONObject): Episode = Episode(
         season = obj.optInt("season", 1), episode = obj.getInt("episode"),
         filename = obj.getString("filename"), durationSec = obj.getDouble("duration_sec"),
-        watchProgressSec = obj.optDouble("watch_progress_sec", 0.0),
-        completed = obj.optBoolean("completed", false),
+        watchProgressMs = obj.optLong("watch_progress_ms", 0),
+        watchDurationMs = obj.optLong("watch_duration_ms", 0),
+        watchUpdatedAt = obj.optLong("watch_updated_at", 0),
+        openingSec = obj.optDouble("opening_sec", 0.0),
+        endingSec = obj.optDouble("ending_sec", 0.0),
         titleEn = obj.optString("title_en", ""),
         synopsisEn = obj.optString("synopsis_en", ""),
         synopsisJa = obj.optString("synopsis_ja", ""),
