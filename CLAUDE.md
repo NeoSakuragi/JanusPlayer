@@ -1,5 +1,10 @@
 # Janus — Japanese Immersion Video Player
 
+> **NOTE (2026-07-17):** the Go server no longer lives here. `server-go/` and
+> `deploy-remote.sh` were deleted from this folder — the server's single source of
+> truth is `~/CLProjects/JanusPlus/server-go` (github.com/NeoSakuragi/JanusPlus),
+> deployed to the VPS by GitHub Actions. Server references below are historical.
+
 ## What This Is
 
 Janus is a video player designed for learning Japanese through anime and movies. It consists of:

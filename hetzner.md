@@ -1,5 +1,15 @@
 # Hetzner Server
 
+> **Deploys are CI/CD now (2026-07-17):** the Go server ships via GitHub Actions from
+> `github.com/NeoSakuragi/JanusPlus` (`server-go/**` push → build on VPS → health-checked
+> swap with rollback). The JLPT web app ships from `github.com/NeoSakuragi/jlpt-web`
+> (push → rsync to `/var/www/kanji/jlpt/`). The old `Janus/server-go` tree and
+> `deploy-remote.sh` were deleted — the server source lives ONLY in JanusPlus.
+> `/jlpt/` is behind cookie-session auth: nginx `auth_request /jlpt-auth` →
+> Janus `/api/authcheck` validates the HttpOnly `janus_token` cookie set by
+> `/api/login`; unauthenticated requests 302 to the gate-exempt `/jlpt/login.html`.
+> Credentials = Janus users. No htpasswd anymore; password changes need no re-seeding.
+
 ## Server
 - **Provider**: Hetzner Cloud CX23 (shared with NeoMobiles26)
 - **IP**: 195.201.91.211
